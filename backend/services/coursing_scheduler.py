@@ -30,14 +30,15 @@ async def _tick_once() -> int:
     from database import db
     from services import coursing
 
-    config = await coursing.get_config()
-    if not config.get("enabled") or not config.get("autoFireTiming"):
-        return 0
-
     rows = await db.kitchen_orders.find(
         {"status": {"$nin": ["served", "cancelled"]}}, {"_id": 0}).to_list(200)
     fired = 0
     for order in rows:
+        if not order.get("businessId") or order.get("_ownershipQuarantined"):
+            continue
+        config = await coursing.get_config(business_id=order["businessId"])
+        if not config.get("enabled") or not config.get("autoFireTiming"):
+            continue
         due = coursing.due_auto_fires(order, config)
         if not due:
             continue

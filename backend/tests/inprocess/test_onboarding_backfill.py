@@ -56,15 +56,8 @@ def test_seed_default_business_never_overrides_an_explicit_false(client):
     _run(db.businesses.update_one({"id": "default"}, {"$set": {"onboardingComplete": True}}))
 
 
-def test_backfill_tenant_endpoint_also_grandfathers_a_legacy_non_default_business(client, owner_headers):
-    _run(db.businesses.update_one(
-        {"id": "default"},
-        {"$unset": {"onboardingComplete": ""}},
-    ))
-
+def test_backfill_tenant_endpoint_is_retired_without_mutating_businesses(client, owner_headers):
+    before = _run(db.businesses.find_one({"id": "default"}))
     r = req(client, "POST", "/api/business/backfill-tenant", headers=owner_headers)
-    assert r.status_code == 200, r.text
-    assert r.json()["backfilled"]["businesses.onboardingComplete"] >= 1
-
-    biz = _run(db.businesses.find_one({"id": "default"}))
-    assert biz["onboardingComplete"] is True
+    assert r.status_code == 410, r.text
+    assert _run(db.businesses.find_one({"id": "default"})) == before

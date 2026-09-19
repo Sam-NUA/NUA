@@ -42,7 +42,7 @@ def test_a_fast_selling_low_stock_product_is_predicted_to_run_out(client, owner_
         r = _sale(client, owner_headers, product_id=pid, quantity=30)
         assert r.status_code == 200, r.text[:200]
 
-    predictions = _run(predictive_signals.compute_predicted_stockouts())
+    predictions = _run(predictive_signals.compute_predicted_stockouts(business_id="default"))
     match = next((p for p in predictions if p["productId"] == pid), None)
     assert match is not None, "a product selling ~13/day with 10 left must be projected to run out"
     assert match["daysRemaining"] < 2.0
@@ -56,7 +56,7 @@ def test_a_slow_selling_well_stocked_product_is_not_predicted(client, owner_head
     pid = product.json()["id"]
     _sale(client, owner_headers, product_id=pid, quantity=1)
 
-    predictions = _run(predictive_signals.compute_predicted_stockouts())
+    predictions = _run(predictive_signals.compute_predicted_stockouts(business_id="default"))
     assert all(p["productId"] != pid for p in predictions), \
         "500 units at ~1/day is nowhere near the 2-day horizon and must not be flagged"
 

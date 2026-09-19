@@ -58,9 +58,9 @@ async def _collect_briefing_data(business_id: Optional[str] = None) -> Dict[str,
 
     # Birthdays (customers whose DoB matches today, month+day)
     birthdays = []
-    if await db.customers.count_documents({"birthday": {"$exists": True}, **biz_scope}):
+    if await db.customers.count_documents({**tenant_scope_filter(business_id), "birthday": {"$exists": True}, **biz_scope}):
         md = now.strftime("--%m-%d")
-        async for c in db.customers.find({"birthday": {"$regex": md}, **biz_scope}, {"_id": 0, "name": 1, "email": 1, "id": 1}):
+        async for c in db.customers.find({**tenant_scope_filter(business_id), "birthday": {"$regex": md}, **biz_scope}, {"_id": 0, "name": 1, "email": 1, "id": 1}):
             birthdays.append(c)
 
     # Pending approvals

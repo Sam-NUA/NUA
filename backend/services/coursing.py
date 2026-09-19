@@ -68,7 +68,7 @@ DEFAULT_COURSING_CONFIG: Dict[str, Any] = {
 }
 
 
-def config_id(location_id: Optional[str] = None) -> str:
+def config_id(location_id: Optional[str] = None, business_id: Optional[str] = None) -> str:
     """Which config document a location uses.
 
     Coursing was a single global singleton while Locations already existed, so
@@ -77,20 +77,24 @@ def config_id(location_id: Optional[str] = None) -> str:
     inherits the venue-wide config, so nothing changes for single-site venues
     and a new site starts consistent with the group.
     """
-    return CONFIG_ID if not location_id else f"loc:{location_id}"
+    from middleware.actor_context import get_actor_context
+    biz = business_id or get_actor_context().get("businessId")
+    if not biz:
+        raise ValueError("Business context required for coursing configuration")
+    return f"{biz}:{CONFIG_ID if not location_id else 'loc:' + location_id}"
 
 
-async def get_config(location_id: Optional[str] = None) -> Dict[str, Any]:
+async def get_config(location_id: Optional[str] = None, business_id: Optional[str] = None) -> Dict[str, Any]:
     merged = dict(DEFAULT_COURSING_CONFIG)
 
-    base = await db.coursing_config.find_one({"_id": CONFIG_ID}, {"_id": 0})
+    base = await db.coursing_config.find_one({"_id": config_id(business_id=business_id)}, {"_id": 0})
     if not base:
         base = dict(DEFAULT_COURSING_CONFIG)
-        await db.coursing_config.insert_one({"_id": CONFIG_ID, **base})
+        await db.coursing_config.insert_one({"_id": config_id(business_id=business_id), **base})
     merged.update(base)
 
     if location_id:
-        override = await db.coursing_config.find_one({"_id": config_id(location_id)}, {"_id": 0})
+        override = await db.coursing_config.find_one({"_id": config_id(location_id, business_id)}, {"_id": 0})
         if override:
             merged.update(override)
             merged["locationId"] = location_id

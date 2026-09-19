@@ -33,9 +33,9 @@ router = APIRouter()
 
 
 def _table_tenant_filter(business_id: Optional[str]) -> dict:
-    if not business_id:
-        return {}
-    return {"$or": [{"businessId": business_id}, {"businessId": None}, {"businessId": {"$exists": False}}]}
+    from middleware.actor_context import tenant_scope_filter
+    return tenant_scope_filter(business_id or "")
+
 
 
 @router.get("/table/{table_id}/menu")
@@ -143,7 +143,7 @@ async def place_table_order(table_id: str, data: dict, business: Optional[str] =
     # never be coursed — the items arrived with no course at all.
     try:
         from services import coursing as _coursing
-        _cfg = await _coursing.get_config()
+        _cfg = await _coursing.get_config(business_id=business_id)
         order_doc["items"] = [{**i, "round": 1}
                               for i in _coursing.assign_courses(order_doc["items"], _cfg)]
         order_doc["courses"] = _coursing.initial_course_states(

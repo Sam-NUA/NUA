@@ -168,7 +168,7 @@ async def list_journals(
 
 @router.get("/journals/{jid}")
 async def get_journal(jid: str, user: dict = Depends(get_user)):
-    doc = await db.journal_entries.find_one({"id": jid}, {"_id": 0})
+    doc = await db.journal_entries.find_one({"$and": [{"id": jid}, tenant_scope_filter(user.get("businessId"))]}, {"_id": 0})
     if doc is None or not tenant_owns_strict(doc.get("businessId"), user.get("businessId")):
         raise HTTPException(404, "Journal entry not found")
     return doc
@@ -342,7 +342,7 @@ async def create_bill(body: dict, user: dict = Depends(require_owner_or_manager)
 @router.post("/bills/{bid}/pay")
 async def pay_bill(bid: str, body: dict, user: dict = Depends(require_owner_or_manager)):
     business_id = user.get("businessId")
-    bill = await db.bills.find_one({"id": bid}, {"_id": 0})
+    bill = await db.bills.find_one({"$and": [{"id": bid}, tenant_scope_filter(business_id)]}, {"_id": 0})
     if bill is None or not tenant_owns_strict(bill.get("businessId"), business_id):
         raise HTTPException(404, "Bill not found")
     amount = float(body.get("amount") or 0)
@@ -371,14 +371,14 @@ async def pay_bill(bid: str, body: dict, user: dict = Depends(require_owner_or_m
 
     new_paid = float(bill.get("paidAmount") or 0) + amount
     new_status = "paid" if new_paid + 0.01 >= float(bill["total"]) else "partial"
-    await db.bills.update_one({"id": bid}, {"$set": {"paidAmount": round(new_paid, 2), "status": new_status}})
+    await db.bills.update_one({"$and": [{"id": bid}, tenant_scope_filter(business_id)]}, {"$set": {"paidAmount": round(new_paid, 2), "status": new_status}})
     return {"payment": payment, "newStatus": new_status, "paidAmount": round(new_paid, 2)}
 
 
 @router.delete("/bills/{bid}")
 async def delete_bill(bid: str, user: dict = Depends(require_owner_or_manager)):
     business_id = user.get("businessId")
-    bill = await db.bills.find_one({"id": bid}, {"_id": 0})
+    bill = await db.bills.find_one({"$and": [{"id": bid}, tenant_scope_filter(business_id)]}, {"_id": 0})
     if bill is None or not tenant_owns_strict(bill.get("businessId"), business_id):
         raise HTTPException(404, "Bill not found")
     if bill.get("paidAmount", 0) > 0:
@@ -388,7 +388,7 @@ async def delete_bill(bid: str, user: dict = Depends(require_owner_or_manager)):
             await svc.reverse_entry(bill["journalEntryId"], memo="Bill deleted", business_id=business_id)
         except ValueError:
             pass
-    await db.bills.delete_one({"id": bid})
+    await db.bills.delete_one({"$and": [{"id": bid}, tenant_scope_filter(business_id)]})
     return {"deleted": True}
 
 
@@ -424,7 +424,7 @@ async def create_invoice(body: dict, user: dict = Depends(require_owner_or_manag
 @router.post("/invoices/{iid}/receive")
 async def receive_invoice(iid: str, body: dict, user: dict = Depends(require_owner_or_manager)):
     business_id = user.get("businessId")
-    inv = await db.ar_invoices.find_one({"id": iid}, {"_id": 0})
+    inv = await db.ar_invoices.find_one({"$and": [{"id": iid}, tenant_scope_filter(business_id)]}, {"_id": 0})
     if inv is None or not tenant_owns_strict(inv.get("businessId"), business_id):
         raise HTTPException(404, "Invoice not found")
     amount = float(body.get("amount") or 0)
@@ -451,14 +451,14 @@ async def receive_invoice(iid: str, body: dict, user: dict = Depends(require_own
     await db.ar_receipts.insert_one(dict(receipt))
     new_paid = float(inv.get("paidAmount") or 0) + amount
     new_status = "paid" if new_paid + 0.01 >= float(inv["total"]) else "partial"
-    await db.ar_invoices.update_one({"id": iid}, {"$set": {"paidAmount": round(new_paid, 2), "status": new_status}})
+    await db.ar_invoices.update_one({"$and": [{"id": iid}, tenant_scope_filter(business_id)]}, {"$set": {"paidAmount": round(new_paid, 2), "status": new_status}})
     return {"receipt": receipt, "newStatus": new_status, "paidAmount": round(new_paid, 2)}
 
 
 @router.delete("/invoices/{iid}")
 async def delete_invoice(iid: str, user: dict = Depends(require_owner_or_manager)):
     business_id = user.get("businessId")
-    inv = await db.ar_invoices.find_one({"id": iid}, {"_id": 0})
+    inv = await db.ar_invoices.find_one({"$and": [{"id": iid}, tenant_scope_filter(business_id)]}, {"_id": 0})
     if inv is None or not tenant_owns_strict(inv.get("businessId"), business_id):
         raise HTTPException(404, "Invoice not found")
     if inv.get("paidAmount", 0) > 0:
@@ -468,7 +468,7 @@ async def delete_invoice(iid: str, user: dict = Depends(require_owner_or_manager
             await svc.reverse_entry(inv["journalEntryId"], memo="Invoice deleted", business_id=business_id)
         except ValueError:
             pass
-    await db.ar_invoices.delete_one({"id": iid})
+    await db.ar_invoices.delete_one({"$and": [{"id": iid}, tenant_scope_filter(business_id)]})
     return {"deleted": True}
 
 
@@ -587,7 +587,7 @@ async def create_deposit(body: dict, user: dict = Depends(require_owner_or_manag
 @router.post("/deposits/{did}/apply")
 async def apply_deposit(did: str, body: dict, user: dict = Depends(require_owner_or_manager)):
     business_id = user.get("businessId")
-    dep = await db.customer_deposits.find_one({"id": did}, {"_id": 0})
+    dep = await db.customer_deposits.find_one({"$and": [{"id": did}, tenant_scope_filter(business_id)]}, {"_id": 0})
     if dep is None or not tenant_owns_strict(dep.get("businessId"), business_id):
         raise HTTPException(404, "Deposit not found")
     if dep.get("status") != "held":
@@ -600,7 +600,7 @@ async def apply_deposit(did: str, body: dict, user: dict = Depends(require_owner
     except ValueError as e:
         raise HTTPException(400, str(e))
     await db.customer_deposits.update_one(
-        {"id": did}, {"$set": {"status": "applied", "appliedTransactionId": txn_id,
+        {"$and": [{"id": did}, tenant_scope_filter(business_id)]}, {"$set": {"status": "applied", "appliedTransactionId": txn_id,
                                 "appliedJournalEntryId": je["id"] if je else None}}
     )
     return {"applied": True, "journalEntryId": je["id"] if je else None}
@@ -609,7 +609,7 @@ async def apply_deposit(did: str, body: dict, user: dict = Depends(require_owner
 @router.post("/deposits/{did}/refund")
 async def refund_deposit(did: str, user: dict = Depends(require_owner_or_manager)):
     business_id = user.get("businessId")
-    dep = await db.customer_deposits.find_one({"id": did}, {"_id": 0})
+    dep = await db.customer_deposits.find_one({"$and": [{"id": did}, tenant_scope_filter(business_id)]}, {"_id": 0})
     if dep is None or not tenant_owns_strict(dep.get("businessId"), business_id):
         raise HTTPException(404, "Deposit not found")
     if dep.get("status") != "held":
@@ -619,7 +619,7 @@ async def refund_deposit(did: str, user: dict = Depends(require_owner_or_manager
     except ValueError as e:
         raise HTTPException(400, str(e))
     await db.customer_deposits.update_one(
-        {"id": did}, {"$set": {"status": "refunded",
+        {"$and": [{"id": did}, tenant_scope_filter(business_id)]}, {"$set": {"status": "refunded",
                                 "refundedJournalEntryId": je["id"] if je else None}}
     )
     return {"refunded": True, "journalEntryId": je["id"] if je else None}
@@ -689,14 +689,14 @@ async def bank_import(body: dict, user: dict = Depends(require_owner_or_manager)
 @router.post("/bank/{line_id}/match/{journal_id}")
 async def bank_match(line_id: str, journal_id: str, user: dict = Depends(require_owner_or_manager)):
     business_id = user.get("businessId")
-    line = await db.bank_statement_lines.find_one({"id": line_id}, {"_id": 0})
+    line = await db.bank_statement_lines.find_one({"$and": [{"id": line_id}, tenant_scope_filter(business_id)]}, {"_id": 0})
     if line is None or not tenant_owns_strict(line.get("businessId"), business_id):
         raise HTTPException(404, "Statement line not found")
-    je = await db.journal_entries.find_one({"id": journal_id}, {"_id": 0})
+    je = await db.journal_entries.find_one({"$and": [{"id": journal_id}, tenant_scope_filter(business_id)]}, {"_id": 0})
     if je is None or not tenant_owns_strict(je.get("businessId"), business_id):
         raise HTTPException(404, "Journal not found")
     await db.bank_statement_lines.update_one(
-        {"id": line_id},
+        {"$and": [{"id": line_id}, tenant_scope_filter(business_id)]},
         {"$set": {"matchedJournalLineId": journal_id, "matchedAt": datetime.now(timezone.utc).isoformat()}},
     )
     return {"matched": True}
@@ -704,10 +704,10 @@ async def bank_match(line_id: str, journal_id: str, user: dict = Depends(require
 
 @router.post("/bank/{line_id}/ignore")
 async def bank_ignore(line_id: str, user: dict = Depends(require_owner_or_manager)):
-    guard = await db.bank_statement_lines.find_one({"id": line_id}, {"_id": 0, "id": 1, "businessId": 1})
+    guard = await db.bank_statement_lines.find_one({"$and": [{"id": line_id}, tenant_scope_filter(user.get("businessId"))]}, {"_id": 0, "id": 1, "businessId": 1})
     if guard is None or not tenant_owns_strict(guard.get("businessId"), user.get("businessId")):
         raise HTTPException(404, "Statement line not found")
-    r = await db.bank_statement_lines.update_one({"id": line_id}, {"$set": {"ignored": True}})
+    r = await db.bank_statement_lines.update_one({"$and": [{"id": line_id}, tenant_scope_filter(user.get("businessId"))]}, {"$set": {"ignored": True}})
     if r.matched_count == 0:
         raise HTTPException(404, "Statement line not found")
     return {"ignored": True}
@@ -732,7 +732,7 @@ async def create_budget(body: dict, user: dict = Depends(require_owner_or_manage
 @router.put("/budgets/{bid}")
 async def update_budget(bid: str, body: dict, user: dict = Depends(require_owner_or_manager)):
     business_id = user.get("businessId")
-    existing = await db.budgets.find_one({"id": bid}, {"_id": 0})
+    existing = await db.budgets.find_one({"$and": [{"id": bid}, tenant_scope_filter(business_id)]}, {"_id": 0})
     if existing is None or not tenant_owns_strict(existing.get("businessId"), business_id):
         raise HTTPException(404, "Budget not found")
     updated = Budget(**{**existing, **body, "id": bid, "businessId": business_id}).dict()
@@ -742,10 +742,10 @@ async def update_budget(bid: str, body: dict, user: dict = Depends(require_owner
 
 @router.delete("/budgets/{bid}")
 async def delete_budget(bid: str, user: dict = Depends(require_owner_or_manager)):
-    guard = await db.budgets.find_one({"id": bid}, {"_id": 0, "id": 1, "businessId": 1})
+    guard = await db.budgets.find_one({"$and": [{"id": bid}, tenant_scope_filter(user.get("businessId"))]}, {"_id": 0, "id": 1, "businessId": 1})
     if guard is None or not tenant_owns_strict(guard.get("businessId"), user.get("businessId")):
         raise HTTPException(404, "Budget not found")
-    result = await db.budgets.delete_one({"id": bid})
+    result = await db.budgets.delete_one({"$and": [{"id": bid}, tenant_scope_filter(user.get("businessId"))]})
     if result.deleted_count == 0:
         raise HTTPException(404, "Budget not found")
     return {"deleted": True}

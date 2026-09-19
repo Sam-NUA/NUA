@@ -626,7 +626,7 @@ async def startup():
     # Seed alcohol catalog + measured stock (idempotent)
     try:
         from services.alcohol_seeder import seed_alcohol_catalog
-        r = await seed_alcohol_catalog()
+        r = await seed_alcohol_catalog(business_id="default")
         if r.get("categoriesInserted") or r.get("productsInserted"):
             logger.info("Alcohol catalog seeded: +%s categories, +%s products, +%s stock-units",
                           r["categoriesInserted"], r["productsInserted"], r["stockUnitsInserted"])

@@ -137,7 +137,7 @@ async def list_states(user: dict = Depends(get_user)):
     vip_ids = set()
     if customer_ids:
         vip_customers = await db.customers.find(
-            {"id": {"$in": customer_ids}, "isVip": True}, {"_id": 0, "id": 1}
+            {**tenant_scope_filter(user.get("businessId")), "id": {"$in": customer_ids}, "isVip": True}, {"_id": 0, "id": 1}
         ).to_list(len(customer_ids))
         vip_ids = {c["id"] for c in vip_customers}
 
@@ -288,11 +288,11 @@ async def list_notifications(serverId: Optional[str] = None, unreadOnly: bool = 
 
 @router.post("/table-courses/notifications/{notif_id}/read")
 async def mark_notif_read(notif_id: str, user: dict = Depends(get_user)):
-    existing = await db.dock_notifications.find_one({"id": notif_id}, {"_id": 0, "businessId": 1})
+    existing = await db.dock_notifications.find_one({"$and": [{"id": notif_id}, tenant_scope_filter(user.get("businessId"))]}, {"_id": 0, "businessId": 1})
     if not existing or not tenant_owns_strict(existing.get("businessId"), user.get("businessId")):
         raise HTTPException(404, "Notification not found")
     r = await db.dock_notifications.update_one(
-        {"id": notif_id},
+        {"$and": [{"id": notif_id}, tenant_scope_filter(user.get("businessId"))]},
         {"$set": {"read": True, "readAt": _now(), "readBy": user.get("email")}},
     )
     if r.matched_count == 0:

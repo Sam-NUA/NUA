@@ -413,8 +413,8 @@ def test_a_returning_guests_second_split_payment_matches_their_existing_customer
     phone = "+61412388888"
     _run(db.customers.delete_many({"phone": phone}))
     try:
-        first = _run(find_or_create_customer_by_phone(phone))
-        second = _run(find_or_create_customer_by_phone(phone))
+        first = _run(find_or_create_customer_by_phone(phone, business_id="default"))
+        second = _run(find_or_create_customer_by_phone(phone, business_id="default"))
         assert first["id"] == second["id"]
         assert _run(db.customers.count_documents({"phone": phone})) == 1
     finally:
@@ -738,7 +738,7 @@ def test_get_split_rejects_a_missing_or_unresolvable_business(client):
         r = req(client, "GET", "/api/table/T-NOBIZ/split")
         assert r.status_code == 400, r.text
         r = req(client, "GET", "/api/table/T-NOBIZ/split?business=does-not-exist")
-        assert r.status_code == 400, r.text
+        assert r.status_code == 404, r.text
     finally:
         _cleanup_table("T-NOBIZ")
 

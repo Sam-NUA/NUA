@@ -196,10 +196,10 @@ async def uninstall_award(code: str, user: dict = Depends(require_owner_or_manag
     from some other business — safe to quarantine with an exact match
     rather than delete on a fail-open guess."""
     biz = user.get("businessId")
-    existing = await db.awards.find_one({"code": code}, {"_id": 0, "businessId": 1})
+    existing = await db.awards.find_one({"$and": [{"code": code}, tenant_scope_filter(biz)]}, {"_id": 0, "businessId": 1})
     if not existing or not tenant_owns_strict(existing.get("businessId"), biz):
         raise HTTPException(status_code=404, detail="Not installed")
-    res = await db.awards.delete_one({"code": code})
+    res = await db.awards.delete_one({"$and": [{"code": code}, tenant_scope_filter(biz)]})
     if res.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Not installed")
     return {"deleted": True}

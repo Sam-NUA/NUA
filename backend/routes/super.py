@@ -187,7 +187,7 @@ async def mark_paid(run_id: str, data: dict, user: dict = Depends(get_user)):
     """Owner marks a committed run as paid to the clearing house / super fund."""
     if user["role"] != "owner":
         raise HTTPException(403, "Owner only")
-    guard = await db.super_weekly_runs.find_one({"id": run_id}, {"_id": 0, "id": 1, "businessId": 1})
+    guard = await db.super_weekly_runs.find_one({"$and": [{"id": run_id}, tenant_scope_filter(user.get("businessId"))]}, {"_id": 0, "id": 1, "businessId": 1})
     if guard is None or not tenant_owns_strict(guard.get("businessId"), user.get("businessId")):
         raise HTTPException(404, "Super run not found")
     allowed = {"status", "paidAt", "clearingHouseRef", "note"}
@@ -197,10 +197,10 @@ async def mark_paid(run_id: str, data: dict, user: dict = Depends(get_user)):
     if "status" in update and update["status"] not in ("unpaid", "paid", "reversed"):
         raise HTTPException(400, "status must be unpaid | paid | reversed")
     update["updatedAt"] = datetime.now(timezone.utc).isoformat()
-    r = await db.super_weekly_runs.update_one({"id": run_id}, {"$set": update})
+    r = await db.super_weekly_runs.update_one({"$and": [{"id": run_id}, tenant_scope_filter(user.get("businessId"))]}, {"$set": update})
     if r.matched_count == 0:
         raise HTTPException(404, "Super run not found")
-    return await db.super_weekly_runs.find_one({"id": run_id}, {"_id": 0})
+    return await db.super_weekly_runs.find_one({"$and": [{"id": run_id}, tenant_scope_filter(user.get("businessId"))]}, {"_id": 0})
 
 
 @router.get("/super/bas-line")

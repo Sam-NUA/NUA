@@ -17,6 +17,7 @@ class FeedbackCreate(BaseModel):
 
 
 class Feedback(BaseModel):
+    businessId: Optional[str] = None
     id: str = ""
     customerId: Optional[str] = None
     reservationId: Optional[str] = None

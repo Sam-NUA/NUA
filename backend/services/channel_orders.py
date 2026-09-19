@@ -86,6 +86,8 @@ async def create_ticket(items: List[dict], *, order_type: str,
     if business_id is None:
         business_id = get_actor_context().get("businessId")
 
+    if not business_id:
+        raise ValueError("Business ownership required for a kitchen ticket")
     items = [i for i in (items or []) if i]
     if not items:
         return None
@@ -99,7 +101,7 @@ async def create_ticket(items: List[dict], *, order_type: str,
     from services import coursing, print_routing
 
     items = await _enrich_categories(items, business_id)
-    config = await coursing.get_config()
+    config = await coursing.get_config(business_id=business_id)
     ot = str(order_type or "takeaway").replace("-", "_")
     straight = (coursing.is_straight_fire(ot, config, False)
                 if straight_fire is None else bool(straight_fire))

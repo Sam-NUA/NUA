@@ -239,6 +239,8 @@ def test_a_different_idempotency_key_executes_again(client, owner_headers):
 # Rollback for the highest-blast-radius tools
 # ─────────────────────────────────────────────────────────────────────────
 def test_wallet_credit_rollback_reverses_the_credit(client, owner_headers):
+    from middleware.actor_context import _actor_ctx
+    token = _actor_ctx.set({"businessId": "default", "email": "owner@nua.com"})
     created = req(client, "POST", "/api/customers", headers=owner_headers, json={
         "name": "Wallet Rollback Customer", "email": "wallet.rollback@example.com", "phone": "0400000013"})
     customer_id = created.json()["id"]
@@ -262,6 +264,7 @@ def test_wallet_credit_rollback_reverses_the_credit(client, owner_headers):
         ledger = _run(db.wallet_ledger.find({"customerId": customer_id}, {"_id": 0}).to_list(10))
         assert any(e["type"] == "credit_reversal" and e["amount"] == -100 for e in ledger)
     finally:
+        _actor_ctx.reset(token)
         _run(db.ash_tool_config.delete_one({"toolName": "add_wallet_credit"}))
 
 

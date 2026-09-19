@@ -12,9 +12,11 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+from typing import Any, cast
 from datetime import datetime, timezone
 from database import db
 from services import nua_intelligence
+from middleware.actor_context import tenant_scope_filter, get_actor_context, _actor_ctx
 
 logger = logging.getLogger(__name__)
 
@@ -39,7 +41,10 @@ async def _send_digest_notification(subject: str, body: str) -> None:
     """Best-effort dispatch. Uses utils.notifications if configured, else logs."""
     try:
         from utils.notifications import send_email
-        recipient = os.environ.get("ASH_DIGEST_EMAIL") or "owner@nua.com"
+        owner = await cast(Any, db.auth_users).find_one({"role": "owner", "status": "active", **tenant_scope_filter()}, {"email": 1})
+        recipient = (owner or {}).get("email")
+        if not recipient:
+            return
         await send_email(recipient, subject, body)
         logger.info(f"[ash] daily digest emailed to {recipient}")
     except Exception as e:
@@ -51,7 +56,7 @@ async def _maybe_send_daily_digest(*, force: bool = False) -> None:
     if not force and now.hour < _digest_hour():
         return
     today_key = now.date().isoformat()
-    existing = await db.ash_digests.find_one({"date": today_key}, {"_id": 0})
+    existing = await db.ash_digests.find_one({"date": today_key, **tenant_scope_filter()}, {"_id": 0})
     if existing and not force:
         return
     weekly = await nua_intelligence.generate_weekly_summary()
@@ -59,13 +64,13 @@ async def _maybe_send_daily_digest(*, force: bool = False) -> None:
         return
     # Persist as insight so it appears on the dashboard too
     await db.ash_insights.update_one(
-        {"category": weekly["category"], "key": weekly["key"]},
+        {"category": weekly["category"], "key": weekly["key"], **tenant_scope_filter()},
         {"$set": weekly, "$setOnInsert": {"firstSeenAt": weekly["createdAt"]}},
         upsert=True,
     )
     # Pull the top 5 open high/warning insights to include in the digest body
     top = await db.ash_insights.find(
-        {"resolvedAt": None, "severity": {"$in": ["high", "warning"]}},
+        {**tenant_scope_filter(), "resolvedAt": None, "severity": {"$in": ["high", "warning"]}},
         {"_id": 0},
     ).sort("createdAt", -1).limit(5).to_list(5)
     lines = [weekly["body"], ""]
@@ -75,7 +80,7 @@ async def _maybe_send_daily_digest(*, force: bool = False) -> None:
             lines.append(f"  • [{t['severity']}] {t['title']}")
     body = "\n".join(lines)
     await _send_digest_notification("Ash — Daily Digest", body)
-    await db.ash_digests.insert_one({"date": today_key, "sentAt": now.isoformat(), "summary": weekly, "topInsights": top})
+    await db.ash_digests.insert_one({"businessId": get_actor_context().get("businessId"), "date": today_key, "sentAt": now.isoformat(), "summary": weekly, "topInsights": top})
 
 
 async def _loop() -> None:
@@ -85,25 +90,37 @@ async def _loop() -> None:
     await asyncio.sleep(15)
     while True:
         try:
-            result = await nua_intelligence.run_all_insights(include_summary=False)
-            logger.info(f"[ash] hourly scan generated={result['generated']} categories={list(result['perCategory'].keys())}")
-            await _maybe_send_daily_digest()
-        except Exception as e:
-            logger.warning(f"[ash] scheduler loop error: {e}")
-        try:
-            from services import predictive_signals
-            pred = await predictive_signals.scan_and_emit_predicted_stockouts()
-            if pred["emitted"]:
-                logger.info(f"[ash] predictive scan emitted {pred['emitted']} stockout warning(s)")
-        except Exception as e:
-            logger.warning(f"[ash] predictive scan error: {e}")
-        try:
-            from services import ops_signals
-            ops = await ops_signals.scan_and_emit()
-            if ops["server"]["emitted"] or ops["client"]["emitted"]:
-                logger.info(f"[ash] ops scan: server_emitted={ops['server']['emitted']} client_emitted={ops['client']['emitted']}")
-        except Exception as e:
-            logger.warning(f"[ash] ops scan error: {e}")
+            businesses = await db.businesses.find({"status": {"$ne": "inactive"}}, {"id": 1}).to_list(10000)
+        except Exception:
+            logger.exception("[ash] cannot load businesses for scheduled work")
+            businesses = []
+        for business in businesses:
+            if not business.get("id"):
+                continue
+            token = _actor_ctx.set({"businessId": business["id"], "email": "system"})
+            try:
+                try:
+                    result = await nua_intelligence.run_all_insights(include_summary=False)
+                    logger.info(f"[ash] hourly scan generated={result['generated']} categories={list(result['perCategory'].keys())}")
+                    await _maybe_send_daily_digest()
+                except Exception as e:
+                    logger.warning(f"[ash] scheduler loop error: {e}")
+                try:
+                    from services import predictive_signals
+                    pred = await predictive_signals.scan_and_emit_predicted_stockouts()
+                    if pred["emitted"]:
+                        logger.info(f"[ash] predictive scan emitted {pred['emitted']} stockout warning(s)")
+                except Exception as e:
+                    logger.warning(f"[ash] predictive scan error: {e}")
+                try:
+                    from services import ops_signals
+                    ops = await ops_signals.scan_and_emit()
+                    if ops["server"]["emitted"] or ops["client"]["emitted"]:
+                        logger.info(f"[ash] ops scan: server_emitted={ops['server']['emitted']} client_emitted={ops['client']['emitted']}")
+                except Exception as e:
+                    logger.warning(f"[ash] ops scan error: {e}")
+            finally:
+                _actor_ctx.reset(token)
         try:
             await asyncio.sleep(interval)
         except asyncio.CancelledError:
@@ -133,7 +150,7 @@ def is_running() -> bool:
 
 async def digest_status() -> dict:
     """For the UI: last digest sent + next scheduled time."""
-    latest = await db.ash_digests.find_one({}, {"_id": 0}, sort=[("date", -1)])
+    latest = await cast(Any, db.ash_digests).find_one(tenant_scope_filter(), {"_id": 0}, sort=[("date", -1)])
     now = datetime.now(timezone.utc)
     return {
         "enabled": os.environ.get("ASH_HOURLY_ENABLED", "true").lower() == "true",
@@ -147,7 +164,7 @@ async def digest_status() -> dict:
 async def force_digest_now() -> dict:
     """Manual trigger — regenerates + sends today's digest even if already sent or before digest hour."""
     today_key = datetime.now(timezone.utc).date().isoformat()
-    await db.ash_digests.delete_one({"date": today_key})
+    await db.ash_digests.delete_one({"date": today_key, **tenant_scope_filter()})
     await _maybe_send_daily_digest(force=True)
-    latest = await db.ash_digests.find_one({"date": today_key}, {"_id": 0})
+    latest = await cast(Any, db.ash_digests).find_one({"date": today_key, **tenant_scope_filter()}, {"_id": 0})
     return latest or {"sent": False, "reason": "generator returned no summary"}

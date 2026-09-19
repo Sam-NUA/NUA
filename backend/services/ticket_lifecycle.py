@@ -243,12 +243,8 @@ async def void_items(order_id: str, voids: List[dict], actor: Optional[str] = No
     Returns the items actually removed, so the caller can print a void docket
     for the stations that were cooking them.
     """
-    # NOT tenant_owns_strict — same reasoning as routes/coursing.py's own
-    # comment: table_ordering.py's optional ?business= is a documented,
-    # accepted deferral, not fixed this pass, so a live guest QR order can
-    # still land here with no businessId.
     from middleware.actor_context import tenant_owns
-    order = await db.kitchen_orders.find_one({"id": order_id}, {"_id": 0})
+    order = await db.kitchen_orders.find_one({"$and": [{"id": order_id}, tenant_scope_filter(_biz(business_id))]}, {"_id": 0})
     if not order or not tenant_owns(order.get("businessId"), _biz(business_id)):
         return {"ok": False, "removed": [], "reason": "not found"}
 
@@ -294,7 +290,7 @@ async def void_items(order_id: str, voids: List[dict], actor: Optional[str] = No
     voids_log.append({"at": _now(), "by": actor, "items": removed})
 
     updated = await db.kitchen_orders.find_one_and_update(
-        {"id": order_id},
+        {"$and": [{"id": order_id}, tenant_scope_filter(_biz(business_id))]},
         {"$set": {"items": kept, "courses": courses, "voids": voids_log}},
         return_document=True,
     )

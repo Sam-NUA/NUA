@@ -236,7 +236,7 @@ async def parse_invoice(data: dict, user: dict = Depends(require_owner_or_manage
 async def apply_invoice(invoice_id: str, data: dict, user: dict = Depends(require_owner_or_manager)):
     """Apply selected price/cost updates from a parsed invoice. `selections` is
     a list of `{matchedProductId, applyPrice (bool), applyCost (bool), priceOverride}`."""
-    inv = await db.invoices.find_one({"id": invoice_id}, {"_id": 0})
+    inv = await db.invoices.find_one({"$and": [{"id": invoice_id}, tenant_scope_filter(user.get("businessId"))]}, {"_id": 0})
     if not inv or not tenant_owns_strict(inv.get("businessId"), user.get("businessId")):
         raise HTTPException(status_code=404, detail="Invoice not found")
     selections = {s.get("matchedProductId"): s for s in (data.get("selections") or []) if s.get("matchedProductId")}
@@ -257,11 +257,11 @@ async def apply_invoice(invoice_id: str, data: dict, user: dict = Depends(requir
         # this business's own catalogue, but re-checking ownership here means
         # a crafted request can't reprice another business's product even if
         # it somehow got a matchedProductId that isn't really this business's.
-        product = await db.products.find_one({"id": pid}, {"_id": 0, "id": 1, "businessId": 1})
+        product = await db.products.find_one({"$and": [{"id": pid}, tenant_scope_filter(user.get("businessId"))]}, {"_id": 0, "id": 1, "businessId": 1})
         if product is None or not tenant_owns_strict(product.get("businessId"), user.get("businessId")):
             continue
         upd["updatedAt"] = datetime.utcnow().isoformat()
-        await db.products.update_one({"id": pid}, {"$set": upd})
+        await db.products.update_one({"$and": [{"id": pid}, tenant_scope_filter(user.get("businessId"))]}, {"$set": upd})
         audit.append({
             "productId": pid, "name": m.get("matchedProductName"),
             "from": {"price": m.get("currentPrice"), "cost": m.get("currentCost")},
@@ -269,7 +269,7 @@ async def apply_invoice(invoice_id: str, data: dict, user: dict = Depends(requir
         })
         updated += 1
     await db.invoices.update_one(
-        {"id": invoice_id},
+        {"$and": [{"id": invoice_id}, tenant_scope_filter(user.get("businessId"))]},
         {"$set": {"applied": True, "appliedAt": datetime.utcnow().isoformat(),
                   "appliedBy": user["id"], "audit": audit, "updatedCount": updated}},
     )

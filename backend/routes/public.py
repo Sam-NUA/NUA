@@ -10,20 +10,9 @@ router = APIRouter()
 
 
 def _public_tenant_filter(business_id: Optional[str]) -> dict:
-    """Same shape as middleware.actor_context.tenant_scope_filter (match
-    this business's own documents, plus any untagged legacy ones), but
-    deliberately does NOT fall back to the actor context when business_id
-    is falsy — every route in this file is genuinely anonymous, and
-    ActorContextMiddleware populates that context from X-Tenant-Id/
-    X-Business-Id headers for exactly the no-JWT-caller case these routes
-    are in. Falling back to it here would let an anonymous caller steer
-    which business's private data a "no ?business= given" request reads by
-    setting that header — a strictly worse primitive than the pre-existing
-    always-unscoped behavior it would replace, not a fix to it. A missing
-    or unresolved business always means fully unscoped ({}), full stop."""
-    if not business_id:
-        return {}
-    return {"$or": [{"businessId": business_id}, {"businessId": None}, {"businessId": {"$exists": False}}]}
+    from middleware.actor_context import tenant_scope_filter
+    return tenant_scope_filter(business_id or "")
+
 
 
 # ============ PUBLIC BOOKING PORTAL API ============

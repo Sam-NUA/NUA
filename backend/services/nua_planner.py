@@ -30,6 +30,7 @@ import logging
 import os
 import uuid
 import re
+from middleware.actor_context import tenant_scope_filter
 
 logger = logging.getLogger(__name__)
 
@@ -221,7 +222,7 @@ Propose the plan now (JSON only)."""
 
 async def _execute_step(plan_id: str, idx: int, *, actor: str) -> Dict[str, Any]:
     """Run one step through the tool permission gate."""
-    plan = await db.ash_plans.find_one({"id": plan_id}, {"_id": 0})
+    plan = await db.ash_plans.find_one({"$and": [{"id": plan_id}, tenant_scope_filter(get_actor_context().get("businessId"))]}, {"_id": 0})
     if not plan or not tenant_owns_strict(plan.get("businessId"), get_actor_context().get("businessId")):
         return {"error": "plan not found"}
     if idx < 0 or idx >= len(plan["steps"]):
@@ -256,13 +257,13 @@ async def _execute_step(plan_id: str, idx: int, *, actor: str) -> Dict[str, Any]
     else:
         plan["status"] = "executing"
     plan["updatedAt"] = _now()
-    await db.ash_plans.update_one({"id": plan_id}, {"$set": plan})
+    await db.ash_plans.update_one({"$and": [{"id": plan_id}, tenant_scope_filter(get_actor_context().get("businessId"))]}, {"$set": plan})
     return outcome
 
 
 async def approve_plan(plan_id: str, *, actor: str) -> Dict[str, Any]:
     """Walk every pending step. Each may execute directly, enqueue an approval, or be blocked."""
-    plan = await db.ash_plans.find_one({"id": plan_id}, {"_id": 0})
+    plan = await db.ash_plans.find_one({"$and": [{"id": plan_id}, tenant_scope_filter(get_actor_context().get("businessId"))]}, {"_id": 0})
     if not plan or not tenant_owns_strict(plan.get("businessId"), get_actor_context().get("businessId")):
         return {"error": "plan not found"}
     if plan["status"] in ("completed", "rejected"):
@@ -274,7 +275,7 @@ async def approve_plan(plan_id: str, *, actor: str) -> Dict[str, Any]:
             continue
         outcome = await _execute_step(plan_id, idx, actor=actor)
         outcomes.append({"idx": idx, "outcome": outcome})
-    updated = await db.ash_plans.find_one({"id": plan_id}, {"_id": 0})
+    updated = await db.ash_plans.find_one({"$and": [{"id": plan_id}, tenant_scope_filter(get_actor_context().get("businessId"))]}, {"_id": 0})
     try:
         await audit_service.log_event(
             entity_type="ash_plan", entity_id=plan_id,
@@ -289,11 +290,11 @@ async def approve_plan(plan_id: str, *, actor: str) -> Dict[str, Any]:
 
 
 async def reject_plan(plan_id: str, *, actor: str, reason: Optional[str] = None) -> Dict[str, Any]:
-    existing = await db.ash_plans.find_one({"id": plan_id}, {"_id": 0, "id": 1, "businessId": 1})
+    existing = await db.ash_plans.find_one({"$and": [{"id": plan_id}, tenant_scope_filter(get_actor_context().get("businessId"))]}, {"_id": 0, "id": 1, "businessId": 1})
     if existing is None or not tenant_owns_strict(existing.get("businessId"), get_actor_context().get("businessId")):
         return {"error": "plan not found"}
     r = await db.ash_plans.update_one(
-        {"id": plan_id},
+        {"$and": [{"id": plan_id}, tenant_scope_filter(get_actor_context().get("businessId"))]},
         {"$set": {"status": "rejected", "rejectedBy": actor,
                     "rejectedAt": _now(), "rejectionReason": reason}},
     )
@@ -309,7 +310,7 @@ async def reject_plan(plan_id: str, *, actor: str, reason: Optional[str] = None)
         )
     except Exception:
         pass
-    return await db.ash_plans.find_one({"id": plan_id}, {"_id": 0})
+    return await db.ash_plans.find_one({"$and": [{"id": plan_id}, tenant_scope_filter(get_actor_context().get("businessId"))]}, {"_id": 0})
 
 
 async def approve_step(plan_id: str, idx: int, *, actor: str) -> Dict[str, Any]:
@@ -317,7 +318,7 @@ async def approve_step(plan_id: str, idx: int, *, actor: str) -> Dict[str, Any]:
 
 
 async def reject_step(plan_id: str, idx: int, *, actor: str, reason: Optional[str] = None) -> Dict[str, Any]:
-    plan = await db.ash_plans.find_one({"id": plan_id}, {"_id": 0})
+    plan = await db.ash_plans.find_one({"$and": [{"id": plan_id}, tenant_scope_filter(get_actor_context().get("businessId"))]}, {"_id": 0})
     if not plan or not tenant_owns_strict(plan.get("businessId"), get_actor_context().get("businessId")):
         return {"error": "plan not found"}
     if idx < 0 or idx >= len(plan["steps"]):
@@ -332,7 +333,7 @@ async def reject_step(plan_id: str, idx: int, *, actor: str, reason: Optional[st
     if all(s in ("rejected", "blocked") for s in statuses):
         plan["status"] = "rejected"
     plan["updatedAt"] = _now()
-    await db.ash_plans.update_one({"id": plan_id}, {"$set": plan})
+    await db.ash_plans.update_one({"$and": [{"id": plan_id}, tenant_scope_filter(get_actor_context().get("businessId"))]}, {"$set": plan})
     return plan
 
 
@@ -353,7 +354,7 @@ async def simulate_plan(plan_id: str, *, actor: str) -> Dict[str, Any]:
     • Write steps are DESCRIBED — no db mutation, no approvals enqueued.
     • The LLM writes a projected-outcome narrative.
     """
-    plan = await db.ash_plans.find_one({"id": plan_id}, {"_id": 0})
+    plan = await db.ash_plans.find_one({"$and": [{"id": plan_id}, tenant_scope_filter(get_actor_context().get("businessId"))]}, {"_id": 0})
     if not plan or not tenant_owns_strict(plan.get("businessId"), get_actor_context().get("businessId")):
         return {"error": "plan not found"}
     tool_map = {t.name: t for t in nua_tools.TOOLS.values()}

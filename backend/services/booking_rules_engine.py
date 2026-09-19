@@ -37,19 +37,9 @@ could silently block bookings on a completely different business sharing
 the same deployment, and vice versa: capacity checks pooled every
 business's covers into one ceiling.
 
-`db.settings["booking_rules"]` itself (the config `get_rules()` reads) is
-deliberately left as a global singleton, same as `business_settings`/
-`print_routing` elsewhere — re-keying settings documents by business is a
-separate, larger migration, not attempted here.
-
-The guest-facing caller (`routes/public.py`'s `POST /public/book`) has no
-business signal at all today (no JWT, no `?business=` param) — that's a
-known, separately-documented gap (see `TENANT_ISOLATION_REMAINING_WORK.md`)
-this module can't close on its own. `business_id` simply stays `None` for
-that caller, which resolves to the same "visible/counted for everyone" safe
-default this module already had before this fix — no behavior change for
-the guest path, but the staff-authenticated path (`routes/reservations.py`,
-`routes/phase_ef_wave2.py`) now gets real isolation.
+Booking rules are stored per business. Public callers resolve a real venue
+before enforcing rules; unknown or ambiguous selectors fail closed.
+Legacy unowned settings require evidence-based support resolution.
 """
 from __future__ import annotations
 import asyncio

@@ -47,23 +47,23 @@ async def create_service(data: ServiceCreate, user: dict = Depends(require_owner
 
 @router.put("/services/{service_id}", response_model=Service)
 async def update_service(service_id: str, data: ServiceUpdate, user: dict = Depends(require_owner_or_manager)):
-    existing = await db.services.find_one({"id": service_id}, {"_id": 0, "businessId": 1})
+    existing = await db.services.find_one({"$and": [{"id": service_id}, tenant_scope_filter(user.get("businessId"))]}, {"_id": 0, "businessId": 1})
     if not existing or not tenant_owns_strict(existing.get("businessId"), user.get("businessId")):
         raise HTTPException(status_code=404, detail="Service not found")
     update_data = {k: v for k, v in data.dict().items() if v is not None}
     update_data["updatedAt"] = datetime.utcnow().isoformat()
     result = await db.services.find_one_and_update(
-        {"id": service_id}, {"$set": update_data}, return_document=True,
+        {"$and": [{"id": service_id}, tenant_scope_filter(user.get("businessId"))]}, {"$set": update_data}, return_document=True,
     )
     return Service(**{k: v for k, v in result.items() if k != "_id"})
 
 
 @router.delete("/services/{service_id}")
 async def delete_service(service_id: str, user: dict = Depends(require_owner_or_manager)):
-    existing = await db.services.find_one({"id": service_id}, {"_id": 0, "businessId": 1})
+    existing = await db.services.find_one({"$and": [{"id": service_id}, tenant_scope_filter(user.get("businessId"))]}, {"_id": 0, "businessId": 1})
     if not existing or not tenant_owns_strict(existing.get("businessId"), user.get("businessId")):
         raise HTTPException(status_code=404, detail="Service not found")
-    await db.services.update_one({"id": service_id}, {"$set": {"active": False}})
+    await db.services.update_one({"$and": [{"id": service_id}, tenant_scope_filter(user.get("businessId"))]}, {"$set": {"active": False}})
     return {"message": "Service deactivated", "id": service_id}
 
 
@@ -172,7 +172,7 @@ async def create_appointment(data: AppointmentCreate, user: dict = Depends(get_u
 
 @router.put("/appointments/{appointment_id}", response_model=Appointment)
 async def update_appointment(appointment_id: str, data: AppointmentUpdate, user: dict = Depends(get_user)):
-    existing = await db.appointments.find_one({"id": appointment_id}, {"_id": 0})
+    existing = await db.appointments.find_one({"$and": [{"id": appointment_id}, tenant_scope_filter(user.get("businessId"))]}, {"_id": 0})
     if not existing or not tenant_owns_strict(existing.get("businessId"), user.get("businessId")):
         raise HTTPException(status_code=404, detail="Appointment not found")
 
@@ -205,18 +205,18 @@ async def update_appointment(appointment_id: str, data: AppointmentUpdate, user:
 
     update_data["updatedAt"] = datetime.utcnow().isoformat()
     result = await db.appointments.find_one_and_update(
-        {"id": appointment_id}, {"$set": update_data}, return_document=True,
+        {"$and": [{"id": appointment_id}, tenant_scope_filter(user.get("businessId"))]}, {"$set": update_data}, return_document=True,
     )
     return Appointment(**{k: v for k, v in result.items() if not k.startswith("_") and k != "_id"})
 
 
 async def _set_status(appointment_id: str, status: str, user: dict) -> Appointment:
-    existing = await db.appointments.find_one({"id": appointment_id}, {"_id": 0})
+    existing = await db.appointments.find_one({"$and": [{"id": appointment_id}, tenant_scope_filter(user.get("businessId"))]}, {"_id": 0})
     if not existing or not tenant_owns_strict(existing.get("businessId"), user.get("businessId")):
         raise HTTPException(status_code=404, detail="Appointment not found")
     now_iso = datetime.utcnow().isoformat()
     result = await db.appointments.find_one_and_update(
-        {"id": appointment_id}, {"$set": {"status": status, "updatedAt": now_iso}}, return_document=True,
+        {"$and": [{"id": appointment_id}, tenant_scope_filter(user.get("businessId"))]}, {"$set": {"status": status, "updatedAt": now_iso}}, return_document=True,
     )
     return Appointment(**{k: v for k, v in result.items() if not k.startswith("_") and k != "_id"})
 
@@ -237,17 +237,17 @@ async def no_show_appointment(appointment_id: str, fee: float = 0, user: dict = 
     doesn't charge a card itself (no payment integration here), it records
     what the no-show cost and tallies it against the client's history, the
     way a front-desk ledger would."""
-    existing = await db.appointments.find_one({"id": appointment_id}, {"_id": 0})
+    existing = await db.appointments.find_one({"$and": [{"id": appointment_id}, tenant_scope_filter(user.get("businessId"))]}, {"_id": 0})
     if not existing or not tenant_owns_strict(existing.get("businessId"), user.get("businessId")):
         raise HTTPException(status_code=404, detail="Appointment not found")
     now_iso = datetime.utcnow().isoformat()
     result = await db.appointments.find_one_and_update(
-        {"id": appointment_id},
+        {"$and": [{"id": appointment_id}, tenant_scope_filter(user.get("businessId"))]},
         {"$set": {"status": "no_show", "noShowFee": fee, "updatedAt": now_iso}},
         return_document=True,
     )
     if existing.get("customerId"):
-        await db.customers.update_one({"id": existing["customerId"]}, {"$inc": {"noShowCount": 1}})
+        await db.customers.update_one({**tenant_scope_filter(user.get("businessId")), "id": existing["customerId"]}, {"$inc": {"noShowCount": 1}})
     return Appointment(**{k: v for k, v in result.items() if not k.startswith("_") and k != "_id"})
 
 

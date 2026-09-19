@@ -20,7 +20,7 @@ def _insert_customer(is_vip):
 
     async def run():
         await db.customers.insert_one({
-            "id": cid, "name": "ZZZ Table Course Guest", "email": f"{cid}@example.com",
+            "id": cid, "businessId": "default", "name": "ZZZ Table Course Guest", "email": f"{cid}@example.com",
             "phone": "0400000000", "isVip": is_vip,
         })
     asyncio.get_event_loop().run_until_complete(run())

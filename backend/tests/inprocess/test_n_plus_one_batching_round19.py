@@ -19,9 +19,9 @@ def test_promo_analytics_sums_redemption_revenue_via_batched_lookup(client, owne
     txn_id = str(uuid.uuid4())
     voucher_id = str(uuid.uuid4())
     _run(db.transactions.delete_many({"id": txn_id}))
-    _run(db.transactions.insert_one({"id": txn_id, "total": 42.5, "status": "completed"}))
+    _run(db.transactions.insert_one({"businessId": "default", "id": txn_id, "total": 42.5, "status": "completed"}))
     _run(db.vouchers.delete_many({"id": voucher_id}))
-    _run(db.vouchers.insert_one({
+    _run(db.vouchers.insert_one({"businessId": "default",
         "id": voucher_id, "code": "PROMO-N1-TEST", "sourceType": "promotion",
         "faceValue": 10.0, "status": "redeemed", "redemptionCount": 1,
         "issuedAt": datetime.now(timezone.utc).isoformat(),
@@ -39,7 +39,7 @@ def test_ai_discount_slow_movers_prices_unsold_products_without_a_second_lookup(
 
     product_id = str(uuid.uuid4())
     _run(db.products.delete_many({"id": product_id}))
-    _run(db.products.insert_one({"id": product_id, "name": "Slow Mover Widget", "price": 20.0, "category": "Test", "stock": 5}))
+    _run(db.products.insert_one({"businessId": "default", "id": product_id, "name": "Slow Mover Widget", "price": 20.0, "category": "Test", "stock": 5}))
 
     r = req(client, "POST", "/api/channel-menus/online/ai-discount-slow", headers=owner_headers,
             json={"discountPercent": 10, "bottomN": 50, "daysWindow": 7})

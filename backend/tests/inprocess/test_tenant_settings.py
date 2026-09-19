@@ -58,15 +58,14 @@ def test_get_setting_and_set_setting_are_scoped_per_business():
     assert _run(get_setting(key, biz_b)) == {"value": "B"}
 
 
-def test_get_setting_falls_back_to_legacy_untagged_document():
+def test_get_setting_hides_legacy_untagged_document():
     from services.tenant_settings import get_setting, set_setting
     key = "tsettings_unit_legacy_key"
     biz = "tsettings-unit-legacy-biz"
     _run(db.settings.delete_many({"key": key}))
     _run(db.settings.insert_one({"key": key, "value": {"legacy": True}}))
     try:
-        assert _run(get_setting(key, biz)) == {"legacy": True}, (
-            "a business that never wrote its own copy must fall back to the legacy untagged doc")
+        assert _run(get_setting(key, biz)) is None
         _run(set_setting(key, {"legacy": False, "own": True}, biz))
         assert _run(get_setting(key, biz)) == {"legacy": False, "own": True}
         legacy_still_there = _run(db.settings.find_one({"key": key, "businessId": {"$exists": False}}, {"_id": 0}))

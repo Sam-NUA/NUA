@@ -268,8 +268,8 @@ export function SplitPaymentDialog({
  * phones (pages/SplitBillGuest.jsx) — each guest verifies their own phone
  * and pays only their share, rather than one card at the counter for the
  * whole table. */
-export function SplitBillLinkDialog({ open, onClose, tableNumber }) {
-  const url = `${window.location.origin}/split/${encodeURIComponent(tableNumber || '')}`;
+export function SplitBillLinkDialog({ open, onClose, tableNumber, businessId }) {
+  const url = `${window.location.origin}/split/${encodeURIComponent(tableNumber || '')}?business=${encodeURIComponent(businessId || '')}`;
   const copyLink = () => {
     navigator.clipboard?.writeText(url).catch(() => {});
   };

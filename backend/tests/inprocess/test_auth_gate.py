@@ -40,7 +40,7 @@ MUST_BE_SHUT = [
     ("GET", "/api/reservations/guest-lookup"), ("GET", "/api/bookings/inbox"),
     ("GET", "/api/automation/alerts"), ("GET", "/api/kitchen/prep-list"),
     ("GET", "/api/receipt/settings"),
-    ("POST", "/api/products"), ("POST", "/api/expenses"), ("POST", "/api/suppliers"),
+    ("POST", "/api/products?business=default"), ("POST", "/api/expenses"), ("POST", "/api/suppliers"),
 ]
 
 
@@ -174,7 +174,7 @@ def test_storefront_order_and_tracking_work_for_a_guest(anon):
     products = req(anon, "GET", "/api/online/products")
     assert products.status_code == 200 and products.json()
     assert req(anon, "GET", "/api/online/categories").status_code == 200
-    r = req(anon, "POST", "/api/online/orders", json={
+    r = req(anon, "POST", "/api/online/orders?business=default", json={
         "channel": "pickup", "customerName": "Anon Guest", "customerPhone": "0400999888",
         "items": [{"productId": products.json()[0]["id"], "name": "Thing",
                    "quantity": 1, "price": 10.0}]})
@@ -191,11 +191,11 @@ def test_kiosk_ordering_works_for_a_guest_end_to_end(anon):
     prefix the real route actually lives under) instead of the real
     /api/v25/kiosk/session path. Every kiosk endpoint was unreachable by an
     actual guest kiosk client until that was fixed."""
-    products = req(anon, "GET", "/api/products")
+    products = req(anon, "GET", "/api/products?business=default")
     assert products.status_code == 200 and products.json()
     pid = products.json()[0]["id"]
 
-    start = req(anon, "POST", "/api/v25/kiosk/session", json={"guests": 2})
+    start = req(anon, "POST", "/api/v25/kiosk/session", json={"guests": 2, "business": "default"})
     assert start.status_code == 200, start.text[:200]
     sid = start.json()["id"]
 
@@ -222,7 +222,7 @@ TRADE_FIELDS = ("cost", "stock", "sku")
 
 
 def test_guest_menu_has_the_menu_but_not_the_trade_data(anon):
-    r = req(anon, "GET", "/api/products")
+    r = req(anon, "GET", "/api/products?business=default")
     assert r.status_code == 200
     menu = r.json()
     assert any(p.get("name") and p.get("price") for p in menu), "guest menu had no sellable item"
@@ -238,7 +238,7 @@ def test_storefront_listing_hides_trade_data_too(anon):
 
 
 def test_staff_still_see_cost_and_stock(client, owner_headers):
-    r = req(client, "GET", "/api/products", headers=owner_headers)
+    r = req(client, "GET", "/api/products?business=default", headers=owner_headers)
     assert r.status_code == 200
     assert any(p.get("cost") for p in r.json()), "no product carried a cost for a logged-in user"
 

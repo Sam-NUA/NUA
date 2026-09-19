@@ -22,6 +22,7 @@ from datetime import datetime, timedelta, timezone
 from database import db
 import jwt
 import os
+from middleware.actor_context import tenant_scope_filter
 
 GUEST_SESSION_TTL_MINUTES = 60
 
@@ -30,10 +31,10 @@ def _secret() -> str:
     return os.environ["JWT_SECRET"]
 
 
-def issue_guest_token(phone: str) -> str:
+def issue_guest_token(phone: str, business_id: Optional[str] = None) -> str:
     now = datetime.now(timezone.utc)
     payload = {
-        "type": "guest", "phone": phone, "sub": f"guest:{phone}",
+        "type": "guest", "phone": phone, "businessId": business_id, "sub": f"guest:{phone}",
         "iat": now, "exp": now + timedelta(minutes=GUEST_SESSION_TTL_MINUTES),
     }
     return jwt.encode(payload, _secret(), algorithm="HS256")
@@ -49,12 +50,12 @@ def decode_guest_token(token: str) -> Optional[Dict[str, Any]]:
     return payload
 
 
-async def resolve_guest_profile(phone: str) -> Dict[str, Any]:
+async def resolve_guest_profile(phone: str, business_id: Optional[str] = None) -> Dict[str, Any]:
     """Best-known name/email for this phone, so a returning guest's forms
     can prefill instead of asking again — same identity key (phone) as
     loyalty_v2.py's guest_lookup, and deliberately just as minimal: name/
     email for prefill, never the full customer record."""
-    customer = await db.customers.find_one({"phone": phone}, {"_id": 0, "name": 1, "email": 1})
+    customer = await db.customers.find_one({**tenant_scope_filter(business_id or ""), "phone": phone}, {"_id": 0, "name": 1, "email": 1})
     return {
         "phone": phone,
         "name": (customer or {}).get("name"),

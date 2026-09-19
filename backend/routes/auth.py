@@ -1,7 +1,8 @@
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from deps import get_user
+from middleware.actor_context import tenant_scope_filter, get_actor_context, set_actor_context
 from pydantic import BaseModel, EmailStr
-from typing import Optional
+from typing import Optional, Any, cast
 from datetime import datetime, timezone, timedelta
 from database import db
 import bcrypt
@@ -83,9 +84,13 @@ async def get_current_user(request: Request) -> dict:
         payload = jwt.decode(token, _secret(), algorithms=[JWT_ALGORITHM])
         if payload.get("type") != "access":
             raise HTTPException(status_code=401, detail="Invalid token type")
-        user = await db.auth_users.find_one({"id": payload["sub"]})
+        user = await cast(Any, db.auth_users).find_one({"id": payload["sub"]})
         if not user:
             raise HTTPException(status_code=401, detail="User not found")
+        if user.get("status") != "active" or not user.get("businessId"):
+            raise HTTPException(status_code=403, detail="Active business membership required")
+        set_actor_context({**get_actor_context(), "businessId": user["businessId"],
+                           "email": user.get("email"), "role": user.get("role")})
         user.pop("_id", None)
         user.pop("password_hash", None)
         return user
@@ -305,7 +310,20 @@ async def two_factor_challenge(req: TwoFactorChallenge, request: Request, respon
     return out
 
 @router.post("/register")
-async def register(req: RegisterRequest, response: Response):
+async def register(req: RegisterRequest, response: Response, request: Request):
+    # Existing deployments enroll staff through an authenticated owner. Public
+    # registration may bootstrap the first owner, never join an arbitrary venue.
+    owner_exists = await db.auth_users.find_one({"role": "owner"}, {"_id": 0, "id": 1})
+    if owner_exists:
+        actor = await get_current_user(request)
+        if actor.get("role") != "owner":
+            raise HTTPException(status_code=403, detail="Owner access only")
+        if req.businessId and req.businessId != actor["businessId"]:
+            raise HTTPException(status_code=403, detail="Cannot enroll staff in another business")
+        req.businessId = actor["businessId"]
+    else:
+        req.businessId = "default"
+        req.role = "owner"
     email = req.email.lower()
     existing = await db.auth_users.find_one({"email": email})
     if existing:
@@ -406,7 +424,7 @@ async def refresh_token(request: Request, response: Response):
         payload = jwt.decode(token, _secret(), algorithms=[JWT_ALGORITHM])
         if payload.get("type") != "refresh":
             raise HTTPException(status_code=401, detail="Invalid token")
-        user = await db.auth_users.find_one({"id": payload["sub"]})
+        user = await cast(Any, db.auth_users).find_one({"id": payload["sub"]})
         if not user:
             raise HTTPException(status_code=401, detail="User not found")
         access = create_access_token(user["id"], user["email"], user["role"], user.get("businessId"))
@@ -429,7 +447,7 @@ async def get_staff(request: Request):
     user = await get_current_user(request)
     if user["role"] not in ("owner", "manager"):
         raise HTTPException(status_code=403, detail="Owner/Manager access only")
-    staff = await db.auth_users.find({}, {"_id": 0, "password_hash": 0}).to_list(1000)
+    staff = await db.auth_users.find(tenant_scope_filter(user.get("businessId")), {"_id": 0, "password_hash": 0}).to_list(1000)
     if user["role"] == "manager":
         for s in staff:
             s.pop("payRate", None)
@@ -440,10 +458,10 @@ async def update_staff(staff_id: str, data: dict, request: Request):
     user = await get_current_user(request)
     if user["role"] != "owner":
         raise HTTPException(status_code=403, detail="Owner access only")
-    allowed = {"name", "role", "status", "payRate", "salaryType", "businessId", "pin"}
+    allowed = {"name", "role", "status", "payRate", "salaryType", "pin"}
     update_data = {k: v for k, v in data.items() if k in allowed}
     result = await db.auth_users.find_one_and_update(
-        {"id": staff_id}, {"$set": update_data}, return_document=True
+        {"id": staff_id, **tenant_scope_filter(user.get("businessId"))}, {"$set": update_data}, return_document=True
     )
     if not result:
         raise HTTPException(status_code=404, detail="Staff not found")
@@ -471,7 +489,7 @@ async def add_staff_simple(data: dict, request: Request):
         "payRate": float(data.get("payRate", 0)),
         "salaryType": data.get("salaryType", "hourly"),
         "pin": data.get("pin", ""),
-        "status": "active", "businessId": "default",
+        "status": "active", "businessId": user["businessId"],
         "createdAt": datetime.now(timezone.utc).isoformat(),
     }
     if password:

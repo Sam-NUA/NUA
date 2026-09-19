@@ -26,9 +26,9 @@ async def create_loyalty_reward(reward: dict, user: dict = Depends(require_owner
 
 @router.delete("/loyalty/rewards/{reward_id}")
 async def delete_loyalty_reward(reward_id: str, user: dict = Depends(require_owner_or_manager)):
-    existing = await db.loyalty_rewards.find_one({"id": reward_id}, {"_id": 0, "businessId": 1})
+    existing = await db.loyalty_rewards.find_one({"$and": [{"id": reward_id}, tenant_scope_filter(user.get("businessId"))]}, {"_id": 0, "businessId": 1})
     if existing and tenant_owns_strict(existing.get("businessId"), user.get("businessId")):
-        await db.loyalty_rewards.delete_one({"id": reward_id})
+        await db.loyalty_rewards.delete_one({"$and": [{"id": reward_id}, tenant_scope_filter(user.get("businessId"))]})
     return {"message": "Reward deleted"}
 
 # NOTE: POST /loyalty/redeem is owned by routes/loyalty_engine.py (the modern,

@@ -272,7 +272,7 @@ async def beverage_margin(product_id: str, user: dict = Depends(get_user)):
     Falls back with a `measured: False` payload for non-measured products
     so the UI can show recipe cost instead."""
     from middleware.actor_context import tenant_owns_strict
-    prod = await db.products.find_one({"id": product_id}, {"_id": 0})
+    prod = await db.products.find_one({"$and": [{"id": product_id}, tenant_scope_filter(user.get("businessId"))]}, {"_id": 0})
     if not prod or not tenant_owns_strict(prod.get("businessId"), user.get("businessId")):
         raise HTTPException(404, "product not found")
     cost = await mi.beverage_cost(product_id)

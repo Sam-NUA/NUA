@@ -61,10 +61,10 @@ async def run(include_summary: bool = False, user: dict = Depends(require_owner_
 @router.post("/insights/{iid}/dismiss")
 async def dismiss_insight(iid: str, user: dict = Depends(require_owner_or_manager)):
     from datetime import datetime, timezone
-    existing = await db.ash_insights.find_one({"id": iid}, {"_id": 0, "id": 1, "businessId": 1})
+    existing = await db.ash_insights.find_one({"$and": [{"id": iid}, tenant_scope_filter(user.get("businessId"))]}, {"_id": 0, "id": 1, "businessId": 1})
     if existing is None or not tenant_owns_strict(existing.get("businessId"), user.get("businessId")):
         raise HTTPException(404, "Insight not found")
-    r = await db.ash_insights.update_one({"id": iid}, {"$set": {"resolvedAt": datetime.now(timezone.utc).isoformat(), "resolvedBy": "manual"}})
+    r = await db.ash_insights.update_one({"$and": [{"id": iid}, tenant_scope_filter(user.get("businessId"))]}, {"$set": {"resolvedAt": datetime.now(timezone.utc).isoformat(), "resolvedBy": "manual"}})
     if r.matched_count == 0:
         raise HTTPException(404, "Insight not found")
     return {"dismissed": True}
@@ -276,7 +276,7 @@ async def list_plans(status: Optional[str] = None, limit: int = 50, user: dict =
 
 @router.get("/plans/{plan_id}")
 async def get_plan(plan_id: str, user: dict = Depends(get_user)):
-    plan = await db.ash_plans.find_one({"id": plan_id}, {"_id": 0})
+    plan = await db.ash_plans.find_one({"$and": [{"id": plan_id}, tenant_scope_filter(user.get("businessId"))]}, {"_id": 0})
     if not plan or not tenant_owns_strict(plan.get("businessId"), user.get("businessId")):
         raise HTTPException(404, "plan not found")
     return plan
@@ -327,7 +327,7 @@ async def draft_campaign(body: dict, user: dict = Depends(require_owner_or_manag
     # ── Gather grounding data ──
     biz_scope = tenant_scope_filter(user.get("businessId"))
     try:
-        churning = await db.customers.count_documents({"visits": {"$gte": 3}, **biz_scope})
+        churning = await db.customers.count_documents({**tenant_scope_filter(user.get("businessId")), "visits": {"$gte": 3}, **biz_scope})
     except Exception:
         churning = 0
     try:
@@ -574,7 +574,7 @@ async def flag_execution(audit_id: str, body: dict, user: dict = Depends(require
     the tool back to approval-gated (see nua_trust.demote) and, if the tool
     exposes a rollback and the caller asked for one, attempts to undo it."""
     reason = (body or {}).get("reason")
-    row = await db.audit_events.find_one({"id": audit_id}, {"_id": 0})
+    row = await db.audit_events.find_one({"$and": [{"id": audit_id}, tenant_scope_filter(user.get("businessId"))]}, {"_id": 0})
     if not row or not tenant_owns_strict(row.get("businessId"), user.get("businessId")):
         raise HTTPException(404, "Execution not found")
     tool_name = row.get("entityId")
@@ -583,7 +583,7 @@ async def flag_execution(audit_id: str, body: dict, user: dict = Depends(require
         raise HTTPException(400, "Not a recognized NUA tool execution")
 
     await db.audit_events.update_one(
-        {"id": audit_id},
+        {"$and": [{"id": audit_id}, tenant_scope_filter(user.get("businessId"))]},
         {"$set": {"flagged": True, "flaggedBy": user.get("email"),
                   "flaggedAt": datetime.now(timezone.utc).isoformat(), "flagReason": reason}},
     )

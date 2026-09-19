@@ -66,7 +66,7 @@ async def auto_tag_vips(business_id: str = None):
         current_tier = c.get("membershipTier", "Bronze")
         if spend >= cfg.get("autoVipThresholdSpend", 500) and visits >= cfg.get("autoVipThresholdVisits", 10):
             if current_tier != "VIP":
-                await db.customers.update_one({"id": c["id"]}, {"$set": {"membershipTier": "VIP", "vipPromotedAt": datetime.now(timezone.utc).isoformat()}})
+                await db.customers.update_one({**tenant_scope_filter(business_id), "id": c["id"]}, {"$set": {"membershipTier": "VIP", "vipPromotedAt": datetime.now(timezone.utc).isoformat()}})
                 promoted.append({"id": c["id"], "name": c.get("name"), "from": current_tier})
     return promoted
 
@@ -95,7 +95,7 @@ async def queue_sms(to: str, name: str, body: str, kind: str = "manual", busines
 
 @router.post("/comms/auto-confirm/{reservation_id}")
 async def auto_confirm_reservation(reservation_id: str, user: dict = Depends(get_user)):
-    res = await db.reservations.find_one({"id": reservation_id}, {"_id": 0})
+    res = await db.reservations.find_one({"$and": [{"id": reservation_id}, tenant_scope_filter(user.get("businessId"))]}, {"_id": 0})
     if not res or not tenant_owns_strict(res.get("businessId"), user.get("businessId")):
         raise HTTPException(status_code=404, detail="Reservation not found")
     phone = res.get("guestPhone") or res.get("phone") or res.get("customerPhone") or ""
@@ -105,7 +105,7 @@ async def auto_confirm_reservation(reservation_id: str, user: dict = Depends(get
     body = (f"Hi {name}, your booking for {res.get('partySize','?')} on "
             f"{res.get('date','?')} at {res.get('time','?')} is confirmed at NUA. Reply C to cancel.")
     msg = await queue_sms(phone, name, body, "reservation_confirm", business_id=user.get("businessId"))
-    await db.reservations.update_one({"id": reservation_id}, {"$set": {"confirmationSent": True, "confirmationAt": msg["createdAt"]}})
+    await db.reservations.update_one({"$and": [{"id": reservation_id}, tenant_scope_filter(user.get("businessId"))]}, {"$set": {"confirmationSent": True, "confirmationAt": msg["createdAt"]}})
     return msg
 
 
@@ -383,7 +383,7 @@ async def simulate_call(data: dict, user: dict = Depends(get_user)):
                         r["customerId"] = known_guest["customerId"]
                         r["guestEmail"] = known_guest.get("email") or None
                         await db.customers.update_one(
-                            {"id": known_guest["customerId"]},
+                            {**tenant_scope_filter(user.get("businessId")), "id": known_guest["customerId"]},
                             {"$push": {"reservationIds": r["id"]}},
                         )
                     await db.reservations.insert_one(r)
@@ -553,14 +553,7 @@ def _po_email_body(po: dict) -> str:
 async def update_po(po_id: str, action: str, user: dict = Depends(require_owner_or_manager)):
     if action not in ("approve", "send", "receive", "cancel"):
         raise HTTPException(status_code=400, detail="Invalid action")
-    guard = await db.purchase_orders.find_one({"id": po_id}, {"_id": 0, "id": 1, "businessId": 1})
-    # NOT tenant_owns_strict — db.purchase_orders holds two different
-    # document shapes (see this endpoint's/po_pdf's own docstring): the
-    # legacy analytics.py POST path stamps a real businessId, but POs
-    # matched/created by supplier NAME STRING alone (this file's own
-    # generate path historically, and still a currently-tolerated shape
-    # per tests/inprocess/test_po_supplier_email.py) may have none. A
-    # strict exact-match would 404 those, not just close a gap.
+    guard = await db.purchase_orders.find_one({"$and": [{"id": po_id}, tenant_scope_filter(user.get("businessId"))]}, {"_id": 0, "id": 1, "businessId": 1})
     if guard is None or not tenant_owns(guard.get("businessId"), user.get("businessId")):
         raise HTTPException(status_code=404, detail="PO not found")
     status_map = {"approve": "approved", "send": "sent", "receive": "received", "cancel": "cancelled"}
@@ -575,7 +568,7 @@ async def update_po(po_id: str, action: str, user: dict = Depends(require_owner_
         # and record the real outcome (delivered / not_configured / no
         # supplier on file) instead of a status flip that implies more than
         # what happened.
-        existing = await db.purchase_orders.find_one({"id": po_id}, {"_id": 0})
+        existing = await db.purchase_orders.find_one({"$and": [{"id": po_id}, tenant_scope_filter(user.get("businessId"))]}, {"_id": 0})
         if not existing:
             raise HTTPException(status_code=404, detail="PO not found")
         supplier = await _resolve_supplier_email(existing)
@@ -587,7 +580,7 @@ async def update_po(po_id: str, action: str, user: dict = Depends(require_owner_
             email_result = {"channel": "email", "delivered": False, "reason": "no_supplier_email_on_file"}
         update["emailResult"] = email_result
 
-    po = await db.purchase_orders.find_one_and_update({"id": po_id}, {"$set": update}, return_document=True)
+    po = await db.purchase_orders.find_one_and_update({"$and": [{"id": po_id}, tenant_scope_filter(user.get("businessId"))]}, {"$set": update}, return_document=True)
     if not po:
         raise HTTPException(status_code=404, detail="PO not found")
     # On receive: increment stock
@@ -607,14 +600,7 @@ async def edit_po(po_id: str, data: dict, user: dict = Depends(require_owner)):
     cancelled: at that point the supplier (or the stock ledger, on receive)
     has already acted on the original numbers, so editing in place would
     silently disagree with what actually happened."""
-    po = await db.purchase_orders.find_one({"id": po_id}, {"_id": 0})
-    # NOT tenant_owns_strict — db.purchase_orders holds two different
-    # document shapes (see this endpoint's/po_pdf's own docstring): the
-    # legacy analytics.py POST path stamps a real businessId, but POs
-    # matched/created by supplier NAME STRING alone (this file's own
-    # generate path historically, and still a currently-tolerated shape
-    # per tests/inprocess/test_po_supplier_email.py) may have none. A
-    # strict exact-match would 404 those, not just close a gap.
+    po = await db.purchase_orders.find_one({"$and": [{"id": po_id}, tenant_scope_filter(user.get("businessId"))]}, {"_id": 0})
     if not po or not tenant_owns(po.get("businessId"), user.get("businessId")):
         raise HTTPException(status_code=404, detail="PO not found")
     if po["status"] not in ("draft", "approved"):
@@ -642,7 +628,7 @@ async def edit_po(po_id: str, data: dict, user: dict = Depends(require_owner)):
     update = {"items": cleaned, "totalCost": total,
               "editedAt": datetime.now(timezone.utc).isoformat(), "editedBy": user["id"]}
     updated = await db.purchase_orders.find_one_and_update(
-        {"id": po_id}, {"$set": update}, return_document=True)
+        {"$and": [{"id": po_id}, tenant_scope_filter(user.get("businessId"))]}, {"$set": update}, return_document=True)
     updated.pop("_id", None)
     return updated
 
@@ -657,14 +643,7 @@ async def po_pdf(po_id: str, user: dict = Depends(require_owner_or_manager)):
     orderQty/productName, the legacy analytics.py POST path uses
     quantity/name."""
     from routes.finalize import _pdf_from_lines
-    po = await db.purchase_orders.find_one({"id": po_id}, {"_id": 0})
-    # NOT tenant_owns_strict — db.purchase_orders holds two different
-    # document shapes (see this endpoint's/po_pdf's own docstring): the
-    # legacy analytics.py POST path stamps a real businessId, but POs
-    # matched/created by supplier NAME STRING alone (this file's own
-    # generate path historically, and still a currently-tolerated shape
-    # per tests/inprocess/test_po_supplier_email.py) may have none. A
-    # strict exact-match would 404 those, not just close a gap.
+    po = await db.purchase_orders.find_one({"$and": [{"id": po_id}, tenant_scope_filter(user.get("businessId"))]}, {"_id": 0})
     if not po or not tenant_owns(po.get("businessId"), user.get("businessId")):
         raise HTTPException(status_code=404, detail="PO not found")
 
@@ -749,7 +728,7 @@ async def record_conversion(test_id: str, data: dict):
 
 @router.post("/ab-tests/{test_id}/conclude")
 async def conclude_test(test_id: str, user: dict = Depends(require_owner_or_manager)):
-    test = await db.ab_tests.find_one({"id": test_id}, {"_id": 0})
+    test = await db.ab_tests.find_one({"$and": [{"id": test_id}, tenant_scope_filter(user.get("businessId"))]}, {"_id": 0})
     if not test or not tenant_owns_strict(test.get("businessId"), user.get("businessId")):
         raise HTTPException(status_code=404, detail="Not found")
     # Winner = higher conversion rate
@@ -757,7 +736,7 @@ async def conclude_test(test_id: str, user: dict = Depends(require_owner_or_mana
     ca, cb = test["conversions"]["A"], test["conversions"]["B"]
     rate_a, rate_b = ca / ea, cb / eb
     winner = "A" if rate_a >= rate_b else "B"
-    await db.ab_tests.update_one({"id": test_id}, {"$set": {"status": "concluded", "winner": winner, "concludedAt": datetime.now(timezone.utc).isoformat()}})
+    await db.ab_tests.update_one({"$and": [{"id": test_id}, tenant_scope_filter(user.get("businessId"))]}, {"$set": {"status": "concluded", "winner": winner, "concludedAt": datetime.now(timezone.utc).isoformat()}})
     return {"winner": winner, "rates": {"A": rate_a, "B": rate_b}}
 
 

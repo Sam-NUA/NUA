@@ -196,7 +196,7 @@ def test_guest_lookup_surfaces_subscription_status(client, owner_headers):
         # above exercise post-auth logic directly.
         from routes.loyalty_v2 import get_customer_progress
         from services import loyalty_group
-        progress = _run(get_customer_progress(cust["id"]))
+        progress = _run(get_customer_progress(cust["id"], business_id=business_id))
         assert progress["points"] == 100
         sub = _run(db.subscriptions.find_one(
             {"customerId": cust["id"], "businessId": business_id, "status": "active"}, {"_id": 0}))

@@ -52,7 +52,7 @@ def test_dry_run_reports_a_resolution_but_writes_nothing(client, owner_headers):
     doc_id = "MIG-APPT-1"
     _run(db.customers.insert_one({"id": customer_id, "businessId": "default", "name": "X", "email": "migcust1@nua.com", "phone": "1"}))
     _run(db.appointments.insert_one({
-        "id": doc_id, "customerId": customer_id, "customerName": "X", "serviceId": "s1",
+        "id": doc_id, "customerId": customer_id, "createdBy": "owner@nua.com", "customerName": "X", "serviceId": "s1",
         "date": "2027-01-01", "time": "10:00", "status": "confirmed", "businessId": None,
     }))
     try:
@@ -74,7 +74,7 @@ def test_real_run_resolves_via_a_linked_customers_businessId(client, owner_heade
     doc_id = "MIG-APPT-2"
     _run(db.customers.insert_one({"id": customer_id, "businessId": "default", "name": "Y", "email": "migcust2@nua.com", "phone": "2"}))
     _run(db.appointments.insert_one({
-        "id": doc_id, "customerId": customer_id, "customerName": "Y", "serviceId": "s1",
+        "id": doc_id, "customerId": customer_id, "createdBy": "owner@nua.com", "customerName": "Y", "serviceId": "s1",
         "date": "2027-01-01", "time": "11:00", "status": "confirmed", "businessId": None,
     }))
     try:
@@ -152,12 +152,12 @@ def test_resolve_quarantined_requires_matching_support_override_header(client, o
     }))
     try:
         no_header = req(client, "POST", f"/api/admin/ownership-migration/quarantined/appointments/{doc_id}/resolve",
-                         headers=owner_headers, json={"businessId": "default"})
+                         headers=owner_headers, json={"businessId": "default", "evidence": "Reviewed original signed booking export"})
         assert no_header.status_code == 403, no_header.text[:200]
 
         wrong_header = req(client, "POST", f"/api/admin/ownership-migration/quarantined/appointments/{doc_id}/resolve",
                             headers={**owner_headers, "X-Support-Override": "wrong-key"},
-                            json={"businessId": "default"})
+                            json={"businessId": "default", "evidence": "Reviewed original signed booking export"})
         assert wrong_header.status_code == 403, wrong_header.text[:200]
 
         row = _run(db.appointments.find_one({"id": doc_id}, {"_id": 0}))
@@ -175,8 +175,9 @@ def test_resolve_quarantined_with_valid_override_assigns_and_clears_quarantine(c
         migration.QUARANTINE_REASON: "no reliable evidence of ownership found",
     }))
     try:
-        r = req(client, "POST", f"/api/admin/ownership-migration/quarantined/appointments/{doc_id}/resolve",
-                headers={**owner_headers, **SUPPORT_HEADER}, json={"businessId": "default"})
+        document_key = str(_run(db.appointments.find_one({"id": doc_id}))["_id"])
+        r = req(client, "POST", f"/api/admin/ownership-migration/quarantined/appointments/{document_key}/resolve",
+                headers={**owner_headers, **SUPPORT_HEADER}, json={"businessId": "default", "evidence": "Reviewed original signed booking export"})
         assert r.status_code == 200, r.text[:200]
 
         row = _run(db.appointments.find_one({"id": doc_id}, {"_id": 0}))
@@ -185,7 +186,7 @@ def test_resolve_quarantined_with_valid_override_assigns_and_clears_quarantine(c
         assert migration.MIGRATED_AT in row
 
         audit = _run(db.audit_events.find_one(
-            {"entityType": "appointments", "entityId": doc_id, "action": "updated"}, {"_id": 0}))
+            {"entityType": "appointments", "entityId": document_key, "action": "updated"}, {"_id": 0}))
         assert audit is not None, "a manual resolution must leave an audit trail"
     finally:
         _run(db.appointments.delete_many({"id": doc_id}))

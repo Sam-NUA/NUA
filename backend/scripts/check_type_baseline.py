@@ -57,10 +57,13 @@ CODES_FILE = BACKEND_DIR / "mypy_baseline_codes.txt"
 
 def run_mypy() -> str:
     result = subprocess.run(
-        ["python", "-m", "mypy", "--ignore-missing-imports", "server.py"],
+        [sys.executable, "-m", "mypy", "--ignore-missing-imports", "server.py"],
         cwd=BACKEND_DIR, capture_output=True, text=True,
     )
-    return result.stdout + result.stderr
+    output = result.stdout + result.stderr
+    if result.returncode not in (0, 1) or (result.returncode == 1 and not count_errors(output)):
+        raise RuntimeError(f"mypy did not complete successfully (exit {result.returncode}):\n{output}")
+    return output
 
 
 def count_errors(output: str) -> int:

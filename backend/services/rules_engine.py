@@ -28,6 +28,7 @@ import uuid
 import logging
 import asyncio
 import operator as _op
+from middleware.actor_context import tenant_scope_filter
 
 logger = logging.getLogger(__name__)
 
@@ -211,7 +212,7 @@ async def _action_upgrade_vip(rule, event, params):
     if not cid:
         return {"error": "no customerId"}
     tier = params.get("tier", "Gold")
-    r = await db.customers.update_one({"id": cid}, {"$set": {"membershipTier": tier, "vipUpgradedAt": _now_iso()}})
+    r = await db.customers.update_one({**tenant_scope_filter(), "id": cid}, {"$set": {"membershipTier": tier, "vipUpgradedAt": _now_iso()}})
     return {"customerId": cid, "newTier": tier, "matched": r.matched_count}
 
 
@@ -220,7 +221,7 @@ async def _action_apply_credit(rule, event, params):
     amount = float(params.get("amount") or 0)
     if not cid or amount <= 0:
         return {"error": "customerId and amount required"}
-    r = await db.customers.update_one({"id": cid}, {"$inc": {"storeCredit": amount}})
+    r = await db.customers.update_one({**tenant_scope_filter(), "id": cid}, {"$inc": {"storeCredit": amount}})
     # Also log to wallet ledger if present
     try:
         await db.wallet_ledger.insert_one({
@@ -386,7 +387,6 @@ async def emit_event(event_type: str, payload: Optional[Dict[str, Any]] = None,
     except Exception:
         pass
 
-    from middleware.actor_context import tenant_scope_filter
     rules_cursor = db.rules.find(
         {"active": True, "triggerEvent": event_type, **tenant_scope_filter(business_id)}, {"_id": 0})
     rules = await rules_cursor.to_list(200)

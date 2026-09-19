@@ -49,8 +49,8 @@ def test_percentage_voucher_discount_is_capped_by_max_discount():
 
 
 def test_public_check_applies_the_max_discount_cap(client):
-    _insert_voucher("ZZZPUBCAP", None, value_type="percentage", value=15.0, max_discount=20.0)
-    r = req(client, "POST", "/api/vouchers/public-check", json={
+    _insert_voucher("ZZZPUBCAP", "default", value_type="percentage", value=15.0, max_discount=20.0)
+    r = req(client, "POST", "/api/vouchers/public-check?business=default", json={
         "code": "ZZZPUBCAP", "cart": [{"price": 500.0, "quantity": 1}],
     })
     assert r.status_code == 200, r.text

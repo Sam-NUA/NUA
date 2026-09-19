@@ -32,6 +32,7 @@ import httpx
 from database import db
 from services.connect.base import BaseConnector, ConnectorError
 from services.connect.sync_log import SyncRun
+from middleware.actor_context import tenant_scope_filter
 
 logger = logging.getLogger(__name__)
 
@@ -109,12 +110,12 @@ class SquareConnector(BaseConnector):
                 for obj in page.get("objects", []):
                     run.bump("fetched")
                     run.add_sample(obj)
-                    await self._upsert_catalog_item(obj)
+                    await self._upsert_catalog_item(obj, business_id)
                 cursor = page.get("cursor")
                 if not cursor:
                     break
 
-    async def _upsert_catalog_item(self, obj: Dict[str, Any]) -> None:
+    async def _upsert_catalog_item(self, obj: Dict[str, Any], business_id: str) -> None:
         item = obj.get("item_data", {})
         variations = item.get("variations", [])
         # NUA products are single-priced rows; a multi-variation Square item
@@ -137,17 +138,17 @@ class SquareConnector(BaseConnector):
                 "active": not obj.get("is_deleted", False),
                 "updatedAt": datetime.now(timezone.utc),
             }
-            existing = await db.products.find_one({"externalRefs.square": obj.get("id")}, {"_id": 0, "id": 1})
+            existing = await db.products.find_one({"externalRefs.square": obj.get("id"), **tenant_scope_filter(business_id)}, {"_id": 0, "id": 1})
             if existing:
                 await db.products.update_one(
-                    {"id": existing["id"]},
+                    {"id": existing["id"], **tenant_scope_filter(business_id)},
                     {"$set": {**doc, "externalRefs.square": obj.get("id")}},
                 )
             else:
                 import uuid
                 new_id = str(uuid.uuid4())
                 await db.products.insert_one({
-                    "id": new_id, "cost": 0.0, "stock": 0, "gstRate": 10.0,
+                    "id": new_id, "businessId": business_id, "cost": 0.0, "stock": 0, "gstRate": 10.0,
                     "modifiers": [], "modifierIds": [], "locations": ["Main"],
                     "onlineChannels": [], "seoDescription": "", "allergens": [], "dietary": [],
                     "translations": {}, "eightySixed": False, "image": "",
@@ -213,7 +214,7 @@ class SquareConnector(BaseConnector):
             total_money = (li.get("total_money", {}) or {}).get("amount", 0) / 100
             unit_price = round(total_money / qty, 2) if qty else 0.0
             product = await db.products.find_one(
-                {"externalRefs.square": li.get("catalog_object_id")}, {"_id": 0, "id": 1, "category": 1},
+                {"externalRefs.square": li.get("catalog_object_id"), **tenant_scope_filter(business_id)}, {"_id": 0, "id": 1, "category": 1},
             )
             items_list.append({
                 "productId": (product or {}).get("id", li.get("catalog_object_id") or "unknown"),
@@ -232,16 +233,15 @@ class SquareConnector(BaseConnector):
         customer_id = None
         square_customer_id = order.get("customer_id")
         if square_customer_id:
-            cust = await db.customers.find_one({"externalRefs.square": square_customer_id}, {"_id": 0, "id": 1})
+            cust = await db.customers.find_one({**tenant_scope_filter(business_id), "externalRefs.square": square_customer_id}, {"_id": 0, "id": 1})
             customer_id = (cust or {}).get("id")
 
         from services.tenant_settings import get_scoped_singleton
         loyalty_cfg = await get_scoped_singleton(db.loyalty_config, {"id": "default"}, business_id) or {}
         loyalty_multiplier = 1.0
         if customer_id:
-            customer = await db.customers.find_one({"id": customer_id}, {"_id": 0, "membershipTier": 1})
+            customer = await db.customers.find_one({**tenant_scope_filter(business_id), "id": customer_id}, {"_id": 0, "membershipTier": 1})
             if customer:
-                from middleware.actor_context import tenant_scope_filter
                 tier_doc = await db.loyalty_tiers.find_one(
                     {"$and": [tenant_scope_filter(business_id), {"name": customer.get("membershipTier", "Bronze")}]},
                     {"_id": 0},
@@ -323,10 +323,10 @@ class SquareConnector(BaseConnector):
         # into this app). Both the lookup and the newly-created row are now
         # scoped to the business running this sync.
         existing = await db.customers.find_one(
-            {"externalRefs.square": c.get("id"), "businessId": business_id}, {"_id": 0, "id": 1})
+            {**tenant_scope_filter(business_id), "externalRefs.square": c.get("id"), "businessId": business_id}, {"_id": 0, "id": 1})
         if existing:
             await db.customers.update_one(
-                {"id": existing["id"]},
+                {**tenant_scope_filter(business_id), "id": existing["id"]},
                 {"$set": {**doc, "externalRefs.square": c.get("id")}},
             )
         else:
@@ -393,7 +393,7 @@ class SquareConnector(BaseConnector):
                 if r.status_code == 200:
                     obj = r.json().get("object")
                     if obj:
-                        await self._upsert_catalog_item(obj)
+                        await self._upsert_catalog_item(obj, business_id)
                         run.bump("updated")
         else:
             run.bump("skipped")

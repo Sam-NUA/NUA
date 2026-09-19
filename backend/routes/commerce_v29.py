@@ -144,7 +144,7 @@ def _build_voucher_doc(payload: dict, user: Optional[dict], customer_data: dict)
 async def _lookup_customer_data(customer_id: Optional[str]) -> dict:
     if not customer_id:
         return {}
-    c = await db.customers.find_one({"id": customer_id}, {"_id": 0}) or {}
+    c = await db.customers.find_one({**tenant_scope_filter(), "id": customer_id}, {"_id": 0}) or {}
     return {"customerEmail": c.get("email"), "customerName": c.get("name")}
 
 
@@ -345,7 +345,7 @@ class PublicVoucherCheck(BaseModel):
 
 
 @router.post("/vouchers/public-check")
-async def public_check_voucher(body: PublicVoucherCheck):
+async def public_check_voucher(body: PublicVoucherCheck, business: Optional[str] = None):
     """Unauthenticated counterpart to /vouchers/validate — for guest-facing
     surfaces (online ordering, table QR ordering) that have no staff login
     to attach. Deliberately minimal: no customer/staff auth is required to
@@ -355,7 +355,9 @@ async def public_check_voucher(body: PublicVoucherCheck):
     Doesn't commit anything — same as the staff-facing validate endpoint,
     this is a dry-run check only."""
     try:
-        v = await _resolve_voucher(body.code, None)
+        from routes.online_orders import resolve_or_require_business_id
+        business_id = await resolve_or_require_business_id(business)
+        v = await _resolve_voucher(body.code, None, business_id)
     except HTTPException:
         return {"valid": False, "reason": "Code not found"}
     reason = _validate_voucher_rules(v, cart=body.cart)
@@ -496,10 +498,10 @@ async def redeem_voucher(body: VoucherRedeemRequest, user: dict = Depends(get_us
 async def revoke_voucher(voucher_id: str, body: dict, user: dict = Depends(get_user)):
     if user["role"] not in ("owner", "manager"):
         raise HTTPException(403, "Owner/manager only")
-    v = await db.vouchers.find_one({"id": voucher_id})
+    v = await db.vouchers.find_one({"$and": [{"id": voucher_id}, tenant_scope_filter(user.get("businessId"))]})
     if not v or not tenant_owns_strict(v.get("businessId"), user.get("businessId")):
         raise HTTPException(404, "Voucher not found")
-    await db.vouchers.update_one({"id": voucher_id}, {"$set": {
+    await db.vouchers.update_one({"$and": [{"id": voucher_id}, tenant_scope_filter(user.get("businessId"))]}, {"$set": {
         "status": "revoked",
         "revokedAt": _iso(_now()),
         "revokedBy": user.get("email"),
@@ -538,16 +540,7 @@ async def _ledger_write(*, customer_id: str, type_: str, sign: int, amount: floa
 
 @router.get("/wallet/{customer_id}")
 async def get_wallet(customer_id: str, user: dict = Depends(get_user)):
-    c = await db.customers.find_one({"id": customer_id}, {"_id": 0})
-    # NOT tenant_owns_strict — models/customer.py's Customer model has no
-    # businessId field at all; it's stamped externally, inconsistently,
-    # at ~15+ different creation call sites and test fixtures across this
-    # codebase (confirmed via the full test suite: converting this site
-    # broke test_loyalty_v2_points_field.py/test_voice_calls.py, both of
-    # which seed a customer via the bare Customer(...).dict() shape with
-    # no businessId). Auditing and fixing every customer-creation site
-    # plus every test fixture that relies on this is a larger, separate
-    # effort — not attempted this pass.
+    c = await db.customers.find_one({**tenant_scope_filter(user.get("businessId")), "id": customer_id}, {"_id": 0})
     if not c or not tenant_owns(c.get("businessId"), user.get("businessId")):
         raise HTTPException(404, "Customer not found")
     entries = await db.wallet_ledger.find({"customerId": customer_id}, {"_id": 0}).sort("createdAt", -1).to_list(2000)
@@ -611,7 +604,7 @@ async def debit_wallet(customer_id: str, body: LedgerEntryCreate, user: dict = D
 async def wallet_timeline(customer_id: str, limit: int = 200, _: dict = Depends(get_user)):
     """Merged customer journey across bookings, orders, payments, refunds,
     points/voucher movements, and reviews. Sorted DESC by time."""
-    c = await db.customers.find_one({"id": customer_id}, {"_id": 0})
+    c = await db.customers.find_one({**tenant_scope_filter(), "id": customer_id}, {"_id": 0})
     if not c:
         raise HTTPException(404, "Customer not found")
     events: List[dict] = []
@@ -912,7 +905,7 @@ _MILESTONES = [
 
 @router.get("/loyalty/status/{customer_id}")
 async def loyalty_status(customer_id: str, _: dict = Depends(get_user)):
-    c = await db.customers.find_one({"id": customer_id}, {"_id": 0})
+    c = await db.customers.find_one({**tenant_scope_filter(), "id": customer_id}, {"_id": 0})
     if not c:
         raise HTTPException(404, "Customer not found")
     txns = await db.transactions.find({"customerId": customer_id, "status": {"$in": ["completed", "paid", "closed"]}}, {"_id": 0}).to_list(5000)
@@ -1017,7 +1010,7 @@ async def loyalty_award(body: dict, user: dict = Depends(get_user)):
 # ═════════════════════════════════════════════════════════════════════════
 @router.get("/personalisation/{customer_id}")
 async def personalisation(customer_id: str, _: dict = Depends(get_user)):
-    c = await db.customers.find_one({"id": customer_id}, {"_id": 0})
+    c = await db.customers.find_one({**tenant_scope_filter(), "id": customer_id}, {"_id": 0})
     if not c:
         raise HTTPException(404, "Customer not found")
     txns = await db.transactions.find({"customerId": customer_id, "status": {"$in": ["completed", "paid", "closed"]}}, {"_id": 0}).sort("createdAt", -1).to_list(500)

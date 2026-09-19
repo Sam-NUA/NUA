@@ -83,7 +83,7 @@ def test_client_error_report_requires_no_authentication(anon):
 
 def test_client_error_report_is_readable_back_by_an_owner(client, owner_headers):
     unique_message = "synthetic client crash for test_observability"
-    r = req(client, "POST", "/api/ops/client-errors", json={
+    r = req(client, "POST", "/api/ops/client-errors", headers=owner_headers, json={
         "message": unique_message, "stack": "at Kitchen.jsx:100", "url": "/kitchen",
     })
     assert r.status_code == 200

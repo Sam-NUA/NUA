@@ -57,7 +57,7 @@ export default function SplitBillGuest() {
     try {
       const res = splitParam
         ? await billSplitAPI.status(splitParam)
-        : await billSplitAPI.getSplit(tableFromPath);
+        : await billSplitAPI.getSplit(tableFromPath, new URLSearchParams(window.location.search).get("business"));
       setSplit(res.data);
       setMine(loadMine(res.data.id));
       setError(null);
@@ -100,7 +100,7 @@ export default function SplitBillGuest() {
     if (!otpCode.trim()) return;
     setBusy(true);
     try {
-      const r = await guestSessionAPI.verify(phone.trim(), otpCode.trim());
+      const r = await guestSessionAPI.verify(phone.trim(), otpCode.trim(), split?.businessId || new URLSearchParams(window.location.search).get("business"));
       setToken(r.data.token);
       sessionStorage.setItem(TOKEN_KEY, r.data.token);
       sessionStorage.setItem(PHONE_KEY, phone.trim());
@@ -115,7 +115,7 @@ export default function SplitBillGuest() {
     const table = split?.tableNumber || tableFromPath;
     setBusy(true);
     try {
-      const r = await billSplitAPI.chooseMode(table, mode, equalCount);
+      const r = await billSplitAPI.chooseMode(table, mode, equalCount, { business: new URLSearchParams(window.location.search).get("business") });
       setSplit(r.data);
     } catch (e) { toast.error(e?.response?.data?.detail || 'Could not set split mode'); }
     finally { setBusy(false); }

@@ -95,7 +95,7 @@ async def acknowledge_booking(item_id: str, body: dict, user: dict = Depends(req
     convert = bool(body.get("convertToReservation", False))
     user_name = user.get("name") or user.get("email") or "system"
 
-    row = await db.booking_inbox.find_one({"id": item_id}, {"_id": 0})
+    row = await db.booking_inbox.find_one({"$and": [{"id": item_id}, tenant_scope_filter(user.get("businessId"))]}, {"_id": 0})
     if not row or not tenant_owns_strict(row.get("businessId"), user.get("businessId")):
         raise HTTPException(status_code=404, detail="Inbox item not found")
 
@@ -128,15 +128,15 @@ async def acknowledge_booking(item_id: str, body: dict, user: dict = Depends(req
         patch["status"] = "converted"
         patch["reservationId"] = res["id"]
 
-    await db.booking_inbox.update_one({"id": item_id}, {"$set": patch})
+    await db.booking_inbox.update_one({"$and": [{"id": item_id}, tenant_scope_filter(user.get("businessId"))]}, {"$set": patch})
     return {"ok": True, **patch}
 
 @router.post("/bookings/inbox/{item_id}/dismiss")
 async def dismiss(item_id: str, user: dict = Depends(require_owner_or_manager)):
-    row = await db.booking_inbox.find_one({"id": item_id}, {"_id": 0})
+    row = await db.booking_inbox.find_one({"$and": [{"id": item_id}, tenant_scope_filter(user.get("businessId"))]}, {"_id": 0})
     if not row or not tenant_owns_strict(row.get("businessId"), user.get("businessId")):
         raise HTTPException(status_code=404, detail="Not found")
-    await db.booking_inbox.update_one({"id": item_id}, {"$set": {"status": "dismissed"}})
+    await db.booking_inbox.update_one({"$and": [{"id": item_id}, tenant_scope_filter(user.get("businessId"))]}, {"$set": {"status": "dismissed"}})
     return {"ok": True}
 
 # -- helpers ---------------------------------------------------------------

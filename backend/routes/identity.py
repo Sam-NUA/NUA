@@ -11,6 +11,7 @@ from services.customer_identity import (
     addon_enabled, create_or_match, ensure_guest_profile, ensure_loyalty_account,
     get_subscription, _now,
 )
+from middleware.actor_context import tenant_scope_filter
 
 router = APIRouter()
 
@@ -150,7 +151,6 @@ async def migrate_legacy_crm(user: dict = Depends(require_owner)):
     (bookings-guests), points/tier go to LoyaltyAccount (loyalty) — both
     keyed to one new base Customer identity. Idempotent: rows already
     migrated (matched by phone/email) are enriched, not duplicated."""
-    from middleware.actor_context import tenant_scope_filter
     biz = user.get("businessId")
     legacy = await db.customers.find(tenant_scope_filter(biz), {"_id": 0}).to_list(10000)
     migrated = 0
@@ -197,7 +197,7 @@ async def migrate_legacy_crm(user: dict = Depends(require_owner)):
         )
 
         # Keep the legacy row linked so old code paths still resolve.
-        await db.customers.update_one({"id": c["id"]}, {"$set": {"identityCustomerId": cid}})
+        await db.customers.update_one({**tenant_scope_filter(user.get("businessId")), "id": c["id"]}, {"$set": {"identityCustomerId": cid}})
         migrated += 1
 
     return {"migrated": migrated, "skipped_no_contact": skipped, "at": _now()}

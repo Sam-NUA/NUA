@@ -91,13 +91,13 @@ def test_public_menu_resolves_by_business_id_too_not_only_slug(client):
         _cleanup_business("PETR-BIZ-C")
 
 
-def test_public_menu_unresolvable_slug_is_not_an_error_and_does_not_leak(client):
+def test_public_menu_unresolvable_slug_is_rejected(client):
     """An unresolvable ?business= must behave exactly like no param at all
     (the documented, safe fallback) — not 404, not 500, and specifically
     not "treat the raw string as a businessId anyway" (which would let a
     guest probe for real internal BIZ-xxxxxxxx ids by trial and error)."""
     r = req(client, "GET", "/api/public/menu", params={"business": "totally-made-up-slug-xyz"})
-    assert r.status_code == 200
+    assert r.status_code == 404
 
 
 def test_anonymous_caller_cannot_use_tenant_header_to_target_a_business(client):

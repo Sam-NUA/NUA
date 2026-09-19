@@ -274,17 +274,11 @@ async def add_round(order_id: str, body: dict, user: dict = Depends(get_user)):
     client_key = body.get("clientKey")
     if client_key:
         dup = await db.kitchen_orders.find_one(
-            {"id": order_id, "roundKeys": client_key}, {"_id": 0})
+            {"$and": [{"id": order_id, "roundKeys": client_key}, tenant_scope_filter(user.get("businessId"))]}, {"_id": 0})
         if dup:
             return dup
 
-    order = await db.kitchen_orders.find_one({"id": order_id}, {"_id": 0})
-    # NOT tenant_owns_strict — routes/table_ordering.py's guest QR ordering
-    # takes an OPTIONAL ?business=, and absent/unresolved still creates the
-    # kitchen_orders row today (a deliberate, documented, lower-severity
-    # deferral — see TRUST_RELEASE_FINAL_REPORT.md §10.10 — not fixed this
-    # pass). A strict exact-match here would 404 a live, currently-active
-    # QR order any time that optional param was omitted.
+    order = await db.kitchen_orders.find_one({"$and": [{"id": order_id}, tenant_scope_filter(user.get("businessId"))]}, {"_id": 0})
     if not order or not tenant_owns(order.get("businessId"), user.get("businessId")):
         raise HTTPException(status_code=404, detail="Order not found")
     if order.get("status") in ("served", "cancelled"):
@@ -314,7 +308,7 @@ async def add_round(order_id: str, body: dict, user: dict = Depends(get_user)):
                             "firedBy": None, "readyAt": None, "servedAt": None}
 
     updated = await db.kitchen_orders.find_one_and_update(
-        {"id": order_id},
+        {"$and": [{"id": order_id}, tenant_scope_filter(user.get("businessId"))]},
         _round_update(order, courses, next_round, new_items, client_key),
         return_document=True,
     )
@@ -326,7 +320,7 @@ async def add_round(order_id: str, body: dict, user: dict = Depends(get_user)):
         merged_stations = list(dict.fromkeys(
             (order.get("orderStations") or []) + await _pr.stations_for(new_items)))
         await db.kitchen_orders.update_one(
-            {"id": order_id}, {"$set": {"orderStations": merged_stations}})
+            {"$and": [{"id": order_id}, tenant_scope_filter(user.get("businessId"))]}, {"$set": {"orderStations": merged_stations}})
         updated["orderStations"] = merged_stations
     except Exception as e:
         log.warning("add-round: station stamp failed for %s: %s", order_id, e)

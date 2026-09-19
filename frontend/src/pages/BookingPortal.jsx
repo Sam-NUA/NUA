@@ -21,6 +21,7 @@ const EVENT_ICONS = { dining: UtensilsCrossed, wine_pairing: Star, cooking_class
 
 export default function BookingPortal() {
   const navigate = useNavigate();
+  const business = new URLSearchParams(window.location.search).get("business");
   const [tab, setTab] = useState('reserve'); // reserve, waitlist, events, menu
   const [step, setStep] = useState('select');
   const [menu, setMenu] = useState([]);
@@ -37,8 +38,8 @@ export default function BookingPortal() {
   const [experiences, setExperiences] = useState([]);
 
   useEffect(() => {
-    reservationFeaturesAPI.getBookingRules().then(r => setBookingRules(r.data)).catch(() => {});
-    reservationFeaturesAPI.getExperiences().then(r => setExperiences(r.data || [])).catch(() => {});
+    reservationFeaturesAPI.getBookingRules(business).then(r => setBookingRules(r.data)).catch(() => {});
+    reservationFeaturesAPI.getExperiences(business).then(r => setExperiences(r.data || [])).catch(() => {});
   }, []);
 
   const matchedTier = matchTier(bookingRules?.sizeTiers, form.partySize);
@@ -49,7 +50,7 @@ export default function BookingPortal() {
         : experiences.filter(e => e.active !== false))
     : [];
 
-  const guest = useGuestSession();
+  const guest = useGuestSession(business);
   const [verifyPhone, setVerifyPhone] = useState('');
   const [verifyCode, setVerifyCode] = useState('');
   const [verifyStep, setVerifyStep] = useState('phone'); // phone, code
@@ -95,13 +96,13 @@ export default function BookingPortal() {
   };
 
   useEffect(() => {
-    publicAPI.getMenu().then(r => setMenu(r.data.categories || [])).catch(() => {});
-    publicAPI.getEvents().then(r => setEvents(r.data || [])).catch(() => {});
+    publicAPI.getMenu(business).then(r => setMenu(r.data.categories || [])).catch(() => {});
+    publicAPI.getEvents(business).then(r => setEvents(r.data || [])).catch(() => {});
   }, []);
 
   useEffect(() => {
     if (form.date && form.partySize) {
-      publicAPI.getAvailableSlots(form.date, form.partySize)
+      publicAPI.getAvailableSlots(form.date, form.partySize, business)
         .then(r => setSlots(r.data.slots || []))
         .catch(() => setSlots([]));
     }
@@ -121,7 +122,7 @@ export default function BookingPortal() {
       return;
     }
     try {
-      const res = await publicAPI.book(form);
+      const res = await publicAPI.book(form, business);
       setConfirmData(res.data);
       setStep('confirmed');
       toast.success(res.data?.message || 'Reservation confirmed!');
@@ -133,7 +134,7 @@ export default function BookingPortal() {
   const handleJoinWaitlist = async () => {
     if (!waitlistForm.guestName) { toast.error('Name is required'); return; }
     try {
-      const res = await publicAPI.joinWaitlist(waitlistForm);
+      const res = await publicAPI.joinWaitlist(waitlistForm, business);
       setConfirmData(res.data);
       setStep('confirmed');
       toast.success(`You're #${res.data.position} on the waitlist!`);

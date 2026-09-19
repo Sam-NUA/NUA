@@ -33,9 +33,7 @@ async def find_matching_customer(*, name: Optional[str] = None, phone: Optional[
     Scoped to the caller's own business (default: whichever business the
     current request's JWT belongs to) so a returning-guest match can never
     pull in — and leak the profile, allergies, VIP status and history of —
-    another business's customer. When no business signal is available at
-    all (e.g. an unauthenticated guest flow), falls back to matching across
-    every business, same as before this was scoped.
+    another business's customer. Missing business context matches no customers.
     """
     if business_id is None:
         business_id = get_actor_context().get("businessId")
@@ -116,7 +114,9 @@ async def find_or_create_customer_by_phone(phone: str, *, name: str = "Guest",
     this way had no businessId at all, regardless of which business's
     table they paid from.
     """
-    existing = await find_matching_customer(phone=phone)
+    if not business_id:
+        raise ValueError("business_id is required to create a customer")
+    existing = await find_matching_customer(phone=phone, business_id=business_id)
     if existing:
         return existing
     doc = {

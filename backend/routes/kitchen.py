@@ -361,7 +361,7 @@ async def fire_course_internal(order_id: str, course: int, actor: str,
     result.pop("_id", None)
 
     from services import coursing as _coursing
-    cfg = await _coursing.get_config()
+    cfg = await _coursing.get_config(business_id=business_id)
     label = _course_label(course, cfg)
 
     await course_events.record_transition(order_id, course, "fired", actor, prev_state)

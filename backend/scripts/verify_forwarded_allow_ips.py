@@ -121,10 +121,9 @@ def main() -> int:
         print("  PASS: '*' reproduces the original vulnerability — confirms the old default was really exploitable by ANY caller.")
 
     print()
-    print("Conclusion: this codebase's actual default (FORWARDED_ALLOW_IPS unset -> 127.0.0.1)"
-          " has the same shape as Case 1 on any real internet-facing deployment (no genuine"
-          " external client's real peer IS 127.0.0.1) — i.e. trust nobody until explicitly"
-          " configured to the real proxy's IP, unlike the old '*' default Case 3 reproduces.")
+    print("Conclusion: 127.0.0.1 trusts loopback peers only, including a local reverse proxy. "
+          "These probes verify Uvicorn's mechanism, not the production network topology. "
+          "Confirm the real immediate proxy peer and its header-stripping behavior before rollout.")
 
     return 0 if ok else 1
 

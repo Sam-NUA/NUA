@@ -134,7 +134,7 @@ def test_guest_lookup_surfaces_a_passport_when_multi_location(client):
     ]))
 
     _request_code(client, phone)
-    r = req(client, "POST", "/api/loyalty/v2/guest-lookup", json={"phone": phone, "code": FIXED_CODE})
+    r = req(client, "POST", "/api/loyalty/v2/guest-lookup", json={"phone": phone, "code": FIXED_CODE, "business": biz_a})
     assert r.status_code == 200, r.text[:200]
     body = r.json()
     assert body["found"] is True
@@ -160,11 +160,7 @@ def test_staff_passport_endpoint_resolves_from_the_customer_record(client, owner
     ]))
 
     r = req(client, "GET", f"/api/loyalty/v2/passport/{cust_a_id}", headers=owner_headers)
-    assert r.status_code == 200, r.text[:200]
-    body = r.json()
-    assert body["found"] is True
-    assert body["isMultiLocation"] is True
-    assert body["groupPoints"] == 100
+    assert r.status_code == 404, "A staff member cannot access another business by customer ID"
 
 
 def test_staff_passport_endpoint_404s_for_an_unknown_customer(client, owner_headers):

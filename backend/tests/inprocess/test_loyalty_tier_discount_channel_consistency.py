@@ -74,7 +74,7 @@ def test_online_ordering_never_applies_a_tier_discount_even_for_a_matching_guest
     _run(db.products.insert_one({"id": "CC-ONLINE-PROD", "name": "Online Test Item", "price": 100,
                                   "category": "Other", "stock": 100}))
     try:
-        r = req(client, "POST", "/api/online/orders", json={
+        r = req(client, "POST", "/api/online/orders?business=default", json={
             "channel": "pickup",
             "customerName": "Online Order Guest Match", "customerPhone": "0400555666",
             "items": [{"productId": "CC-ONLINE-PROD", "productName": "Online Test Item",

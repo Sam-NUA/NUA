@@ -218,7 +218,7 @@ async def payroll_register(days: int = 90, user: dict = Depends(get_user)):
 @router.get("/payroll/ytd/{staff_id}")
 async def payroll_ytd(staff_id: str, user: dict = Depends(get_user)):
     from middleware.actor_context import tenant_owns_strict
-    staff_doc = await db.auth_users.find_one({"id": staff_id}, {"_id": 0, "businessId": 1})
+    staff_doc = await db.auth_users.find_one({"$and": [{"id": staff_id}, tenant_scope_filter(user.get("businessId"))]}, {"_id": 0, "businessId": 1})
     if not staff_doc or not tenant_owns_strict(staff_doc.get("businessId"), user.get("businessId")):
         raise HTTPException(404, "Staff member not found")
     today = date.today()

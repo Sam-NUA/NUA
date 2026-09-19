@@ -38,7 +38,7 @@ async def create_promotion(promotion: PromotionCreate, user: dict = Depends(requ
 
 @router.put("/promotions/{promo_id}")
 async def update_promotion(promo_id: str, data: dict, user: dict = Depends(require_owner_or_manager)):
-    existing = await db.promotions.find_one({"id": promo_id}, {"_id": 0, "businessId": 1})
+    existing = await db.promotions.find_one({"$and": [{"id": promo_id}, tenant_scope_filter(user.get("businessId"))]}, {"_id": 0, "businessId": 1})
     if not existing or not tenant_owns_strict(existing.get("businessId"), user.get("businessId")):
         raise HTTPException(status_code=404, detail="Promotion not found")
     allowed = {"name", "type", "discount", "active", "schedule",
@@ -48,7 +48,7 @@ async def update_promotion(promo_id: str, data: dict, user: dict = Depends(requi
                "minQuantity", "maxQuantity", "stackable",
                "startDate", "endDate", "activeDays", "startTime", "endTime", "channels"}
     update_data = {k: v for k, v in data.items() if k in allowed}
-    result = await db.promotions.find_one_and_update({"id": promo_id}, {"$set": update_data}, return_document=True)
+    result = await db.promotions.find_one_and_update({"$and": [{"id": promo_id}, tenant_scope_filter(user.get("businessId"))]}, {"$set": update_data}, return_document=True)
     if not result:
         raise HTTPException(status_code=404, detail="Promotion not found")
     result.pop("_id", None)
@@ -56,10 +56,10 @@ async def update_promotion(promo_id: str, data: dict, user: dict = Depends(requi
 
 @router.delete("/promotions/{promo_id}")
 async def delete_promotion(promo_id: str, user: dict = Depends(require_owner_or_manager)):
-    existing = await db.promotions.find_one({"id": promo_id}, {"_id": 0, "businessId": 1})
+    existing = await db.promotions.find_one({"$and": [{"id": promo_id}, tenant_scope_filter(user.get("businessId"))]}, {"_id": 0, "businessId": 1})
     if not existing or not tenant_owns_strict(existing.get("businessId"), user.get("businessId")):
         raise HTTPException(status_code=404, detail="Promotion not found")
-    result = await db.promotions.delete_one({"id": promo_id})
+    result = await db.promotions.delete_one({"$and": [{"id": promo_id}, tenant_scope_filter(user.get("businessId"))]})
     if result.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Promotion not found")
     return {"message": "Promotion deleted"}
@@ -135,7 +135,7 @@ async def create_transaction(transaction: TransactionCreate, user: dict = Depend
     tier_discount = 0
     loyalty_multiplier = 1.0
     if transaction.customerId:
-        customer = await db.customers.find_one({"id": transaction.customerId})
+        customer = await db.customers.find_one({**tenant_scope_filter(user.get("businessId")), "id": transaction.customerId})
         if customer:
             tier_name = customer.get("membershipTier", "Bronze")
             tier_doc = await db.loyalty_tiers.find_one({"name": tier_name}, {"_id": 0})
@@ -190,15 +190,15 @@ async def create_transaction(transaction: TransactionCreate, user: dict = Depend
         if points < min_redeem:
             raise HTTPException(status_code=400, detail=f"Minimum {min_redeem} points required to redeem")
         redeemed_doc = await db.customers.find_one_and_update(
-            {"id": customer_id, "points": {"$gte": points}, "loyaltyLocked": {"$ne": True}},
+            {**tenant_scope_filter(), **tenant_scope_filter(user.get("businessId")), "id": customer_id, "points": {"$gte": points}, "loyaltyLocked": {"$ne": True}},
             {"$inc": {"points": -points}},
         )
         if not redeemed_doc:
-            locked = await db.customers.find_one({"id": customer_id, "loyaltyLocked": True}, {"_id": 0, "id": 1})
+            locked = await db.customers.find_one({**tenant_scope_filter(), **tenant_scope_filter(user.get("businessId")), "id": customer_id, "loyaltyLocked": True}, {"_id": 0, "id": 1})
             if locked:
                 raise HTTPException(status_code=403, detail="Loyalty account locked pending fraud review")
         if not redeemed_doc:
-            balance = int((await db.customers.find_one({"id": customer_id}, {"_id": 0, "points": 1}) or {}).get("points", 0))
+            balance = int((await db.customers.find_one({**tenant_scope_filter(), **tenant_scope_filter(user.get("businessId")), "id": customer_id}, {"_id": 0, "points": 1}) or {}).get("points", 0))
             raise HTTPException(status_code=400, detail=f"Insufficient points: {balance} available, {points} requested")
         return round(points * redeem_rate, 2)
 
@@ -415,7 +415,7 @@ async def create_transaction(transaction: TransactionCreate, user: dict = Depend
         # an identity touchpoint (skipped automatically for base-only venues).
         try:
             from services.customer_identity import record_touchpoint
-            crm = await db.customers.find_one({"id": transaction.customerId}, {"_id": 0, "phone": 1, "email": 1, "name": 1})
+            crm = await db.customers.find_one({**tenant_scope_filter(user.get("businessId")), "id": transaction.customerId}, {"_id": 0, "phone": 1, "email": 1, "name": 1})
             if crm:
                 await record_touchpoint(
                     phone=crm.get("phone"), email=crm.get("email"),
@@ -436,14 +436,14 @@ async def create_transaction(transaction: TransactionCreate, user: dict = Depend
         for part in transaction.splitDetails:
             if not part.customerId or part.customerId == transaction.customerId:
                 continue
-            guest = await db.customers.find_one({"id": part.customerId}, {"_id": 0, "membershipTier": 1})
+            guest = await db.customers.find_one({**tenant_scope_filter(user.get("businessId")), "id": part.customerId}, {"_id": 0, "membershipTier": 1})
             if not guest:
                 continue
             tier_doc = await db.loyalty_tiers.find_one({"name": guest.get("membershipTier", "Bronze")}, {"_id": 0})
             mult = float(tier_doc.get("multiplier", 1.0)) if tier_doc else 1.0
             part_points = int(round(float(part.amount) * earn_rate * mult))
             await db.customers.update_one(
-                {"id": part.customerId},
+                {**tenant_scope_filter(user.get("businessId")), "id": part.customerId},
                 {"$inc": {"totalSpent": part.amount, "visits": 1, "points": part_points},
                  "$set": {"lastVisit": datetime.utcnow().isoformat(),
                           "lastVisitDate": datetime.utcnow().date().isoformat()}},
@@ -479,7 +479,7 @@ async def get_hourly_transactions(_user: dict = Depends(get_user)):
 
 @router.get("/transactions/{txn_id}")
 async def get_transaction_detail(txn_id: str, _user: dict = Depends(get_user)):
-    txn = await db.transactions.find_one({"id": txn_id}, {"_id": 0})
+    txn = await db.transactions.find_one({"$and": [{"id": txn_id}, tenant_scope_filter(_user.get("businessId"))]}, {"_id": 0})
     if not txn or not tenant_owns_strict(txn.get("businessId"), _user.get("businessId")):
         raise HTTPException(status_code=404, detail="Transaction not found")
     # Attach any refunds for this transaction
@@ -532,13 +532,13 @@ async def _reverse_loyalty_for_refund(original_txn: dict, refund_amount: float) 
         # Clawback capped at whatever the customer still has — never drive
         # a balance negative because they already spent points earned here
         # on something else entirely.
-        current = await db.customers.find_one({"id": customer_id}, {"_id": 0, "points": 1})
+        current = await db.customers.find_one({**tenant_scope_filter(), "id": customer_id}, {"_id": 0, "points": 1})
         available = int((current or {}).get("points", 0))
         actual_clawback = min(earn_clawback, available)
         net = redeem_restore - actual_clawback
         if net == 0:
             continue
-        await db.customers.update_one({"id": customer_id}, {"$inc": {"points": net}})
+        await db.customers.update_one({**tenant_scope_filter(), "id": customer_id}, {"$inc": {"points": net}})
         await db.loyalty_ledger.insert_one({
             "id": f"LP-{str(uuid.uuid4())[:8].upper()}",
             "customerId": customer_id, "transactionId": original_txn["id"],
@@ -559,7 +559,7 @@ async def get_refunds(_user: dict = Depends(get_user)):
 
 @router.post("/refunds", response_model=Refund)
 async def create_refund(refund: RefundCreate, _user: dict = Depends(require_owner_or_manager)):
-    original_txn = await db.transactions.find_one({"id": refund.originalTransactionId})
+    original_txn = await db.transactions.find_one({"$and": [{"id": refund.originalTransactionId}, tenant_scope_filter(_user.get("businessId"))]})
     if not original_txn or not tenant_owns_strict(original_txn.get("businessId"), _user.get("businessId")):
         raise HTTPException(status_code=404, detail="Original transaction not found")
     if refund.amount <= 0:
@@ -583,7 +583,7 @@ async def create_refund(refund: RefundCreate, _user: dict = Depends(require_owne
     prior = await db.refunds.find({"originalTransactionId": refund.originalTransactionId}).to_list(1000)
     already_refunded = sum(r.get("amount", 0) for r in prior)
     claimed = await db.transactions.find_one_and_update(
-        {
+        {"$and": [{
             "id": refund.originalTransactionId,
             "$expr": {
                 "$lte": [
@@ -591,11 +591,11 @@ async def create_refund(refund: RefundCreate, _user: dict = Depends(require_owne
                     "$total",
                 ]
             },
-        },
+        }, tenant_scope_filter(_user.get("businessId"))]},
         {"$inc": {"refundedTotal": refund.amount}},
     )
     if not claimed:
-        current = await db.transactions.find_one({"id": refund.originalTransactionId}, {"_id": 0, "total": 1, "refundedTotal": 1})
+        current = await db.transactions.find_one({"$and": [{"id": refund.originalTransactionId}, tenant_scope_filter(_user.get("businessId"))]}, {"_id": 0, "total": 1, "refundedTotal": 1})
         refunded_now = (current or {}).get("refundedTotal", already_refunded)
         refundable = round((current or {}).get("total", 0) - refunded_now, 2)
         raise HTTPException(
@@ -623,7 +623,7 @@ async def create_refund(refund: RefundCreate, _user: dict = Depends(require_owne
         pass
     if refund.refundMethod == "store_credit" and refund.customerId:
         await db.customers.update_one(
-            {"id": refund.customerId},
+            {**tenant_scope_filter(), "id": refund.customerId},
             {"$inc": {"storeCredit": refund.amount}}
         )
 

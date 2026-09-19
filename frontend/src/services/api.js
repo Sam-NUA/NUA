@@ -435,11 +435,11 @@ export const forecastAPI = {
 
 // Public Booking Portal
 export const publicAPI = {
-  getMenu: () => api.get('/public/menu'),
-  getAvailableSlots: (date, partySize) => api.get('/public/available-slots', { params: { date, party_size: partySize } }),
-  book: (data) => api.post('/public/book', data),
-  joinWaitlist: (data) => api.post('/public/join-waitlist', data),
-  getEvents: () => api.get('/public/events'),
+  getMenu: (business) => api.get('/public/menu', { params: { business } }),
+  getAvailableSlots: (date, partySize, business) => api.get('/public/available-slots', { params: { date, party_size: partySize, business } }),
+  book: (data, business) => api.post('/public/book', { ...data, business }),
+  joinWaitlist: (data, business) => api.post('/public/join-waitlist', { ...data, business }),
+  getEvents: (business) => api.get('/public/events', { params: { business } }),
   trackWaitlist: (code) => api.get(`/waitlist/track/${code}`),
   trackWaitlistStreamUrl: (code) => `${API_BASE_URL}/waitlist/track/stream/${encodeURIComponent(code)}`,
 };
@@ -452,9 +452,9 @@ export const paymentAPI = {
 
 // Table-Side Ordering (Public)
 export const tableOrderAPI = {
-  getMenu: (tableId) => api.get(`/table/${tableId}/menu`),
-  placeOrder: (tableId, data) => api.post(`/table/${tableId}/order`, data),
-  getOrders: (tableId) => api.get(`/table/${tableId}/orders`),
+  getMenu: (tableId, business) => api.get(`/table/${tableId}/menu`, { params: { business } }),
+  placeOrder: (tableId, data, business) => api.post(`/table/${tableId}/order`, data, { params: { business } }),
+  getOrders: (tableId, business) => api.get(`/table/${tableId}/orders`, { params: { business } }),
 };
 
 // Stripe Checkout
@@ -606,11 +606,11 @@ export const reservationFeaturesAPI = {
   getTableCombos: () => api.get('/tables/combinations'),
   createTableCombo: (data) => api.post('/tables/combinations', data),
   deleteTableCombo: (id) => api.delete(`/tables/combinations/${id}`),
-  getBookingRules: () => api.get('/booking/rules'),
+  getBookingRules: (business) => api.get('/booking/rules', { params: { business } }),
   saveBookingRules: (data) => api.post('/booking/rules', data),
   getBookingSchedule: () => api.get('/booking/schedule'),
   saveBookingSchedule: (shifts) => api.post('/booking/schedule', { shifts }),
-  getExperiences: () => api.get('/booking/experiences'),
+  getExperiences: (business) => api.get('/booking/experiences', { params: { business } }),
   createExperience: (data) => api.post('/booking/experiences', data),
   updateExperience: (id, data) => api.put(`/booking/experiences/${id}`, data),
   deleteExperience: (id) => api.delete(`/booking/experiences/${id}`),
@@ -645,7 +645,7 @@ export const loyaltyAPI = {
 // Guest-facing loyalty portal — unauthenticated, phone-only lookup
 export const loyaltyGuestAPI = {
   requestCode: (phone) => api.post('/loyalty/v2/guest-lookup/request-code', { phone }),
-  lookup: (phone, code) => api.post('/loyalty/v2/guest-lookup', { phone, code }),
+  lookup: (phone, code, business) => api.post('/loyalty/v2/guest-lookup', { phone, code, business }),
 };
 
 // Items System — Categories, Modifiers, Discounts, Comp/Void, Payment Links
@@ -708,7 +708,7 @@ export const onlineAPI = {
   // SSE endpoint — consumed via EventSource, not axios.
   trackStreamUrl: (code) => `${API_BASE_URL}/online/orders/track/stream/${encodeURIComponent(code)}`,
   kitchenLoad: () => api.get('/online/kitchen/load'),
-  checkVoucher: (code, cart) => api.post('/vouchers/public-check', { code, cart }),
+  checkVoucher: (code, cart, business) => api.post('/vouchers/public-check', { code, cart }, { params: { business } }),
   checkout: (orderId, originUrl) => api.post('/online/orders/checkout', { orderId, originUrl }),
 };
 
@@ -1075,7 +1075,7 @@ export const identityAPI = {
 // instead of asking a returning guest to re-type their details every time.
 export const guestSessionAPI = {
   requestCode: (phone) => api.post('/guest/session/request-code', { phone }),
-  verify: (phone, code) => api.post('/guest/session/verify', { phone, code }),
+  verify: (phone, code, business) => api.post('/guest/session/verify', { phone, code, business }),
   me: (token) => api.get('/guest/session/me', { headers: { Authorization: `Bearer ${token}` } }),
 };
 
@@ -1085,10 +1085,10 @@ export const guestSessionAPI = {
 // release/checkout do, and take the guest token explicitly (never the
 // staff session) since this runs on a guest's own device.
 export const billSplitAPI = {
-  getSplit: (tableNumber) => api.get(`/table/${encodeURIComponent(tableNumber)}/split`),
-  chooseMode: (tableNumber, mode, equalCount, { customAmounts, customPercents } = {}) =>
+  getSplit: (tableNumber, business) => api.get(`/table/${encodeURIComponent(tableNumber)}/split`, { params: { business } }),
+  chooseMode: (tableNumber, mode, equalCount, { customAmounts, customPercents, business } = {}) =>
     api.post(`/table/${encodeURIComponent(tableNumber)}/split/mode`,
-      { mode, equalCount, customAmounts, customPercents }),
+      { mode, equalCount, customAmounts, customPercents }, { params: { business } }),
   status: (splitId) => api.get(`/table/split/${splitId}/status`),
   claim: (splitId, lineIds, token) =>
     api.post(`/table/split/${splitId}/claim`, { lineIds }, { headers: { Authorization: `Bearer ${token}` } }),

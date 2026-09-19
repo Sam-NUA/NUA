@@ -2567,7 +2567,7 @@ const POSTerminal = () => {
 
       <SplitBillLinkDialog
         open={splitLinkOpen} onClose={() => setSplitLinkOpen(false)}
-        tableNumber={tableNumber}
+        tableNumber={tableNumber} businessId={user?.businessId}
       />
 
       {/* QR / UPI scan dialog stacked on top of the split dialog. Nothing is

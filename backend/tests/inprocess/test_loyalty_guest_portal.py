@@ -36,12 +36,12 @@ def test_guest_lookup_finds_a_real_customer_by_phone(client, owner_headers):
     phone = "04" + str(uuid.uuid4().int)[:8]
     _run(db.customers.delete_many({"id": cust_id}))
     _run(db.customers.insert_one({
-        "id": cust_id, "name": "Priya Sharma", "email": "priya@test.com",
+        "id": cust_id, "businessId": "default", "name": "Priya Sharma", "email": "priya@test.com",
         "phone": phone, "points": 250, "visits": 4, "totalSpent": 120.0,
     }))
 
     _request_code(client, phone)
-    r = req(client, "POST", "/api/loyalty/v2/guest-lookup", json={"phone": phone, "code": FIXED_CODE})
+    r = req(client, "POST", "/api/loyalty/v2/guest-lookup", json={"phone": phone, "code": FIXED_CODE, "business": "default"})
     assert r.status_code == 200, r.text[:200]
     body = r.json()
     assert body["found"] is True
@@ -55,7 +55,7 @@ def test_guest_lookup_finds_a_real_customer_by_phone(client, owner_headers):
 def test_guest_lookup_on_an_unknown_phone_returns_a_generic_miss(client):
     nonexistent_phone = "09" + str(uuid.uuid4().int)[:9]
     _request_code(client, nonexistent_phone)
-    r = req(client, "POST", "/api/loyalty/v2/guest-lookup", json={"phone": nonexistent_phone, "code": FIXED_CODE})
+    r = req(client, "POST", "/api/loyalty/v2/guest-lookup", json={"phone": nonexistent_phone, "code": FIXED_CODE, "business": "default"})
     assert r.status_code == 200, r.text[:200]
     assert r.json() == {"found": False}
 
@@ -63,7 +63,7 @@ def test_guest_lookup_on_an_unknown_phone_returns_a_generic_miss(client):
 def test_guest_lookup_requires_no_authentication(anon):
     phone = "0400" + str(uuid.uuid4().int)[:6]
     _request_code(anon, phone)
-    r = req(anon, "POST", "/api/loyalty/v2/guest-lookup", json={"phone": phone, "code": FIXED_CODE})
+    r = req(anon, "POST", "/api/loyalty/v2/guest-lookup", json={"phone": phone, "code": FIXED_CODE, "business": "default"})
     assert r.status_code == 200, r.text[:200]
 
 
@@ -99,12 +99,12 @@ def test_guest_lookup_code_is_single_use(client):
     phone = "0444" + str(uuid.uuid4().int)[:6]
     _run(db.customers.delete_many({"id": cust_id}))
     _run(db.customers.insert_one({
-        "id": cust_id, "name": "Sam Lee", "phone": phone, "points": 10, "visits": 1,
+        "id": cust_id, "businessId": "default", "name": "Sam Lee", "phone": phone, "points": 10, "visits": 1,
     }))
     _request_code(client, phone)
-    first = req(client, "POST", "/api/loyalty/v2/guest-lookup", json={"phone": phone, "code": FIXED_CODE})
+    first = req(client, "POST", "/api/loyalty/v2/guest-lookup", json={"phone": phone, "code": FIXED_CODE, "business": "default"})
     assert first.status_code == 200
-    second = req(client, "POST", "/api/loyalty/v2/guest-lookup", json={"phone": phone, "code": FIXED_CODE})
+    second = req(client, "POST", "/api/loyalty/v2/guest-lookup", json={"phone": phone, "code": FIXED_CODE, "business": "default"})
     assert second.status_code == 401, second.text[:200]
 
 

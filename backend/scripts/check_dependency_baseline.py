@@ -39,7 +39,7 @@ BASELINE_FILE = BACKEND_DIR / "dependency_baseline.json"
 
 def run_pip_audit() -> dict:
     result = subprocess.run(
-        ["python", "-m", "pip_audit", "-r", "requirements.txt", "-f", "json"],
+        [sys.executable, "-m", "pip_audit", "-r", "requirements.txt", "-f", "json"],
         cwd=BACKEND_DIR, capture_output=True, text=True,
     )
     # pip-audit exits 1 when it finds vulnerabilities — that's expected, not

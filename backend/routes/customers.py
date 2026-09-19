@@ -34,10 +34,10 @@ async def get_customers(search: Optional[str] = None, user: dict = Depends(get_u
     return safe_parse_list(customers, Customer, fallback=_customer_fallback, where="customers")
 
 @router.post("/customers", response_model=Customer)
-async def create_customer(customer: CustomerCreate, _: dict = Depends(get_user)):
+async def create_customer(customer: CustomerCreate, user: dict = Depends(get_user)):
     from services.entity_service import stamped_insert
     customer_dict = customer.dict()
-    customer_obj = Customer(**customer_dict)
+    customer_obj = Customer(**customer_dict, businessId=user["businessId"])
     doc = await stamped_insert("customers", customer_obj.dict(), entity_type="customer")
     # Rules engine emit
     try:
@@ -49,16 +49,7 @@ async def create_customer(customer: CustomerCreate, _: dict = Depends(get_user))
 
 @router.put("/customers/{customer_id}", response_model=Customer)
 async def update_customer(customer_id: str, customer_update: CustomerUpdate, user: dict = Depends(get_user)):
-    existing = await db.customers.find_one({"id": customer_id}, {"_id": 0, "businessId": 1})
-    # NOT tenant_owns_strict — models/customer.py's Customer model has no
-    # businessId field at all; it's stamped externally, inconsistently,
-    # at ~15+ different creation call sites and test fixtures across this
-    # codebase (confirmed via the full test suite: converting this site
-    # broke test_loyalty_v2_points_field.py/test_voice_calls.py, both of
-    # which seed a customer via the bare Customer(...).dict() shape with
-    # no businessId). Auditing and fixing every customer-creation site
-    # plus every test fixture that relies on this is a larger, separate
-    # effort — not attempted this pass.
+    existing = await db.customers.find_one({**tenant_scope_filter(user.get("businessId")), "id": customer_id}, {"_id": 0, "businessId": 1})
     if not existing or not tenant_owns(existing.get("businessId"), user.get("businessId")):
         raise HTTPException(status_code=404, detail="Customer not found")
     from services.entity_service import stamped_update
@@ -71,24 +62,15 @@ async def update_customer(customer_id: str, customer_update: CustomerUpdate, use
 # ============ CUSTOMER PROFILE (360 Guest CRM) ============
 @router.get("/customers/{customer_id}/profile")
 async def get_customer_profile(customer_id: str, user: dict = Depends(get_user)):
-    customer = await db.customers.find_one({"id": customer_id}, {"_id": 0})
-    # NOT tenant_owns_strict — models/customer.py's Customer model has no
-    # businessId field at all; it's stamped externally, inconsistently,
-    # at ~15+ different creation call sites and test fixtures across this
-    # codebase (confirmed via the full test suite: converting this site
-    # broke test_loyalty_v2_points_field.py/test_voice_calls.py, both of
-    # which seed a customer via the bare Customer(...).dict() shape with
-    # no businessId). Auditing and fixing every customer-creation site
-    # plus every test fixture that relies on this is a larger, separate
-    # effort — not attempted this pass.
+    customer = await db.customers.find_one({**tenant_scope_filter(user.get("businessId")), "id": customer_id}, {"_id": 0})
     if not customer or not tenant_owns(customer.get("businessId"), user.get("businessId")):
         raise HTTPException(status_code=404, detail="Customer not found")
     reservations = await db.reservations.find(
-        {"$or": [{"customerId": customer_id}, {"guestEmail": customer.get("email", "")}]},
+        {"$and": [tenant_scope_filter(user["businessId"]), {"$or": [{"customerId": customer_id}, {"guestEmail": customer["email"]}] if customer.get("email") else [{"customerId": customer_id}]}]},
         {"_id": 0}
     ).sort("date", -1).to_list(50)
-    feedbacks = await db.feedback.find({"customerId": customer_id}, {"_id": 0}).sort("createdAt", -1).to_list(50)
-    transactions = await db.transactions.find({"customerId": customer_id}, {"_id": 0}).sort("timestamp", -1).to_list(50)
+    feedbacks = await db.feedback.find({"customerId": customer_id, **tenant_scope_filter(user["businessId"])}, {"_id": 0}).sort("createdAt", -1).to_list(50)
+    transactions = await db.transactions.find({"customerId": customer_id, **tenant_scope_filter(user["businessId"])}, {"_id": 0}).sort("timestamp", -1).to_list(50)
     return {
         **customer,
         "reservationHistory": reservations,
@@ -102,16 +84,7 @@ async def get_customer_wallet(customer_id: str, user: dict = Depends(get_user)):
     """Store credit + points + active vouchers + occasion offers in one view.
     Reading the wallet also lazily issues any due occasion vouchers
     (e.g. birthday month), so offers always show up without a cron job."""
-    existing = await db.customers.find_one({"id": customer_id}, {"_id": 0, "businessId": 1})
-    # NOT tenant_owns_strict — models/customer.py's Customer model has no
-    # businessId field at all; it's stamped externally, inconsistently,
-    # at ~15+ different creation call sites and test fixtures across this
-    # codebase (confirmed via the full test suite: converting this site
-    # broke test_loyalty_v2_points_field.py/test_voice_calls.py, both of
-    # which seed a customer via the bare Customer(...).dict() shape with
-    # no businessId). Auditing and fixing every customer-creation site
-    # plus every test fixture that relies on this is a larger, separate
-    # effort — not attempted this pass.
+    existing = await db.customers.find_one({**tenant_scope_filter(user.get("businessId")), "id": customer_id}, {"_id": 0, "businessId": 1})
     if not existing or not tenant_owns(existing.get("businessId"), user.get("businessId")):
         raise HTTPException(status_code=404, detail="Customer not found")
     from services.wallet_service import get_wallet
@@ -126,28 +99,19 @@ async def redeem_store_credit(customer_id: str, data: dict, user: dict = Depends
     """Atomic balance-checked decrement — used when store credit is applied
     as a payment tender at checkout. Mirrors the gift-card redeem pattern so
     two terminals can't double-spend the same customer's credit."""
-    existing = await db.customers.find_one({"id": customer_id}, {"_id": 0, "businessId": 1})
-    # NOT tenant_owns_strict — models/customer.py's Customer model has no
-    # businessId field at all; it's stamped externally, inconsistently,
-    # at ~15+ different creation call sites and test fixtures across this
-    # codebase (confirmed via the full test suite: converting this site
-    # broke test_loyalty_v2_points_field.py/test_voice_calls.py, both of
-    # which seed a customer via the bare Customer(...).dict() shape with
-    # no businessId). Auditing and fixing every customer-creation site
-    # plus every test fixture that relies on this is a larger, separate
-    # effort — not attempted this pass.
+    existing = await db.customers.find_one({**tenant_scope_filter(user.get("businessId")), "id": customer_id}, {"_id": 0, "businessId": 1})
     if not existing or not tenant_owns(existing.get("businessId"), user.get("businessId")):
         raise HTTPException(status_code=404, detail="Customer not found")
     amount = round(float(data.get("amount", 0) or 0), 2)
     if amount <= 0:
         raise HTTPException(status_code=400, detail="amount must be > 0")
     customer = await db.customers.find_one_and_update(
-        {"id": customer_id, "storeCredit": {"$gte": amount}},
+        {"id": customer_id, **tenant_scope_filter(user["businessId"]), "storeCredit": {"$gte": amount}},
         {"$inc": {"storeCredit": -amount}},
         return_document=True,
     )
     if not customer:
-        exists = await db.customers.find_one({"id": customer_id}, {"_id": 0, "storeCredit": 1})
+        exists = await db.customers.find_one({**tenant_scope_filter(user.get("businessId")), "id": customer_id}, {"_id": 0, "storeCredit": 1})
         if not exists:
             raise HTTPException(status_code=404, detail="Customer not found")
         raise HTTPException(
@@ -175,8 +139,8 @@ async def save_wallet_offer_settings(data: dict, _user: dict = Depends(require_o
 
 # ============ FEEDBACK API ============
 @router.get("/feedback", response_model=List[Feedback])
-async def get_feedback(customer_id: Optional[str] = None, status: Optional[str] = None, _: dict = Depends(get_user)):
-    query = {}
+async def get_feedback(customer_id: Optional[str] = None, status: Optional[str] = None, user: dict = Depends(get_user)):
+    query = tenant_scope_filter(user["businessId"])
     if customer_id:
         query["customerId"] = customer_id
     if status:
@@ -185,26 +149,29 @@ async def get_feedback(customer_id: Optional[str] = None, status: Optional[str] 
     return [Feedback(**f) for f in items]
 
 @router.post("/feedback", response_model=Feedback)
-async def create_feedback(fb: FeedbackCreate, _: dict = Depends(get_user)):
-    fb_obj = Feedback(**fb.dict())
+async def create_feedback(fb: FeedbackCreate, user: dict = Depends(get_user)):
+    scope = tenant_scope_filter(user["businessId"])
+    if fb.customerId and not await db.customers.find_one({"id": fb.customerId, **scope}):
+        raise HTTPException(status_code=404, detail="Customer not found")
+    fb_obj = Feedback(**fb.dict(), businessId=user["businessId"])
     await db.feedback.insert_one(fb_obj.dict())
     if fb.customerId:
-        customer = await db.customers.find_one({"id": fb.customerId}, {"_id": 0})
+        customer = await db.customers.find_one({"id": fb.customerId, **scope}, {"_id": 0})
         if customer:
             count = customer.get("feedbackCount", 0)
             avg = customer.get("feedbackRating", 0)
             new_count = count + 1
             new_avg = ((avg * count) + fb.rating) / new_count
             await db.customers.update_one(
-                {"id": fb.customerId},
+                {"id": fb.customerId, **scope},
                 {"$set": {"feedbackRating": round(new_avg, 1), "feedbackCount": new_count}}
             )
     return fb_obj
 
 @router.put("/feedback/{feedback_id}/respond")
-async def respond_to_feedback(feedback_id: str, response: str = "", _: dict = Depends(get_user)):
+async def respond_to_feedback(feedback_id: str, response: str = "", user: dict = Depends(get_user)):
     result = await db.feedback.find_one_and_update(
-        {"id": feedback_id},
+        {"id": feedback_id, **tenant_scope_filter(user["businessId"])},
         {"$set": {"status": "responded", "response": response}},
         return_document=True
     )

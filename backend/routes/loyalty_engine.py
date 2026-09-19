@@ -96,16 +96,7 @@ async def earn_points(data: dict, user: dict = Depends(get_user)):
     transaction_id = data.get("transactionId")
     if not customer_id or not items:
         raise HTTPException(status_code=400, detail="customerId + items required")
-    customer = await db.customers.find_one({"id": customer_id}, {"_id": 0, "businessId": 1})
-    # NOT tenant_owns_strict — models/customer.py's Customer model has no
-    # businessId field at all; it's stamped externally, inconsistently,
-    # at ~15+ different creation call sites and test fixtures across this
-    # codebase (confirmed via the full test suite: converting this site
-    # broke test_loyalty_v2_points_field.py/test_voice_calls.py, both of
-    # which seed a customer via the bare Customer(...).dict() shape with
-    # no businessId). Auditing and fixing every customer-creation site
-    # plus every test fixture that relies on this is a larger, separate
-    # effort — not attempted this pass.
+    customer = await db.customers.find_one({**tenant_scope_filter(user.get("businessId")), "id": customer_id}, {"_id": 0, "businessId": 1})
     if not customer or not tenant_owns(customer.get("businessId"), user.get("businessId")):
         raise HTTPException(status_code=404, detail="Customer not found")
     # Idempotency: skip if we already credited this transaction
@@ -146,7 +137,7 @@ async def earn_points(data: dict, user: dict = Depends(get_user)):
     # against); this used to write "loyaltyPoints" instead, a field checkout
     # never read, so points earned through this endpoint were invisible at
     # the register.
-    await db.customers.update_one({"id": customer_id}, {"$inc": {"points": earned_int}})
+    await db.customers.update_one({**tenant_scope_filter(user.get("businessId")), "id": customer_id}, {"$inc": {"points": earned_int}})
     return {"earned": earned_int, "breakdown": breakdown}
 
 
@@ -160,16 +151,7 @@ async def redeem_points(data: dict, user: dict = Depends(get_user)):
     transaction_id = data.get("transactionId")
     if not customer_id or points <= 0:
         raise HTTPException(status_code=400, detail="customerId + points (>0) required")
-    locked_check = await db.customers.find_one({"id": customer_id}, {"_id": 0, "loyaltyLocked": 1, "businessId": 1})
-    # NOT tenant_owns_strict — models/customer.py's Customer model has no
-    # businessId field at all; it's stamped externally, inconsistently,
-    # at ~15+ different creation call sites and test fixtures across this
-    # codebase (confirmed via the full test suite: converting this site
-    # broke test_loyalty_v2_points_field.py/test_voice_calls.py, both of
-    # which seed a customer via the bare Customer(...).dict() shape with
-    # no businessId). Auditing and fixing every customer-creation site
-    # plus every test fixture that relies on this is a larger, separate
-    # effort — not attempted this pass.
+    locked_check = await db.customers.find_one({**tenant_scope_filter(user.get("businessId")), "id": customer_id}, {"_id": 0, "loyaltyLocked": 1, "businessId": 1})
     if not locked_check or not tenant_owns(locked_check.get("businessId"), user.get("businessId")):
         raise HTTPException(status_code=404, detail="Customer not found")
     if locked_check and locked_check.get("loyaltyLocked"):
@@ -181,11 +163,11 @@ async def redeem_points(data: dict, user: dict = Depends(get_user)):
     # Atomic balance-checked decrement — same pattern as the checkout redeem
     # path, so a double-tap or concurrent call can't take a customer negative.
     updated = await db.customers.find_one_and_update(
-        {"id": customer_id, "points": {"$gte": points}},
+        {**tenant_scope_filter(user.get("businessId")), "id": customer_id, "points": {"$gte": points}},
         {"$inc": {"points": -points}},
     )
     if not updated:
-        current = await db.customers.find_one({"id": customer_id}, {"_id": 0, "points": 1})
+        current = await db.customers.find_one({**tenant_scope_filter(user.get("businessId")), "id": customer_id}, {"_id": 0, "points": 1})
         if not current:
             raise HTTPException(status_code=404, detail="Customer not found")
         raise HTTPException(status_code=400, detail=f"Insufficient points: {int(current.get('points', 0))} available")
@@ -207,16 +189,7 @@ async def redeem_points(data: dict, user: dict = Depends(get_user)):
 
 @router.get("/loyalty/balance/{customer_id}")
 async def get_balance(customer_id: str, user: dict = Depends(get_user)):
-    customer = await db.customers.find_one({"id": customer_id}, {"_id": 0})
-    # NOT tenant_owns_strict — models/customer.py's Customer model has no
-    # businessId field at all; it's stamped externally, inconsistently,
-    # at ~15+ different creation call sites and test fixtures across this
-    # codebase (confirmed via the full test suite: converting this site
-    # broke test_loyalty_v2_points_field.py/test_voice_calls.py, both of
-    # which seed a customer via the bare Customer(...).dict() shape with
-    # no businessId). Auditing and fixing every customer-creation site
-    # plus every test fixture that relies on this is a larger, separate
-    # effort — not attempted this pass.
+    customer = await db.customers.find_one({**tenant_scope_filter(user.get("businessId")), "id": customer_id}, {"_id": 0})
     if not customer or not tenant_owns(customer.get("businessId"), user.get("businessId")):
         raise HTTPException(status_code=404, detail="Customer not found")
     pts = int(customer.get("points", 0))
@@ -232,16 +205,7 @@ async def get_balance(customer_id: str, user: dict = Depends(get_user)):
 
 @router.get("/loyalty/ledger/{customer_id}")
 async def get_ledger(customer_id: str, user: dict = Depends(get_user)):
-    customer = await db.customers.find_one({"id": customer_id}, {"_id": 0, "businessId": 1})
-    # NOT tenant_owns_strict — models/customer.py's Customer model has no
-    # businessId field at all; it's stamped externally, inconsistently,
-    # at ~15+ different creation call sites and test fixtures across this
-    # codebase (confirmed via the full test suite: converting this site
-    # broke test_loyalty_v2_points_field.py/test_voice_calls.py, both of
-    # which seed a customer via the bare Customer(...).dict() shape with
-    # no businessId). Auditing and fixing every customer-creation site
-    # plus every test fixture that relies on this is a larger, separate
-    # effort — not attempted this pass.
+    customer = await db.customers.find_one({**tenant_scope_filter(user.get("businessId")), "id": customer_id}, {"_id": 0, "businessId": 1})
     if not customer or not tenant_owns(customer.get("businessId"), user.get("businessId")):
         raise HTTPException(status_code=404, detail="Customer not found")
     entries = await db.loyalty_ledger.find({"customerId": customer_id}, {"_id": 0}).sort("createdAt", -1).to_list(100)
@@ -262,7 +226,7 @@ async def get_liability_report(user: dict = Depends(require_owner_or_manager)):
     redeem_rate = float(cfg.get("redeemRate", 0.01))
     scope = tenant_scope_filter(user.get("businessId"))
     customers = await db.customers.find(
-        {"$and": [scope, {"points": {"$gt": 0}}]}, {"_id": 0, "id": 1, "name": 1, "points": 1}
+        {**tenant_scope_filter(user.get("businessId")), "$and": [scope, {"points": {"$gt": 0}}]}, {"_id": 0, "id": 1, "name": 1, "points": 1}
     ).to_list(20000)
     total_points = sum(int(c.get("points", 0)) for c in customers)
     top_holders = sorted(customers, key=lambda c: c.get("points", 0), reverse=True)[:20]
@@ -379,7 +343,7 @@ async def get_locked_accounts(user: dict = Depends(require_owner_or_manager)):
     be driven from."""
     scope = tenant_scope_filter(user.get("businessId"))
     customers = await db.customers.find(
-        {"$and": [scope, {"loyaltyLocked": True}]}, {"_id": 0, "id": 1, "name": 1, "email": 1, "points": 1}
+        {**tenant_scope_filter(user.get("businessId")), "$and": [scope, {"loyaltyLocked": True}]}, {"_id": 0, "id": 1, "name": 1, "email": 1, "points": 1}
     ).to_list(500)
     return {"accounts": customers, "count": len(customers)}
 
@@ -409,7 +373,7 @@ async def _compute_fraud_signals(business_id: Optional[str] = None) -> list:
     async for row in db.loyalty_ledger.aggregate(pipeline):
         if not row["_id"]:
             continue
-        customer = await db.customers.find_one({"id": row["_id"]}, {"_id": 0, "name": 1})
+        customer = await db.customers.find_one({**tenant_scope_filter(business_id), "id": row["_id"]}, {"_id": 0, "name": 1})
         signals.append({
             "type": "point_farming",
             "customerId": row["_id"],
@@ -495,7 +459,7 @@ async def resolve_fraud_flag(flag_id: str, data: dict, user: dict = Depends(requ
     new_status = data.get("status")
     if new_status not in ("reviewed_ok", "confirmed_abuse"):
         raise HTTPException(status_code=400, detail="status must be reviewed_ok or confirmed_abuse")
-    flag = await db.loyalty_fraud_flags.find_one({"id": flag_id}, {"_id": 0})
+    flag = await db.loyalty_fraud_flags.find_one({"$and": [{"id": flag_id}, tenant_scope_filter(user.get("businessId"))]}, {"_id": 0})
     if not flag or not tenant_owns_strict(flag.get("businessId"), user.get("businessId")):
         raise HTTPException(status_code=404, detail="Flag not found")
     if flag["status"] != "open":
@@ -504,7 +468,7 @@ async def resolve_fraud_flag(flag_id: str, data: dict, user: dict = Depends(requ
     action_taken = None
     if new_status == "confirmed_abuse":
         if flag["type"] == "point_farming" and flag.get("customerId"):
-            await db.customers.update_one({"id": flag["customerId"]}, {"$set": {"loyaltyLocked": True}})
+            await db.customers.update_one({**tenant_scope_filter(user.get("businessId")), "id": flag["customerId"]}, {"$set": {"loyaltyLocked": True}})
             action_taken = "Loyalty account locked — redemption blocked until unlocked"
         elif flag["type"] == "voucher_sharing" and flag.get("voucherId"):
             await db.vouchers.update_one({"id": flag["voucherId"]}, {"$set": {
@@ -515,7 +479,7 @@ async def resolve_fraud_flag(flag_id: str, data: dict, user: dict = Depends(requ
             }})
             action_taken = "Voucher revoked"
 
-    await db.loyalty_fraud_flags.update_one({"id": flag_id}, {"$set": {
+    await db.loyalty_fraud_flags.update_one({"$and": [{"id": flag_id}, tenant_scope_filter(user.get("businessId"))]}, {"$set": {
         "status": new_status,
         "reviewedBy": user.get("email"), "reviewedAt": datetime.now(timezone.utc).isoformat(),
         "reviewReason": data.get("reason"),
@@ -536,19 +500,10 @@ async def unlock_loyalty_account(customer_id: str, user: dict = Depends(require_
     """Reverse a loyaltyLocked from a confirmed_abuse flag — owner only,
     since re-enabling redemption after a fraud confirmation is a judgment
     call worth restricting more tightly than reviewing the flag itself."""
-    customer = await db.customers.find_one({"id": customer_id}, {"_id": 0, "businessId": 1})
-    # NOT tenant_owns_strict — models/customer.py's Customer model has no
-    # businessId field at all; it's stamped externally, inconsistently,
-    # at ~15+ different creation call sites and test fixtures across this
-    # codebase (confirmed via the full test suite: converting this site
-    # broke test_loyalty_v2_points_field.py/test_voice_calls.py, both of
-    # which seed a customer via the bare Customer(...).dict() shape with
-    # no businessId). Auditing and fixing every customer-creation site
-    # plus every test fixture that relies on this is a larger, separate
-    # effort — not attempted this pass.
+    customer = await db.customers.find_one({**tenant_scope_filter(user.get("businessId")), "id": customer_id}, {"_id": 0, "businessId": 1})
     if not customer or not tenant_owns(customer.get("businessId"), user.get("businessId")):
         raise HTTPException(status_code=404, detail="Customer not found")
-    await db.customers.update_one({"id": customer_id}, {"$set": {"loyaltyLocked": False}})
+    await db.customers.update_one({**tenant_scope_filter(user.get("businessId")), "id": customer_id}, {"$set": {"loyaltyLocked": False}})
     return {"ok": True}
 
 
@@ -628,7 +583,7 @@ async def _expire_inactive_points(cfg: dict, business_id: Optional[str] = None) 
         pts = int(c.get("points", 0))
         if pts <= 0:
             continue
-        await db.customers.update_one({"id": c["id"]}, {"$inc": {"points": -pts}})
+        await db.customers.update_one({**tenant_scope_filter(business_id), "id": c["id"]}, {"$inc": {"points": -pts}})
         await db.loyalty_ledger.insert_one({
             "id": f"LP-{str(uuid.uuid4())[:8].upper()}",
             "customerId": c["id"], "type": "expire", "points": -pts,
@@ -685,7 +640,7 @@ async def _warn_expiring_points(cfg: dict, business_id: Optional[str] = None) ->
                               f"<p>Hi {c.get('name', '')},</p><p>{msg}</p>")
         if c.get("phone"):
             await send_sms(c["phone"], msg)
-        await db.customers.update_one({"id": c["id"]}, {"$set": {"loyaltyExpiryWarnedAt": now.isoformat()}})
+        await db.customers.update_one({**tenant_scope_filter(business_id), "id": c["id"]}, {"$set": {"loyaltyExpiryWarnedAt": now.isoformat()}})
         warned.append({"customerId": c["id"], "points": pts, "daysLeft": days_left})
     return warned
 
@@ -725,7 +680,7 @@ async def _reevaluate_tiers(cfg: dict, business_id: Optional[str] = None) -> dic
         if qual_rank < cur_rank:
             # Balance now qualifies for a HIGHER tier than currently held.
             await db.customers.update_one(
-                {"id": c["id"]}, {"$set": {"membershipTier": qualifying}, "$unset": {"tierGraceStartedAt": ""}}
+                {**tenant_scope_filter(business_id), "id": c["id"]}, {"$set": {"membershipTier": qualifying}, "$unset": {"tierGraceStartedAt": ""}}
             )
             upgraded.append({"customerId": c["id"], "from": current, "to": qualifying})
         elif qual_rank > cur_rank:
@@ -734,19 +689,19 @@ async def _reevaluate_tiers(cfg: dict, business_id: Optional[str] = None) -> dic
                 continue
             started = c.get("tierGraceStartedAt")
             if not started:
-                await db.customers.update_one({"id": c["id"]}, {"$set": {"tierGraceStartedAt": now.isoformat()}})
+                await db.customers.update_one({**tenant_scope_filter(business_id), "id": c["id"]}, {"$set": {"tierGraceStartedAt": now.isoformat()}})
                 continue
             started_dt = datetime.fromisoformat(started.replace("Z", "+00:00")) if isinstance(started, str) else started
             if started_dt.tzinfo is None:
                 started_dt = started_dt.replace(tzinfo=timezone.utc)
             if (now - started_dt).days >= grace_days:
                 await db.customers.update_one(
-                    {"id": c["id"]}, {"$set": {"membershipTier": qualifying}, "$unset": {"tierGraceStartedAt": ""}}
+                    {**tenant_scope_filter(business_id), "id": c["id"]}, {"$set": {"membershipTier": qualifying}, "$unset": {"tierGraceStartedAt": ""}}
                 )
                 downgraded.append({"customerId": c["id"], "from": current, "to": qualifying})
         elif c.get("tierGraceStartedAt"):
             # Back at/above threshold before the grace period ran out — clear it.
-            await db.customers.update_one({"id": c["id"]}, {"$unset": {"tierGraceStartedAt": ""}})
+            await db.customers.update_one({**tenant_scope_filter(business_id), "id": c["id"]}, {"$unset": {"tierGraceStartedAt": ""}})
     return {"downgraded": downgraded, "upgraded": upgraded}
 
 

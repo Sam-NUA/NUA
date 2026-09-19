@@ -658,7 +658,7 @@ async def booking_heatmap(_: dict = Depends(require_owner_or_manager)):
 # =============================================================================
 @router.get("/analytics/cohort-retention")
 async def cohort_retention(_: dict = Depends(require_owner_or_manager)):
-    customers = await db.customers.find({}, {"_id": 0, "id": 1, "createdAt": 1}).to_list(5000)
+    customers = await db.customers.find({**tenant_scope_filter(), }, {"_id": 0, "id": 1, "createdAt": 1}).to_list(5000)
     tx = await db.transactions.find({}, {"_id": 0, "customerId": 1, "createdAt": 1}).to_list(20000)
     # Group customers by month of first signup
     cohorts = {}
@@ -796,16 +796,7 @@ async def gdpr_export(customer_id: str, user: dict = Depends(require_owner_or_ma
     Also fixed here: the customer lookup had no tenant check whatsoever —
     any owner/manager of ANY business could export another business's
     customer's full personal data by customer_id alone."""
-    customer = await db.customers.find_one({"id": customer_id}, {"_id": 0})
-    # NOT tenant_owns_strict — models/customer.py's Customer model has no
-    # businessId field at all; it's stamped externally, inconsistently,
-    # at ~15+ different creation call sites and test fixtures across this
-    # codebase (confirmed via the full test suite: converting this site
-    # broke test_loyalty_v2_points_field.py/test_voice_calls.py, both of
-    # which seed a customer via the bare Customer(...).dict() shape with
-    # no businessId). Auditing and fixing every customer-creation site
-    # plus every test fixture that relies on this is a larger, separate
-    # effort — not attempted this pass.
+    customer = await db.customers.find_one({**tenant_scope_filter(user.get("businessId")), "id": customer_id}, {"_id": 0})
     if not customer or not tenant_owns(customer.get("businessId"), user.get("businessId")):
         raise HTTPException(status_code=404, detail="not found")
     business_id = user.get("businessId")
@@ -858,21 +849,12 @@ async def gdpr_export(customer_id: str, user: dict = Depends(require_owner_or_ma
 
 @router.delete("/customers/{customer_id}/gdpr-erase")
 async def gdpr_erase(customer_id: str, user: dict = Depends(require_owner)):
-    existing = await db.customers.find_one({"id": customer_id}, {"_id": 0, "businessId": 1, "phone": 1})
-    # NOT tenant_owns_strict — models/customer.py's Customer model has no
-    # businessId field at all; it's stamped externally, inconsistently,
-    # at ~15+ different creation call sites and test fixtures across this
-    # codebase (confirmed via the full test suite: converting this site
-    # broke test_loyalty_v2_points_field.py/test_voice_calls.py, both of
-    # which seed a customer via the bare Customer(...).dict() shape with
-    # no businessId). Auditing and fixing every customer-creation site
-    # plus every test fixture that relies on this is a larger, separate
-    # effort — not attempted this pass.
+    existing = await db.customers.find_one({**tenant_scope_filter(user.get("businessId")), "id": customer_id}, {"_id": 0, "businessId": 1, "phone": 1})
     if not existing or not tenant_owns(existing.get("businessId"), user.get("businessId")):
         raise HTTPException(status_code=404, detail="not found")
     # Anonymize rather than hard-delete to preserve financial records
     anon = {"name": "[REDACTED]", "email": "redacted@nua.local", "phone": "[REDACTED]", "notes": "", "erasedAt": datetime.now(timezone.utc).isoformat(), "erasedBy": user["id"]}
-    await db.customers.update_one({"id": customer_id}, {"$set": anon})
+    await db.customers.update_one({**tenant_scope_filter(user.get("businessId")), "id": customer_id}, {"$set": anon})
     await db.feedback.update_many({"customerId": customer_id}, {"$set": {"customerName": "[REDACTED]"}})
 
     phone = existing.get("phone")

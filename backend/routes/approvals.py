@@ -26,7 +26,7 @@ async def pending_count(user: dict = Depends(get_user)):
 
 @router.get("/{aid}")
 async def get_approval(aid: str, user: dict = Depends(get_user)):
-    doc = await db.approvals.find_one({"id": aid}, {"_id": 0})
+    doc = await db.approvals.find_one({"$and": [{"id": aid}, tenant_scope_filter(user.get("businessId"))]}, {"_id": 0})
     if not doc or not tenant_owns_strict(doc.get("businessId"), user.get("businessId")):
         raise HTTPException(404, "Approval not found")
     return doc
@@ -90,7 +90,7 @@ async def _execute_action(params: dict, action_type: str, rule_id: Optional[str]
 
 @router.post("/{aid}/approve")
 async def approve(aid: str, user: dict = Depends(require_owner_or_manager)):
-    doc = await db.approvals.find_one({"id": aid}, {"_id": 0})
+    doc = await db.approvals.find_one({"$and": [{"id": aid}, tenant_scope_filter(user.get("businessId"))]}, {"_id": 0})
     if not doc or not tenant_owns_strict(doc.get("businessId"), user.get("businessId")):
         raise HTTPException(404, "Approval not found")
 
@@ -106,7 +106,7 @@ async def approve(aid: str, user: dict = Depends(require_owner_or_manager)):
 
 @router.post("/{aid}/reject")
 async def reject(aid: str, body: dict, user: dict = Depends(require_owner_or_manager)):
-    doc = await db.approvals.find_one({"id": aid}, {"_id": 0})
+    doc = await db.approvals.find_one({"$and": [{"id": aid}, tenant_scope_filter(user.get("businessId"))]}, {"_id": 0})
     if not doc or not tenant_owns_strict(doc.get("businessId"), user.get("businessId")):
         raise HTTPException(404, "Approval not found")
     try:

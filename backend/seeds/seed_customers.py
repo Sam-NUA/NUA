@@ -9,6 +9,7 @@ so re-running on a restored DB never duplicates real guest records.
 """
 from datetime import datetime, timedelta, timezone
 import uuid
+from typing import Any, Dict, List
 from database import db
 
 
@@ -16,7 +17,7 @@ def _iso(d: datetime) -> str:
     return d.replace(microsecond=0).isoformat()
 
 
-DEMO_CUSTOMERS = [
+DEMO_CUSTOMERS: List[Dict[str, Any]] = [
     {
         "name": "Olivia Bennett",
         "email": "olivia.bennett@example.com",
@@ -255,7 +256,7 @@ def _seed_feedbacks(customer_id: str, name: str, count: int, avg_rating: float):
     return rows
 
 
-async def seed_demo_customers():
+async def seed_demo_customers(business_id: str = "default"):
     """Insert 5 rich customers + reservations + transactions + feedback.
 
     Idempotent on a PER-CUSTOMER basis (matches on email) — so safe to run
@@ -263,16 +264,10 @@ async def seed_demo_customers():
     one-time cleanup of obviously-broken legacy rows (e.g. redacted
     placeholders with `@nua.local` emails) that break Pydantic EmailStr
     validation and cause the customers GET endpoint to 500."""
-    # One-time hygiene: nuke clearly-invalid placeholder rows.
-    try:
-        await db.customers.delete_many({"email": {"$regex": r"@nua\.local$", "$options": "i"}})
-    except Exception:
-        pass
-
     seeded_ids = []
     skipped = 0
     for c in DEMO_CUSTOMERS:
-        if await db.customers.find_one({"email": c["email"]}):
+        if await db.customers.count_documents({"email": c["email"], "businessId": business_id}):
             skipped += 1
             continue
         doc = {
@@ -280,7 +275,7 @@ async def seed_demo_customers():
             **c,
             "joinDate": _iso(datetime.now(timezone.utc) - timedelta(days=180)),
             "reservationIds": [],
-            "isDemo": True,
+            "isDemo": True, "businessId": business_id,
         }
         await db.customers.insert_one(doc)
         seeded_ids.append(doc["id"])
@@ -289,12 +284,18 @@ async def seed_demo_customers():
         n_visits = max(2, min(6, c["visits"] // 5))
         if c["visits"] > 0:
             res_rows = _seed_reservations(doc["id"], c["name"], c["email"], c["phone"], n_visits)
+            for row in res_rows:
+                row["businessId"] = business_id
             if res_rows:
                 await db.reservations.insert_many(res_rows)
             tx_rows = _seed_transactions(doc["id"], n_visits, c.get("avgSpendPerVisit", 80.0))
+            for row in tx_rows:
+                row["businessId"] = business_id
             if tx_rows:
                 await db.transactions.insert_many(tx_rows)
             fb_rows = _seed_feedbacks(doc["id"], c["name"], c["feedbackCount"], c.get("feedbackRating", 4.0))
+            for row in fb_rows:
+                row["businessId"] = business_id
             if fb_rows:
                 await db.feedback.insert_many(fb_rows)
 

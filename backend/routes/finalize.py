@@ -447,16 +447,7 @@ async def channel_effective_status(channel: str, _: dict = Depends(get_user)):
 async def guest_wallet(customer_id: str, user: dict = Depends(get_user)):
     """Return the QR payload + barcode + tier metadata for a customer's
     digital wallet. This is what mobile Apple/Google Wallet stubs pull in."""
-    c = await db.customers.find_one({"id": customer_id}, {"_id": 0})
-    # NOT tenant_owns_strict — models/customer.py's Customer model has no
-    # businessId field at all; it's stamped externally, inconsistently,
-    # at ~15+ different creation call sites and test fixtures across this
-    # codebase (confirmed via the full test suite: converting this site
-    # broke test_loyalty_v2_points_field.py/test_voice_calls.py, both of
-    # which seed a customer via the bare Customer(...).dict() shape with
-    # no businessId). Auditing and fixing every customer-creation site
-    # plus every test fixture that relies on this is a larger, separate
-    # effort — not attempted this pass.
+    c = await db.customers.find_one({**tenant_scope_filter(user.get("businessId")), "id": customer_id}, {"_id": 0})
     if not c or not tenant_owns(c.get("businessId"), user.get("businessId")):
         raise HTTPException(404, "Customer not found")
     payload = {"cid": customer_id, "tier": c.get("membershipTier", "Bronze"),
@@ -489,16 +480,7 @@ async def lookup_by_token(body: dict, user: dict = Depends(get_user)):
         raise
     except Exception:
         raise HTTPException(400, "Malformed token")
-    c = await db.customers.find_one({"id": payload.get("cid")}, {"_id": 0})
-    # NOT tenant_owns_strict — models/customer.py's Customer model has no
-    # businessId field at all; it's stamped externally, inconsistently,
-    # at ~15+ different creation call sites and test fixtures across this
-    # codebase (confirmed via the full test suite: converting this site
-    # broke test_loyalty_v2_points_field.py/test_voice_calls.py, both of
-    # which seed a customer via the bare Customer(...).dict() shape with
-    # no businessId). Auditing and fixing every customer-creation site
-    # plus every test fixture that relies on this is a larger, separate
-    # effort — not attempted this pass.
+    c = await db.customers.find_one({**tenant_scope_filter(user.get("businessId")), "id": payload.get("cid")}, {"_id": 0})
     if not c or not tenant_owns(c.get("businessId"), user.get("businessId")):
         raise HTTPException(404, "Customer not found")
     return c
@@ -506,16 +488,7 @@ async def lookup_by_token(body: dict, user: dict = Depends(get_user)):
 
 # ─── Native Apple Wallet + Google Wallet passes ─────────────────────────
 async def _resolve_wallet_context(customer_id: str, business_id: Optional[str] = None) -> dict:
-    c = await db.customers.find_one({"id": customer_id}, {"_id": 0})
-    # NOT tenant_owns_strict — models/customer.py's Customer model has no
-    # businessId field at all; it's stamped externally, inconsistently,
-    # at ~15+ different creation call sites and test fixtures across this
-    # codebase (confirmed via the full test suite: converting this site
-    # broke test_loyalty_v2_points_field.py/test_voice_calls.py, both of
-    # which seed a customer via the bare Customer(...).dict() shape with
-    # no businessId). Auditing and fixing every customer-creation site
-    # plus every test fixture that relies on this is a larger, separate
-    # effort — not attempted this pass.
+    c = await db.customers.find_one({**tenant_scope_filter(business_id), "id": customer_id}, {"_id": 0})
     if not c or not tenant_owns(c.get("businessId"), business_id):
         raise HTTPException(404, "Customer not found")
     payload = {"cid": customer_id, "tier": c.get("membershipTier", "Bronze"),

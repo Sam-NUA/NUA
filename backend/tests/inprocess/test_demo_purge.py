@@ -15,7 +15,7 @@ def test_purge_demo_data(client, owner_headers):
         from seeds.seed_customers import seed_demo_customers
         from services.alcohol_seeder import seed_alcohol_catalog
         await seed_demo_customers()
-        await seed_alcohol_catalog()
+        await seed_alcohol_catalog(business_id="default")
 
     asyncio.get_event_loop().run_until_complete(seed())
 

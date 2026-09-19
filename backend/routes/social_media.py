@@ -105,10 +105,10 @@ async def connect_account(body: AccountConnectIn, user: dict = Depends(require_o
 
 @router.delete("/social/accounts/{account_id}")
 async def disconnect_account(account_id: str, user: dict = Depends(require_owner_or_manager)):
-    guard = await db.social_accounts.find_one({"id": account_id}, {"_id": 0, "id": 1, "businessId": 1})
+    guard = await db.social_accounts.find_one({"$and": [{"id": account_id}, tenant_scope_filter(user.get("businessId"))]}, {"_id": 0, "id": 1, "businessId": 1})
     if guard is None or not tenant_owns_strict(guard.get("businessId"), user.get("businessId")):
         raise HTTPException(404, "Account not found")
-    res = await db.social_accounts.delete_one({"id": account_id})
+    res = await db.social_accounts.delete_one({"$and": [{"id": account_id}, tenant_scope_filter(user.get("businessId"))]})
     if res.deleted_count == 0:
         raise HTTPException(404, "Account not found")
     return {"deleted": True}
@@ -160,7 +160,7 @@ async def duplicate_post(post_id: str, body: Optional[dict] = None, user: dict =
     high-performing caption without re-running AI.
     """
     body = body or {}
-    src = await db.social_posts.find_one({"id": post_id}, {"_id": 0})
+    src = await db.social_posts.find_one({"$and": [{"id": post_id}, tenant_scope_filter(user.get("businessId"))]}, {"_id": 0})
     if not src or not tenant_owns_strict(src.get("businessId"), user.get("businessId")):
         raise HTTPException(404, "Post not found")
     new_status = body.get("status", "draft")
@@ -202,7 +202,7 @@ async def update_post(post_id: str, body: dict, user: dict = Depends(require_own
     """Patch an existing post — used by the calendar's drag-to-reschedule
     flow. Only a small, explicit set of fields is mutable; status is
     validated against the same allow-list as create_post."""
-    guard = await db.social_posts.find_one({"id": post_id}, {"_id": 0, "id": 1, "businessId": 1})
+    guard = await db.social_posts.find_one({"$and": [{"id": post_id}, tenant_scope_filter(user.get("businessId"))]}, {"_id": 0, "id": 1, "businessId": 1})
     if guard is None or not tenant_owns_strict(guard.get("businessId"), user.get("businessId")):
         raise HTTPException(404, "Post not found")
     allowed = {"caption", "hashtags", "imageUrl", "scheduledFor", "status", "postType"}
@@ -213,18 +213,18 @@ async def update_post(post_id: str, body: dict, user: dict = Depends(require_own
         raise HTTPException(400, "postType must be post | story | reel")
     if not update:
         raise HTTPException(400, "Nothing to update")
-    res = await db.social_posts.update_one({"id": post_id}, {"$set": update})
+    res = await db.social_posts.update_one({"$and": [{"id": post_id}, tenant_scope_filter(user.get("businessId"))]}, {"$set": update})
     if res.matched_count == 0:
         raise HTTPException(404, "Post not found")
-    return await db.social_posts.find_one({"id": post_id}, {"_id": 0})
+    return await db.social_posts.find_one({"$and": [{"id": post_id}, tenant_scope_filter(user.get("businessId"))]}, {"_id": 0})
 
 
 @router.delete("/social/posts/{post_id}")
 async def delete_post(post_id: str, user: dict = Depends(require_owner_or_manager)):
-    guard = await db.social_posts.find_one({"id": post_id}, {"_id": 0, "id": 1, "businessId": 1})
+    guard = await db.social_posts.find_one({"$and": [{"id": post_id}, tenant_scope_filter(user.get("businessId"))]}, {"_id": 0, "id": 1, "businessId": 1})
     if guard is None or not tenant_owns_strict(guard.get("businessId"), user.get("businessId")):
         raise HTTPException(404, "Post not found")
-    res = await db.social_posts.delete_one({"id": post_id})
+    res = await db.social_posts.delete_one({"$and": [{"id": post_id}, tenant_scope_filter(user.get("businessId"))]})
     if res.deleted_count == 0:
         raise HTTPException(404, "Post not found")
     return {"deleted": True}
@@ -235,12 +235,12 @@ async def publish_post(post_id: str, user: dict = Depends(require_owner_or_manag
     """Marks a post as published. Real cross-posting to Meta/TikTok/X is
     deferred until per-platform OAuth is wired — this endpoint flips the
     status flag and stamps publishedAt so the UI flow works end-to-end."""
-    post = await db.social_posts.find_one({"id": post_id}, {"_id": 0})
+    post = await db.social_posts.find_one({"$and": [{"id": post_id}, tenant_scope_filter(user.get("businessId"))]}, {"_id": 0})
     if not post or not tenant_owns_strict(post.get("businessId"), user.get("businessId")):
         raise HTTPException(404, "Post not found")
     now = datetime.now(timezone.utc).isoformat()
     await db.social_posts.update_one(
-        {"id": post_id},
+        {"$and": [{"id": post_id}, tenant_scope_filter(user.get("businessId"))]},
         {"$set": {"status": "published", "publishedAt": now, "publishProvider": "stub"}},
     )
     logger.info("Social publish (stub) → post=%s platform=%s", post_id, post.get("platform"))
@@ -824,7 +824,7 @@ async def _run_weekly_plan_job(*, plan_id: str, plan_days: list, platforms: list
 @router.get("/social/plan-jobs/{plan_id}")
 async def get_plan_job(plan_id: str, user: dict = Depends(get_user)):
     """Poll progress for an in-flight or completed weekly plan."""
-    job = await db.social_plan_jobs.find_one({"planId": plan_id}, {"_id": 0})
+    job = await db.social_plan_jobs.find_one({"$and": [{"planId": plan_id}, tenant_scope_filter(user.get("businessId"))]}, {"_id": 0})
     if not job or not tenant_owns_strict(job.get("businessId"), user.get("businessId")):
         raise HTTPException(404, "Plan job not found")
     return job

@@ -60,7 +60,7 @@ def tiered_rules(owner_headers, client):
     """Save the spec's own example tiers (1-6 / 7-12 / 13+) for the
     duration of one test, then restore booking_rules to its prior value —
     these tests must not leak configuration into any other test file."""
-    before = req(client, "GET", "/api/booking/rules").json()
+    before = req(client, "GET", "/api/booking/rules?business=default").json()
     saved = {**before, "sizeTiers": TIERS, "depositAmount": 50}
     r = req(client, "POST", "/api/booking/rules", headers=owner_headers, json=saved)
     assert r.status_code == 200, r.text
@@ -172,7 +172,7 @@ def test_customer_cannot_use_an_experience_not_allowed_for_the_tier(tiered_rules
     }).json()
     tiers = [dict(t) for t in TIERS]
     tiers[1] = {**tiers[1], "allowedExperienceIds": ["some-other-experience-id"]}
-    rules = req(client, "GET", "/api/booking/rules").json()
+    rules = req(client, "GET", "/api/booking/rules?business=default").json()
     req(client, "POST", "/api/booking/rules", headers=owner_headers, json={**rules, "sizeTiers": tiers})
     try:
         r = req(client, "POST", "/api/public/book", json={
@@ -233,7 +233,7 @@ def test_walkin_is_never_blocked_by_the_booking_window(tiered_rules, client, own
     """A walk-in's date/time is always 'right now' — booking-window checks
     (advance notice, same-day, hours) must never apply, even with a strict
     window configured."""
-    rules = req(client, "GET", "/api/booking/rules").json()
+    rules = req(client, "GET", "/api/booking/rules?business=default").json()
     req(client, "POST", "/api/booking/rules", headers=owner_headers,
         json={**rules, "minAdvanceHours": 48, "allowSameDay": False})
     try:
@@ -273,7 +273,7 @@ def test_online_booking_in_the_past_is_rejected(client):
 # ------------------------------------------------------------------ capacity
 
 def test_capacity_prevents_overbooking_when_enforced(client, owner_headers):
-    rules = req(client, "GET", "/api/booking/rules").json()
+    rules = req(client, "GET", "/api/booking/rules?business=default").json()
     req(client, "POST", "/api/booking/rules", headers=owner_headers,
         json={**rules, "enforceCapacity": True, "maxCoversPerSlot": 5, "slotBufferMinutes": 30})
     date = _future_date(20)
@@ -361,7 +361,7 @@ def test_two_concurrent_bookings_for_the_last_slot_never_both_succeed(client, ow
     in-memory operations resolve too fast for a naive thread-timing race to
     catch reliably) — the mutual-exclusion guarantee itself is proven
     directly and deterministically by the lock-level test above instead."""
-    rules = req(client, "GET", "/api/booking/rules").json()
+    rules = req(client, "GET", "/api/booking/rules?business=default").json()
     req(client, "POST", "/api/booking/rules", headers=owner_headers,
         json={**rules, "enforceCapacity": True, "maxCoversPerSlot": 6, "slotBufferMinutes": 30})
     date = _future_date(22)
@@ -400,7 +400,7 @@ def test_capacity_is_only_advisory_when_not_enforced(client, owner_headers):
     """Default (enforceCapacity=False) — a slot over the derived floor
     capacity still succeeds; only /ai/overbooking-check warns about it.
     Protects the pre-existing, opt-in nature of this feature."""
-    rules = req(client, "GET", "/api/booking/rules").json()
+    rules = req(client, "GET", "/api/booking/rules?business=default").json()
     assert rules.get("enforceCapacity") in (False, None)
     date = _future_date(21)
     try:
@@ -544,7 +544,7 @@ def test_changing_rules_later_does_not_retroactively_touch_existing_bookings(cli
     original = r.json()
     assert original["isLargeBooking"] is False
 
-    rules = req(client, "GET", "/api/booking/rules").json()
+    rules = req(client, "GET", "/api/booking/rules?business=default").json()
     req(client, "POST", "/api/booking/rules", headers=owner_headers, json={**rules, "sizeTiers": TIERS})
     try:
         stored = _run(db.reservations.find_one({"id": original["id"]}, {"_id": 0}))
@@ -612,7 +612,7 @@ def test_editing_a_booking_onto_a_blackout_date_is_rejected(client, owner_header
 
 
 def test_editing_party_size_past_capacity_is_rejected(client, owner_headers):
-    rules = req(client, "GET", "/api/booking/rules").json()
+    rules = req(client, "GET", "/api/booking/rules?business=default").json()
     req(client, "POST", "/api/booking/rules", headers=owner_headers,
         json={**rules, "enforceCapacity": True, "maxCoversPerSlot": 6, "slotBufferMinutes": 30})
     date = _future_date(28)
@@ -647,7 +647,7 @@ def test_editing_a_bookings_own_time_slightly_does_not_trip_capacity_against_its
     path too, or a booking's own already-counted covers would double-count
     against itself the moment its time (or any other rule-relevant field)
     is edited without changing its party size."""
-    rules = req(client, "GET", "/api/booking/rules").json()
+    rules = req(client, "GET", "/api/booking/rules?business=default").json()
     req(client, "POST", "/api/booking/rules", headers=owner_headers,
         json={**rules, "enforceCapacity": True, "maxCoversPerSlot": 6, "slotBufferMinutes": 30})
     date = _future_date(29)

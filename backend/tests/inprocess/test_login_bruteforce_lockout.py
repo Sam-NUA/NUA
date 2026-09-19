@@ -67,11 +67,11 @@ def _cleanup(email):
     _run(db.auth_users.delete_many({"email": email}))
 
 
-def test_login_lockout_identifier_has_no_ip_component(client):
+def test_login_lockout_identifier_has_no_ip_component(client, owner_headers):
     email = "bruteforce-lockout-test@nua.com"
     _cleanup(email)
     try:
-        r = client.post("/api/auth/register", json={
+        r = client.post("/api/auth/register", headers=owner_headers, json={
             "name": "Bruteforce Test", "email": email, "password": "RealPassword2026!",
         })
         assert r.status_code == 200, r.text[:200]

@@ -72,11 +72,11 @@ async def find_customers(query: str = "", phone: str = "", email: str = "",
 
     if email:
         _add(await db.customers.find(
-            {"$and": [scope, {"email": {"$regex": f"^{re.escape(email)}$", "$options": "i"}}]}, {"_id": 0}
+            {**tenant_scope_filter(business_id), "$and": [scope, {"email": {"$regex": f"^{re.escape(email)}$", "$options": "i"}}]}, {"_id": 0}
         ).to_list(20))
 
     if query:
-        _add(await db.customers.find({"$and": [scope, {"$or": [
+        _add(await db.customers.find({**tenant_scope_filter(business_id), "$and": [scope, {"$or": [
             {"name": {"$regex": re.escape(query), "$options": "i"}},
             {"email": {"$regex": re.escape(query), "$options": "i"}},
             {"phone": {"$regex": re.escape(query), "$options": "i"}},

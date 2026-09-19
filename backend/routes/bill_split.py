@@ -29,6 +29,7 @@ def _public_view(split: dict) -> dict:
     not by whose number."""
     return {
         "id": split["id"], "tableNumber": split["tableNumber"], "status": split["status"],
+        "businessId": split.get("businessId"),
         "mode": split.get("mode"),
         "lines": [
             {"id": l["id"], "productName": l["productName"], "category": l.get("category"),
@@ -49,6 +50,8 @@ async def _require_business_id(business: Optional[str]) -> str:
     unresolvable business is refused outright (400) rather than silently
     falling back to an unscoped, cross-tenant-poolable lookup."""
     from routes.online_orders import _resolve_business_id
+    if not business:
+        raise HTTPException(status_code=400, detail="A valid business must be specified for bill splitting")
     business_id = await _resolve_business_id(business)
     if not business_id:
         raise HTTPException(status_code=400, detail="A valid business must be specified for bill splitting")

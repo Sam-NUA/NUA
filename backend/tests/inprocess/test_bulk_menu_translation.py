@@ -27,8 +27,8 @@ def test_bulk_translate_only_touches_products_missing_translations(monkeypatch):
 
     loop = asyncio.get_event_loop()
     loop.run_until_complete(db.products.insert_many([
-        {"id": "BULKTR-1", "name": "Needs Translation", "description": "", "translations": {}},
-        {"id": "BULKTR-2", "name": "Already Translated", "description": "",
+        {"businessId": "default", "id": "BULKTR-1", "name": "Needs Translation", "description": "", "translations": {}},
+        {"businessId": "default", "id": "BULKTR-2", "name": "Already Translated", "description": "",
          "translations": {"it": {"name": "Gia Tradotto", "description": ""}}},
     ]))
     try:
@@ -38,7 +38,7 @@ def test_bulk_translate_only_touches_products_missing_translations(monkeypatch):
         # our own two products' fates, not the global total, which is
         # unpredictable depending on test run order.
         result = loop.run_until_complete(
-            routes.products.bulk_auto_translate_products(only_missing=True, user={"role": "owner", "businessId": None})
+            routes.products.bulk_auto_translate_products(only_missing=True, user={"role": "owner", "businessId": "default"})
         )
         assert result["total"] >= 1
         assert "Needs Translation" in calls
@@ -68,15 +68,15 @@ def test_bulk_translate_continues_past_a_single_product_failure(monkeypatch):
 
     loop = asyncio.get_event_loop()
     loop.run_until_complete(db.products.insert_many([
-        {"id": "BULKTR-3", "name": "Bad Product", "description": "", "translations": {}},
-        {"id": "BULKTR-4", "name": "Good Product", "description": "", "translations": {}},
+        {"businessId": "default", "id": "BULKTR-3", "name": "Bad Product", "description": "", "translations": {}},
+        {"businessId": "default", "id": "BULKTR-4", "name": "Good Product", "description": "", "translations": {}},
     ]))
     try:
         # Same shared-DB caveat as the test above — assert on our own two
         # products, not on global totals that depend on what else is in the
         # (session-shared) mongomock collection.
         result = loop.run_until_complete(
-            routes.products.bulk_auto_translate_products(only_missing=True, user={"role": "owner", "businessId": None})
+            routes.products.bulk_auto_translate_products(only_missing=True, user={"role": "owner", "businessId": "default"})
         )
         assert result["failed"] >= 1, "one product failing must still be counted, not silently dropped"
 

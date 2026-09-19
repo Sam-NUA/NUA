@@ -208,7 +208,7 @@ async def reverse_entry(entry_id: str, *, memo: Optional[str] = None, created_by
     """Create an opposite journal that cancels `entry_id`."""
     if business_id is None:
         business_id = get_actor_context().get("businessId")
-    orig = await db.journal_entries.find_one({"id": entry_id}, {"_id": 0})
+    orig = await db.journal_entries.find_one({"$and": [{"id": entry_id}, tenant_scope_filter(business_id)]}, {"_id": 0})
     if orig is None or not tenant_owns_strict(orig.get("businessId"), business_id):
         raise ValueError("Journal entry not found")
     reversed_lines = [
@@ -228,7 +228,7 @@ async def reverse_entry(entry_id: str, *, memo: Optional[str] = None, created_by
         idempotent=False,
         business_id=business_id,
     )
-    await db.journal_entries.update_one({"id": entry_id}, {"$set": {"reversedBy": rev["id"]}})
+    await db.journal_entries.update_one({"$and": [{"id": entry_id}, tenant_scope_filter(business_id)]}, {"$set": {"reversedBy": rev["id"]}})
     return rev
 
 

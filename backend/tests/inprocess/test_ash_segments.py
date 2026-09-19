@@ -16,7 +16,7 @@ def _seed_customer(name, email, *, spend=0, visits=0, last_visit=None):
     loop = asyncio.get_event_loop()
     from database import db
     from routes.customers import Customer
-    doc = Customer(name=name, email=email, phone="0400000000",
+    doc = Customer(businessId="default", name=name, email=email, phone="0400000000",
                     totalSpent=spend, visits=visits).dict()
     if last_visit is not None:
         doc["lastVisitDate"] = last_visit

@@ -79,8 +79,10 @@ async def verify(body: Dict[str, Any]):
     # Single use — burn it the moment it's spent, win or lose.
     await db.guest_session_otp.delete_one({"phone": phone})
 
-    token = guest_session.issue_guest_token(phone)
-    profile = await guest_session.resolve_guest_profile(phone)
+    from routes.online_orders import resolve_or_require_business_id
+    business_id = await resolve_or_require_business_id(body.get("business"))
+    token = guest_session.issue_guest_token(phone, business_id)
+    profile = await guest_session.resolve_guest_profile(phone, business_id)
     return {"token": token, "expiresInMinutes": guest_session.GUEST_SESSION_TTL_MINUTES, **profile}
 
 
@@ -98,4 +100,4 @@ async def get_guest_session(authorization: Optional[str] = Header(None)) -> Dict
 @router.get("/me")
 async def me(authorization: Optional[str] = Header(None)):
     session = await get_guest_session(authorization)
-    return await guest_session.resolve_guest_profile(session["phone"])
+    return await guest_session.resolve_guest_profile(session["phone"], session.get("businessId"))

@@ -168,49 +168,23 @@ def _notification(order: dict, message: str) -> dict:
 # =============================================================================
 # CATEGORY PREP TIMES (helper used by the storefront)
 # =============================================================================
-async def _resolve_business_id(business: Optional[str]) -> Optional[str]:
-    """?business=<slug-or-id> on the public storefront — lets a deployment
-    with multiple businesses give each one its own online-ordering link
-    (/order-online?business=my-cafe) instead of every business sharing one
-    undifferentiated menu. Returns None (unscoped — every product/category
-    visible, same as before this existed) when absent or unresolvable, so a
-    single-business deployment with no reason to ever pass this param is
-    completely unaffected."""
-    if not business:
-        return None
-    biz = await db.businesses.find_one({"$or": [{"id": business}, {"slug": business}]}, {"_id": 0, "id": 1})
-    return biz["id"] if biz else None
+async def _resolve_business_id(business: Optional[str]) -> str:
+    """Resolve a public venue; never pool tenants or ignore an invalid selector."""
+    if business:
+        biz = await db.businesses.find_one(
+            {"$or": [{"id": business}, {"slug": business}]}, {"_id": 0, "id": 1})
+        if not biz:
+            raise HTTPException(status_code=404, detail="Business not found")
+        return biz["id"]
+    candidates = await db.businesses.find({}, {"_id": 0, "id": 1}).to_list(2)
+    if len(candidates) != 1:
+        raise HTTPException(status_code=400, detail="Specify a valid business (?business=<slug-or-id>)")
+    return candidates[0]["id"]
 
 
 async def resolve_or_require_business_id(business: Optional[str]) -> str:
-    """Like _resolve_business_id, but for a record a guest CREATES rather
-    than a page a guest reads. An untagged/pooled reservation or waitlist
-    entry isn't just imprecise — it's operationally meaningless (whose
-    tables, whose kitchen, whose capacity is actually being held?), and on
-    any deployment with more than one business it's a real cross-tenant
-    data-exposure gap, not just noise.
+    return await _resolve_business_id(business)
 
-    Resolves an explicit ?business= normally. With none given, auto-
-    resolves to the sole business IFF exactly one exists in this
-    deployment — the single-tenant-deployment case _resolve_business_id's
-    own docstring describes ("no reason to ever pass this param") stays
-    completely unaffected. Refuses (400) rather than guessing whenever
-    that's not unambiguous: zero businesses configured, or more than one
-    with no ?business= to disambiguate between them.
-    """
-    business_id = await _resolve_business_id(business)
-    if business_id:
-        return business_id
-    candidates = await db.businesses.find({}, {"_id": 0, "id": 1}).to_list(2)
-    if len(candidates) == 1:
-        return candidates[0]["id"]
-    if not candidates:
-        raise HTTPException(status_code=400, detail="No business is configured on this deployment")
-    raise HTTPException(
-        status_code=400,
-        detail="A valid business must be specified (?business=<slug-or-id>) — "
-               "more than one business is configured on this deployment",
-    )
 
 
 @router.get("/online/business")
@@ -268,7 +242,7 @@ async def public_products(business: Optional[str] = None):
 # PLACE ORDER (public)
 # =============================================================================
 @router.post("/online/orders")
-async def place_order(data: dict):
+async def place_order(data: dict, business: Optional[str] = None):
     """Customer places a new order. No auth required (storefront)."""
     items = data.get("items") or []
     if not items:
@@ -321,7 +295,7 @@ async def place_order(data: dict):
     code = _uid("ORD")
     load = await _kitchen_load()
     eta = await _compute_eta(items, channel, load)
-    business_id = await _resolve_business_id(data.get("business"))
+    business_id = await _resolve_business_id(business or data.get("business"))
     order = {
         "id": code, "trackingCode": code,
         "businessId": business_id,
@@ -460,7 +434,7 @@ async def list_orders( status: Optional[str] = None, limit: int = 100, user: dic
 
 @router.get("/online/orders/{order_id}")
 async def get_order(order_id: str, user: dict = Depends(get_user)):
-    row = await db.online_orders.find_one({"id": order_id}, {"_id": 0})
+    row = await db.online_orders.find_one({"$and": [{"id": order_id}, tenant_scope_filter(user.get("businessId"))]}, {"_id": 0})
     if not row or not tenant_owns_strict(row.get("businessId"), user.get("businessId")):
         raise HTTPException(status_code=404, detail="Order not found")
     return row

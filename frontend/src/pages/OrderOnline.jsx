@@ -105,7 +105,7 @@ export default function OrderOnline() {
     setVoucherChecking(true);
     setVoucherError('');
     try {
-      const r = await onlineAPI.checkVoucher(voucherCode.trim(), cart.map(i => ({ price: i.price, quantity: i.quantity, category: i.category, id: i.id })));
+      const r = await onlineAPI.checkVoucher(voucherCode.trim(), cart.map(i => ({ price: i.price, quantity: i.quantity, category: i.category, id: i.id })), businessParam);
       if (r.data?.valid) {
         setVoucherApplied({ code: voucherCode.trim(), discount: r.data.discount, label: r.data.label });
       } else {

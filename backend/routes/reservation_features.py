@@ -1,3 +1,4 @@
+from typing import Optional
 from fastapi import APIRouter, HTTPException, Depends
 from deps import get_user, optional_user, require_owner, require_owner_or_manager
 from database import db
@@ -29,43 +30,29 @@ async def create_table_combination(data: dict, user: dict = Depends(require_owne
 
 @router.delete("/tables/combinations/{combo_id}")
 async def delete_table_combination(combo_id: str, user: dict = Depends(require_owner_or_manager)):
-    existing = await db.table_combinations.find_one({"id": combo_id}, {"_id": 0, "businessId": 1})
+    existing = await db.table_combinations.find_one({"$and": [{"id": combo_id}, tenant_scope_filter(user.get("businessId"))]}, {"_id": 0, "businessId": 1})
     if not existing or not tenant_owns_strict(existing.get("businessId"), user.get("businessId")):
         return {"message": "Combination deleted"}  # matches the prior no-op-on-missing-id behavior
-    await db.table_combinations.delete_one({"id": combo_id})
+    await db.table_combinations.delete_one({"$and": [{"id": combo_id}, tenant_scope_filter(user.get("businessId"))]})
     return {"message": "Combination deleted"}
 
 # ============ BOOKING RULES & SETTINGS ============
-# db.settings key "booking_rules" is deliberately kept as a global singleton,
-# NOT migrated to tenant_settings.get_setting/set_setting like the other
-# settings in this sweep. Unlike those, it has a genuinely anonymous
-# consumer: routes/public.py's POST /public/book (the guest booking form)
-# calls booking_rules_engine.get_rules() with no business_id at all — no
-# JWT, no `?business=` param, nothing to scope by (see that module's own
-# docstring and TENANT_ISOLATION_REMAINING_WORK.md). If save_booking_rules
-# wrote a per-business copy here, an owner's saved rules would stop being
-# visible to that same anonymous endpoint the moment they saved — silently
-# disabling guest-side enforcement of large-booking/capacity rules, which
-# is worse than the pre-existing shared-singleton behavor. /booking/rules
-# (GET) and /booking/experiences (GET) are also deliberately public —
-# server.py's PUBLIC_API_PATHS — for the guest booking portal, which has
-# no staff token to enforce policy against.
 @router.get("/booking/rules")
-async def get_booking_rules():
-    # Delegates to booking_rules_engine.get_rules() so this GET (what the
-    # Settings UI reads to populate the form) can never drift out of sync
-    # with the defaults the engine actually enforces on every booking.
+async def get_booking_rules(business: Optional[str] = None, user: dict = Depends(optional_user)):
     from services.booking_rules_engine import get_rules
-    return await get_rules()
+    from routes.online_orders import resolve_or_require_business_id
+    business_id = user["businessId"] if user else await resolve_or_require_business_id(business)
+    return await get_rules(business_id=business_id)
 
 @router.post("/booking/rules")
 async def save_booking_rules(data: dict, user: dict = Depends(require_owner)):
-    before = await db.settings.find_one({"key": "booking_rules"}, {"_id": 0})
-    await db.settings.update_one({"key": "booking_rules"}, {"$set": {"key": "booking_rules", "value": data}}, upsert=True)
+    from services.tenant_settings import get_setting, set_setting
+    before = await get_setting("booking_rules", user["businessId"])
+    await set_setting("booking_rules", data, user["businessId"])
     from services import audit_service
     await audit_service.log_event(
         entity_type="booking_rules", entity_id="booking_rules", action="updated",
-        before=(before or {}).get("value"), after=data,
+        before=before, after=data,
         memo=f"Booking rules updated by {user.get('email', 'owner')}", severity="notice",
         tags=["booking_rules"],
     )
@@ -90,7 +77,7 @@ async def save_booking_schedule(data: dict, user: dict = Depends(require_owner_o
     # Only replaces this business's own shifts — the old delete_many({})
     # wiped every business's schedule on the deployment every time any one
     # of them saved theirs.
-    await db.booking_shifts.delete_many(tenant_scope_filter(biz) if biz else {})
+    await db.booking_shifts.delete_many(tenant_scope_filter(biz))
     for s in shifts:
         if not s.get("id"):
             s["id"] = f"shift-{str(uuid.uuid4())[:8]}"
@@ -100,15 +87,9 @@ async def save_booking_schedule(data: dict, user: dict = Depends(require_owner_o
 
 # ============ BOOKING EXPERIENCES ============
 @router.get("/booking/experiences")
-async def get_experiences(user=Depends(optional_user)):
-    # Public (guest booking portal — server.py's PUBLIC_API_PATHS) as well
-    # as staff-facing. A guest carries no businessId to scope by at all
-    # (same unscoped-for-guests behavior as before this fix; solving "which
-    # business's experiences is this guest asking about" needs the same
-    # ?business= resolution routes/online_orders.py's storefront uses,
-    # which this endpoint doesn't have and is out of scope here) — this
-    # only closes the staff-side cross-tenant leak.
-    biz = user.get("businessId") if user else None
+async def get_experiences(business: Optional[str] = None, user=Depends(optional_user)):
+    from routes.online_orders import resolve_or_require_business_id
+    biz = user["businessId"] if user else await resolve_or_require_business_id(business)
     exps = await db.booking_experiences.find(tenant_scope_filter(biz), {"_id": 0}).to_list(50)
     return exps
 
@@ -131,10 +112,11 @@ async def create_experience(data: dict, user: dict = Depends(require_owner_or_ma
 
 @router.put("/booking/experiences/{exp_id}")
 async def update_experience(exp_id: str, data: dict, user: dict = Depends(require_owner_or_manager)):
-    existing = await db.booking_experiences.find_one({"id": exp_id}, {"_id": 0, "businessId": 1})
+    existing = await db.booking_experiences.find_one({"$and": [{"id": exp_id}, tenant_scope_filter(user.get("businessId"))]}, {"_id": 0, "businessId": 1})
     if not existing or not tenant_owns_strict(existing.get("businessId"), user.get("businessId")):
         raise HTTPException(status_code=404, detail="Not found")
-    result = await db.booking_experiences.find_one_and_update({"id": exp_id}, {"$set": data}, return_document=True)
+    data = {k: v for k, v in data.items() if k not in ("id", "_id", "businessId", "_ownershipQuarantined")}
+    result = await db.booking_experiences.find_one_and_update({"$and": [{"id": exp_id}, tenant_scope_filter(user.get("businessId"))]}, {"$set": data}, return_document=True)
     if not result:
         raise HTTPException(status_code=404, detail="Not found")
     result.pop("_id", None)
@@ -142,9 +124,9 @@ async def update_experience(exp_id: str, data: dict, user: dict = Depends(requir
 
 @router.delete("/booking/experiences/{exp_id}")
 async def delete_experience(exp_id: str, user: dict = Depends(require_owner_or_manager)):
-    existing = await db.booking_experiences.find_one({"id": exp_id}, {"_id": 0, "businessId": 1})
+    existing = await db.booking_experiences.find_one({"$and": [{"id": exp_id}, tenant_scope_filter(user.get("businessId"))]}, {"_id": 0, "businessId": 1})
     if existing and tenant_owns_strict(existing.get("businessId"), user.get("businessId")):
-        await db.booking_experiences.delete_one({"id": exp_id})
+        await db.booking_experiences.delete_one({"$and": [{"id": exp_id}, tenant_scope_filter(user.get("businessId"))]})
     return {"message": "Experience deleted"}
 
 # ============ CLUBMEMBER OFFERS (EatClub-style) ============
@@ -179,12 +161,12 @@ async def create_club_offer(data: dict, user: dict = Depends(require_owner)):
 
 @router.put("/clubmember/offers/{offer_id}")
 async def update_club_offer(offer_id: str, data: dict, user: dict = Depends(require_owner)):
-    existing = await db.club_offers.find_one({"id": offer_id}, {"_id": 0, "businessId": 1})
+    existing = await db.club_offers.find_one({"$and": [{"id": offer_id}, tenant_scope_filter(user.get("businessId"))]}, {"_id": 0, "businessId": 1})
     if not existing or not tenant_owns_strict(existing.get("businessId"), user.get("businessId")):
         raise HTTPException(status_code=404, detail="Not found")
     allowed = {"title", "description", "discount", "startDate", "startTime", "endDate", "endTime", "totalSlots", "active", "socialPlatforms"}
     update = {k: v for k, v in data.items() if k in allowed}
-    result = await db.club_offers.find_one_and_update({"id": offer_id}, {"$set": update}, return_document=True)
+    result = await db.club_offers.find_one_and_update({"$and": [{"id": offer_id}, tenant_scope_filter(user.get("businessId"))]}, {"$set": update}, return_document=True)
     if not result:
         raise HTTPException(status_code=404, detail="Not found")
     result.pop("_id", None)
@@ -192,9 +174,9 @@ async def update_club_offer(offer_id: str, data: dict, user: dict = Depends(requ
 
 @router.delete("/clubmember/offers/{offer_id}")
 async def delete_club_offer(offer_id: str, user: dict = Depends(require_owner)):
-    existing = await db.club_offers.find_one({"id": offer_id}, {"_id": 0, "businessId": 1})
+    existing = await db.club_offers.find_one({"$and": [{"id": offer_id}, tenant_scope_filter(user.get("businessId"))]}, {"_id": 0, "businessId": 1})
     if existing and tenant_owns_strict(existing.get("businessId"), user.get("businessId")):
-        await db.club_offers.delete_one({"id": offer_id})
+        await db.club_offers.delete_one({"$and": [{"id": offer_id}, tenant_scope_filter(user.get("businessId"))]})
     return {"message": "Offer deleted"}
 
 # Public endpoint for members to claim
@@ -289,9 +271,9 @@ async def add_social_account(data: dict, user: dict = Depends(require_owner)):
 
 @router.delete("/clubmember/social-accounts/{account_id}")
 async def remove_social_account(account_id: str, user: dict = Depends(require_owner)):
-    existing = await db.social_accounts.find_one({"id": account_id}, {"_id": 0, "businessId": 1})
+    existing = await db.social_accounts.find_one({"$and": [{"id": account_id}, tenant_scope_filter(user.get("businessId"))]}, {"_id": 0, "businessId": 1})
     if existing and tenant_owns_strict(existing.get("businessId"), user.get("businessId")):
-        await db.social_accounts.delete_one({"id": account_id})
+        await db.social_accounts.delete_one({"$and": [{"id": account_id}, tenant_scope_filter(user.get("businessId"))]})
     return {"message": "Account removed"}
 
 # ============ TEST EMAIL ============

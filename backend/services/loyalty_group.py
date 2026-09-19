@@ -37,16 +37,12 @@ async def sibling_business_ids(business_id: Optional[str]) -> List[str]:
 
 
 async def find_group_records(phone: str, anchor_business_id: Optional[str]) -> List[Dict[str, Any]]:
-    """Every customers document with this phone number, at a business in
-    the same ownership group as anchor_business_id. Untagged legacy records
-    (no businessId) are included too, same fail-open posture tenant_scope_filter
-    uses elsewhere — a not-yet-backfilled record shouldn't just vanish."""
-    if not phone:
+    """Verified records in the anchor's ownership group; unknown owners fail closed."""
+    if not phone or not anchor_business_id:
         return []
     sib_ids = await sibling_business_ids(anchor_business_id)
-    q: Dict[str, Any] = {"phone": phone}
-    if sib_ids:
-        q["$or"] = [{"businessId": {"$in": sib_ids}}, {"businessId": None}, {"businessId": {"$exists": False}}]
+    q: Dict[str, Any] = {"phone": phone, "businessId": {"$in": sib_ids},
+                         "_ownershipQuarantined": {"$ne": True}}
     return await db.customers.find(q, {"_id": 0}).to_list(50)
 
 

@@ -55,7 +55,7 @@ export default function LoyaltyGuestPortal() {
     if (!code.trim()) return;
     setLoading(true); setErr(''); setData(null);
     try {
-      const r = await loyaltyGuestAPI.lookup(phone.trim(), code.trim());
+      const r = await loyaltyGuestAPI.lookup(phone.trim(), code.trim(), new URLSearchParams(window.location.search).get("business"));
       if (!r.data.found) {
         setErr("We couldn't find a rewards account for that number.");
       } else {

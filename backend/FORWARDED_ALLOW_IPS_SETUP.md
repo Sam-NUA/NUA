@@ -37,7 +37,7 @@ and bypass every one of those IP-keyed limits.
 ## The fix
 
 `--forwarded-allow-ips` now reads from the `FORWARDED_ALLOW_IPS`
-environment variable, defaulting to `127.0.0.1` (trust nothing) instead
+environment variable, defaulting to `127.0.0.1` (trust loopback peers only) instead
 of `*` (trust everything) when the variable isn't set. With the safe
 default, `request.client.host` reflects the real TCP peer — no rewriting
 happens at all unless you explicitly configure it — which is safe on any

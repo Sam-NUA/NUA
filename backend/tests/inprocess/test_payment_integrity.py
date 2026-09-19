@@ -40,7 +40,7 @@ def test_online_order_stock_deducts_on_accept_and_restores_on_cancel(client, own
          "stock": 10, "price": 15.0, "active": True}
     ))
     try:
-        r = req(client, "POST", "/api/online/orders", json={
+        r = req(client, "POST", "/api/online/orders?business=default", json={
             "channel": "pickup", "customerName": "Stock Test",
             "items": [{"productId": "PAYINT-PROD-1", "name": "Test Burger", "price": 15.0, "quantity": 3,
                        "category": "Mains"}],
@@ -76,7 +76,7 @@ def test_cancelling_a_never_accepted_order_does_not_over_restock(client, owner_h
          "stock": 5, "price": 6.0, "active": True}
     ))
     try:
-        r = req(client, "POST", "/api/online/orders", json={
+        r = req(client, "POST", "/api/online/orders?business=default", json={
             "channel": "pickup", "customerName": "Never Accepted",
             "items": [{"productId": "PAYINT-PROD-2", "name": "Test Fries", "price": 6.0, "quantity": 2,
                        "category": "Sides"}],

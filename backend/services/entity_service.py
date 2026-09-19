@@ -24,7 +24,7 @@ stamp them opportunistically on the next update.
 from __future__ import annotations
 from typing import Any, Dict, Optional
 from datetime import datetime, timezone
-from middleware.actor_context import get_actor_context
+from middleware.actor_context import get_actor_context, tenant_scope_filter
 from services import audit_service
 from database import db
 
@@ -41,22 +41,11 @@ def _stamp_new(doc: Dict[str, Any]) -> Dict[str, Any]:
     doc.setdefault("updatedAt", doc["createdAt"])
     doc.setdefault("device", ctx.get("device"))
     doc.setdefault("ip", ctx.get("ip"))
-    # NOT setdefault: every BaseEntity-derived model (Product, etc.) declares
-    # businessId/locationId as real fields defaulting to None, so a caller
-    # that builds a full model instance and passes model.dict() here already
-    # has an explicit "businessId": None key in the dict — setdefault is a
-    # no-op against an EXISTING key, even one whose value is None, so the
-    # actor's real businessId never got applied. Every document created
-    # through a caller that shaped its dict from such a model (confirmed:
-    # routes/products.py's create_product, likely others) was silently
-    # stamped with businessId=None regardless of who created it or which
-    # business they belonged to — universally visible to every tenant via
-    # tenant_scope_filter's "missing/null businessId = visible to everyone"
-    # backward-compat default. A caller that deliberately supplies a real,
-    # truthy businessId (e.g. an explicit cross-tenant/system write) still
-    # wins; only a falsy one is overwritten.
+    # Authenticated ownership is authoritative; background callers supply it explicitly.
+    if ctx.get("businessId"):
+        doc["businessId"] = ctx["businessId"]
     if not doc.get("businessId"):
-        doc["businessId"] = ctx.get("businessId")
+        raise ValueError("Business ownership required for entity creation")
     if not doc.get("locationId"):
         doc["locationId"] = ctx.get("locationId")
     doc.setdefault("version", 1)
@@ -81,7 +70,7 @@ async def stamped_update(coll_name: str, entity_id: str, patch: Dict[str, Any], 
                          entity_type: Optional[str] = None,
                          id_field: str = "id") -> Optional[Dict[str, Any]]:
     coll = getattr(db, coll_name)
-    before = await coll.find_one({id_field: entity_id}, {"_id": 0})
+    before = await coll.find_one({id_field: entity_id, **tenant_scope_filter()}, {"_id": 0})
     if not before:
         return None
     ctx = get_actor_context()
@@ -89,6 +78,7 @@ async def stamped_update(coll_name: str, entity_id: str, patch: Dict[str, Any], 
     # Snapshot the current version into entity_versions.
     try:
         await db.entity_versions.insert_one({
+            "businessId": ctx.get("businessId"),
             "entityType": entity_type or coll_name,
             "entityId": entity_id,
             "version": before.get("version") or 1,
@@ -100,7 +90,7 @@ async def stamped_update(coll_name: str, entity_id: str, patch: Dict[str, Any], 
         pass
 
     # Build the final update payload.
-    upd = dict(patch)
+    upd = {k: v for k, v in patch.items() if k not in ("businessId", "_ownershipQuarantined", "_id")}
     upd["updatedBy"] = ctx.get("email") or "system"
     upd["updatedAt"] = _now_iso()
     upd["version"] = (before.get("version") or 1) + 1
@@ -111,8 +101,10 @@ async def stamped_update(coll_name: str, entity_id: str, patch: Dict[str, Any], 
         upd.setdefault("device", ctx.get("device"))
         upd.setdefault("ip", ctx.get("ip"))
 
-    await coll.update_one({id_field: entity_id}, {"$set": upd})
-    after = await coll.find_one({id_field: entity_id}, {"_id": 0})
+    result = await coll.update_one({id_field: entity_id, **tenant_scope_filter()}, {"$set": upd})
+    if not result.matched_count:
+        return None
+    after = await coll.find_one({id_field: entity_id, **tenant_scope_filter()}, {"_id": 0})
 
     await audit_service.log_event(
         entity_type=entity_type or coll_name,
@@ -129,13 +121,13 @@ async def soft_delete(coll_name: str, entity_id: str, *,
                       id_field: str = "id") -> Optional[Dict[str, Any]]:
     coll = getattr(db, coll_name)
     ctx = get_actor_context()
-    r = await coll.update_one({id_field: entity_id}, {"$set": {
+    r = await coll.update_one({id_field: entity_id, **tenant_scope_filter()}, {"$set": {
         "deletedAt": _now_iso(),
         "deletedBy": ctx.get("email") or "system",
     }})
     if r.matched_count == 0:
         return None
-    after = await coll.find_one({id_field: entity_id}, {"_id": 0})
+    after = await coll.find_one({id_field: entity_id, **tenant_scope_filter()}, {"_id": 0})
     await audit_service.log_event(
         entity_type=entity_type or coll_name,
         entity_id=entity_id,
@@ -151,11 +143,11 @@ async def hard_delete(coll_name: str, entity_id: str, *,
                       id_field: str = "id") -> bool:
     """GDPR-style purge — physical remove + history purge."""
     coll = getattr(db, coll_name)
-    before = await coll.find_one({id_field: entity_id}, {"_id": 0})
+    before = await coll.find_one({id_field: entity_id, **tenant_scope_filter()}, {"_id": 0})
     if not before:
         return False
-    await coll.delete_one({id_field: entity_id})
-    await db.entity_versions.delete_many({"entityType": entity_type or coll_name, "entityId": entity_id})
+    await coll.delete_one({id_field: entity_id, **tenant_scope_filter()})
+    await db.entity_versions.delete_many({"entityType": entity_type or coll_name, "entityId": entity_id, **tenant_scope_filter()})
     await audit_service.log_event(
         entity_type=entity_type or coll_name,
         entity_id=entity_id,
@@ -169,7 +161,7 @@ async def hard_delete(coll_name: str, entity_id: str, *,
 
 async def get_history(entity_type: str, entity_id: str, *, business_id: Optional[str] = None, limit: int = 100) -> Dict[str, Any]:
     versions = await db.entity_versions.find(
-        {"entityType": entity_type, "entityId": entity_id},
+        {"entityType": entity_type, "entityId": entity_id, **tenant_scope_filter(business_id)},
         {"_id": 0},
     ).sort("version", -1).limit(limit).to_list(limit)
     audit = await audit_service.list_events(business_id=business_id, entity_type=entity_type, entity_id=entity_id, limit=limit)
@@ -178,7 +170,7 @@ async def get_history(entity_type: str, entity_id: str, *, business_id: Optional
 
 async def restore_version(coll_name: str, entity_type: str, entity_id: str, version: int) -> Optional[Dict[str, Any]]:
     snap = await db.entity_versions.find_one(
-        {"entityType": entity_type, "entityId": entity_id, "version": version},
+        {"entityType": entity_type, "entityId": entity_id, "version": version, **tenant_scope_filter()},
         {"_id": 0},
     )
     if not snap:

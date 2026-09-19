@@ -83,7 +83,7 @@ def test_retrying_accept_on_an_already_accepted_order_does_not_double_deduct_sto
     _run(db.products.insert_one({"id": "FIN-ORDER-PROD-1", "name": "Retry Burger", "category": "Mains",
                                    "stock": 10, "price": 15.0, "active": True}))
     try:
-        placed = req(client, "POST", "/api/online/orders", json={
+        placed = req(client, "POST", "/api/online/orders?business=default", json={
             "channel": "pickup", "customerName": "Retry Test",
             "items": [{"productId": "FIN-ORDER-PROD-1", "name": "Retry Burger", "price": 15.0,
                        "quantity": 3, "category": "Mains"}],
@@ -111,7 +111,7 @@ def test_concurrent_accept_requests_for_the_same_order_only_one_wins(client, own
     _run(db.products.insert_one({"id": "FIN-ORDER-PROD-RACE", "name": "Race Burger", "category": "Mains",
                                    "stock": 10, "price": 15.0, "active": True}))
     try:
-        placed = req(client, "POST", "/api/online/orders", json={
+        placed = req(client, "POST", "/api/online/orders?business=default", json={
             "channel": "pickup", "customerName": "Race Test",
             "items": [{"productId": "FIN-ORDER-PROD-RACE", "name": "Race Burger", "price": 15.0,
                        "quantity": 2, "category": "Mains"}],

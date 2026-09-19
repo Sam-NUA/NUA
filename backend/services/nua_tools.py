@@ -121,7 +121,7 @@ async def _tx_approve_pending_approval(a):
     just by supplying business B's approvalId."""
     from services.rules_engine import ACTION_LIBRARY
     from middleware.actor_context import get_actor_context, tenant_owns_strict
-    doc = await db.approvals.find_one({"id": a["approvalId"]}, {"_id": 0})
+    doc = await db.approvals.find_one({"$and": [{"id": a["approvalId"]}, tenant_scope_filter(get_actor_context().get("businessId"))]}, {"_id": 0})
     if not doc:
         return {"error": "approval not found"}
     if not tenant_owns_strict(doc.get("businessId"), get_actor_context().get("businessId")):
@@ -139,7 +139,7 @@ async def _tx_approve_pending_approval(a):
 
 async def _tx_reject_pending_approval(a):
     from middleware.actor_context import get_actor_context, tenant_owns_strict
-    doc = await db.approvals.find_one({"id": a["approvalId"]}, {"_id": 0})
+    doc = await db.approvals.find_one({"$and": [{"id": a["approvalId"]}, tenant_scope_filter(get_actor_context().get("businessId"))]}, {"_id": 0})
     if not doc or not tenant_owns_strict(doc.get("businessId"), get_actor_context().get("businessId")):
         return {"error": "approval not found"}
     try:
@@ -211,19 +211,19 @@ async def _tx_add_customer_note(a):
     codebase (seed data, the CRM UI, guest_intel.py), not an array — append
     to it rather than $push, which fails outright against a string field."""
     cid = a["customerId"]; note = a["note"]
-    customer = await db.customers.find_one({"id": cid}, {"_id": 0, "notes": 1})
+    customer = await db.customers.find_one({**tenant_scope_filter(), "id": cid}, {"_id": 0, "notes": 1})
     if not customer:
         return {"error": "customer not found"}
     existing = (customer.get("notes") or "").strip()
     entry = f"[{_now()[:10]} · ash-agent] {note}"
     updated = f"{existing}\n{entry}" if existing else entry
-    await db.customers.update_one({"id": cid}, {"$set": {"notes": updated}})
+    await db.customers.update_one({**tenant_scope_filter(), "id": cid}, {"$set": {"notes": updated}})
     return {"customerId": cid, "added": True}
 
 
 async def _tx_add_wallet_credit(a):
     cid = a["customerId"]; amount = float(a["amount"])
-    r = await db.customers.update_one({"id": cid}, {"$inc": {"storeCredit": amount}})
+    r = await db.customers.update_one({**tenant_scope_filter(), "id": cid}, {"$inc": {"storeCredit": amount}})
     ledger_id = None
     if r.matched_count:
         ledger_id = str(uuid.uuid4())
@@ -243,7 +243,7 @@ async def _rollback_wallet_credit(outcome):
     if not outcome.get("matched"):
         return
     cid = outcome["customerId"]; amount = float(outcome["credit"])
-    await db.customers.update_one({"id": cid}, {"$inc": {"storeCredit": -amount}})
+    await db.customers.update_one({**tenant_scope_filter(), "id": cid}, {"$inc": {"storeCredit": -amount}})
     await db.wallet_ledger.insert_one({
         "id": str(uuid.uuid4()), "customerId": cid, "type": "credit_reversal",
         "amount": -amount, "sourceType": "ash_agent_rollback", "createdAt": _now(),
@@ -254,17 +254,17 @@ async def _rollback_wallet_credit(outcome):
 
 async def _tx_upgrade_customer_tier(a):
     cid = a["customerId"]; tier = a["tier"]
-    before = await db.customers.find_one({"id": cid}, {"_id": 0, "membershipTier": 1})
+    before = await db.customers.find_one({**tenant_scope_filter(), "id": cid}, {"_id": 0, "membershipTier": 1})
     if not before:
         return {"error": "customer not found"}
-    r = await db.customers.update_one({"id": cid}, {"$set": {"membershipTier": tier, "vipUpgradedAt": _now()}})
+    r = await db.customers.update_one({**tenant_scope_filter(), "id": cid}, {"$set": {"membershipTier": tier, "vipUpgradedAt": _now()}})
     return {"customerId": cid, "oldTier": before.get("membershipTier"), "newTier": tier, "matched": r.matched_count}
 
 
 async def _rollback_customer_tier(outcome):
     if not outcome.get("matched"):
         return
-    await db.customers.update_one({"id": outcome["customerId"]},
+    await db.customers.update_one({**tenant_scope_filter(), "id": outcome["customerId"]},
                                    {"$set": {"membershipTier": outcome.get("oldTier")}})
 
 
@@ -465,7 +465,7 @@ async def _tx_lookup_customer(a):
     if not q:
         return {"error": "query required"}
     row = await db.customers.find_one(
-        {"$or": [{"email": {"$regex": q, "$options": "i"}},
+        {**tenant_scope_filter(), "$or": [{"email": {"$regex": q, "$options": "i"}},
                  {"name": {"$regex": q, "$options": "i"}},
                  {"phone": {"$regex": q, "$options": "i"}}]},
         {"_id": 0},

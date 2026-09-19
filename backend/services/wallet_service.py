@@ -12,6 +12,7 @@ import calendar
 import uuid
 
 from database import db
+from middleware.actor_context import tenant_scope_filter
 
 DEFAULT_OFFERS = {
     "birthdayEnabled": True,
@@ -92,7 +93,7 @@ async def expire_stale_vouchers(customer_id: str):
 
 
 async def get_wallet(customer_id: str) -> Optional[dict]:
-    customer = await db.customers.find_one({"id": customer_id}, {"_id": 0})
+    customer = await db.customers.find_one({**tenant_scope_filter(), "id": customer_id}, {"_id": 0})
     if not customer:
         return None
     # Lazy occasion issuance + cleanup, then read
