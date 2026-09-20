@@ -449,6 +449,7 @@ async def redeem_voucher(body: VoucherRedeemRequest, user: dict = Depends(get_us
 
         cas_filter = {
             "id": v["id"],
+            **tenant_scope_filter(user.get("businessId")),
             "status": v["status"],
             "redemptionCount": v.get("redemptionCount", 0),
             "residualValue": v.get("residualValue", 0.0),
@@ -524,7 +525,11 @@ async def _ledger_write(*, customer_id: str, type_: str, sign: int, amount: floa
         raise HTTPException(400, f"Unknown ledger type: {type_}")
     delta = round(sign * amount, 2)
     # Snapshot new balance for fast timeline reads
-    prev_entries = await db.wallet_ledger.find({"customerId": customer_id, "type": type_}, {"_id": 0, "sign": 1, "amount": 1}).to_list(50000)
+    scope = tenant_scope_filter()
+    prev_entries = await db.wallet_ledger.find(
+        {"customerId": customer_id, "type": type_, **scope},
+        {"_id": 0, "sign": 1, "amount": 1},
+    ).to_list(50000)
     prev_bal = sum(e.get("sign", 1) * e.get("amount", 0) for e in prev_entries)
     entry = LedgerEntry(
         customerId=customer_id, type=type_, sign=sign, amount=abs(amount),
@@ -540,10 +545,11 @@ async def _ledger_write(*, customer_id: str, type_: str, sign: int, amount: floa
 
 @router.get("/wallet/{customer_id}")
 async def get_wallet(customer_id: str, user: dict = Depends(get_user)):
-    c = await db.customers.find_one({**tenant_scope_filter(user.get("businessId")), "id": customer_id}, {"_id": 0})
+    scope = tenant_scope_filter(user.get("businessId"))
+    c = await db.customers.find_one({**scope, "id": customer_id}, {"_id": 0})
     if not c or not tenant_owns(c.get("businessId"), user.get("businessId")):
         raise HTTPException(404, "Customer not found")
-    entries = await db.wallet_ledger.find({"customerId": customer_id}, {"_id": 0}).sort("createdAt", -1).to_list(2000)
+    entries = await db.wallet_ledger.find({"customerId": customer_id, **scope}, {"_id": 0}).sort("createdAt", -1).to_list(2000)
     balances = {b: 0.0 for b in _BUCKETS}
     for e in entries:
         if e["type"] in balances:
@@ -551,7 +557,7 @@ async def get_wallet(customer_id: str, user: dict = Depends(get_user)):
 
     # Active vouchers assigned to this customer
     vs = await db.vouchers.find(
-        {"customerId": customer_id, "status": {"$in": ["active", "partial"]}},
+        {"customerId": customer_id, "status": {"$in": ["active", "partial"]}, **scope},
         {"_id": 0},
     ).sort("issuedAt", -1).to_list(500)
 
@@ -575,6 +581,8 @@ async def credit_wallet(customer_id: str, body: LedgerEntryCreate, user: dict = 
         raise HTTPException(403, "Owner/manager only")
     if body.customerId != customer_id:
         body.customerId = customer_id
+    if not await db.customers.find_one({"id": customer_id, **tenant_scope_filter(user.get("businessId"))}, {"_id": 1}):
+        raise HTTPException(404, "Customer not found")
     return await _ledger_write(
         customer_id=customer_id, type_=body.type, sign=+1,
         amount=abs(body.amount), source_type=body.sourceType,
@@ -587,8 +595,14 @@ async def credit_wallet(customer_id: str, body: LedgerEntryCreate, user: dict = 
 async def debit_wallet(customer_id: str, body: LedgerEntryCreate, user: dict = Depends(get_user)):
     if user["role"] not in ("owner", "manager"):
         raise HTTPException(403, "Owner/manager only")
+    scope = tenant_scope_filter(user.get("businessId"))
+    if not await db.customers.find_one({"id": customer_id, **scope}, {"_id": 1}):
+        raise HTTPException(404, "Customer not found")
     # Balance check
-    entries = await db.wallet_ledger.find({"customerId": customer_id, "type": body.type}, {"_id": 0, "sign": 1, "amount": 1}).to_list(50000)
+    entries = await db.wallet_ledger.find(
+        {"customerId": customer_id, "type": body.type, **scope},
+        {"_id": 0, "sign": 1, "amount": 1},
+    ).to_list(50000)
     bal = sum(e.get("sign", 1) * e.get("amount", 0) for e in entries)
     if abs(body.amount) > bal + 0.001:
         raise HTTPException(400, f"Insufficient {body.type} balance (have ${bal:.2f})")
@@ -601,10 +615,11 @@ async def debit_wallet(customer_id: str, body: LedgerEntryCreate, user: dict = D
 
 
 @router.get("/wallet/{customer_id}/timeline")
-async def wallet_timeline(customer_id: str, limit: int = 200, _: dict = Depends(get_user)):
+async def wallet_timeline(customer_id: str, limit: int = 200, user: dict = Depends(get_user)):
     """Merged customer journey across bookings, orders, payments, refunds,
     points/voucher movements, and reviews. Sorted DESC by time."""
-    c = await db.customers.find_one({**tenant_scope_filter(), "id": customer_id}, {"_id": 0})
+    scope = tenant_scope_filter(user.get("businessId"))
+    c = await db.customers.find_one({**scope, "id": customer_id}, {"_id": 0})
     if not c:
         raise HTTPException(404, "Customer not found")
     events: List[dict] = []
@@ -615,27 +630,27 @@ async def wallet_timeline(customer_id: str, limit: int = 200, _: dict = Depends(
             except Exception: continue
 
     await _add(
-        db.reservations.find({"customerId": customer_id}, {"_id": 0}).sort("createdAt", -1).limit(200),
+        db.reservations.find({"customerId": customer_id, **scope}, {"_id": 0}).sort("createdAt", -1).limit(200),
         lambda d: {"type": "booking", "at": d.get("createdAt") or d.get("date"), "title": f"Booking · party of {d.get('partySize', 1)}", "meta": d, "icon": "calendar"},
     )
     await _add(
-        db.transactions.find({"customerId": customer_id}, {"_id": 0}).sort("createdAt", -1).limit(500),
+        db.transactions.find({"customerId": customer_id, **scope}, {"_id": 0}).sort("createdAt", -1).limit(500),
         lambda d: {"type": "order", "at": d.get("createdAt"), "title": f"Order · ${d.get('total', 0):.2f}", "meta": d, "icon": "shopping-cart"},
     )
     await _add(
-        db.refunds.find({"customerId": customer_id}, {"_id": 0}).sort("createdAt", -1).limit(200),
+        db.refunds.find({"customerId": customer_id, **scope}, {"_id": 0}).sort("createdAt", -1).limit(200),
         lambda d: {"type": "refund", "at": d.get("createdAt"), "title": f"Refund · ${d.get('amount', 0):.2f}", "meta": d, "icon": "rotate-ccw"},
     )
     await _add(
-        db.wallet_ledger.find({"customerId": customer_id}, {"_id": 0}).sort("createdAt", -1).limit(500),
+        db.wallet_ledger.find({"customerId": customer_id, **scope}, {"_id": 0}).sort("createdAt", -1).limit(500),
         lambda d: {"type": "ledger", "at": d.get("createdAt"), "title": f"{'+' if d.get('sign', 1) > 0 else '−'} {d.get('amount', 0)} {d.get('type')}", "meta": d, "icon": "wallet"},
     )
     await _add(
-        db.vouchers.find({"customerId": customer_id}, {"_id": 0}).sort("issuedAt", -1).limit(200),
+        db.vouchers.find({"customerId": customer_id, **scope}, {"_id": 0}).sort("issuedAt", -1).limit(200),
         lambda d: {"type": "voucher", "at": d.get("issuedAt"), "title": f"Voucher issued · {d.get('code')}", "meta": d, "icon": "gift"},
     )
     await _add(
-        db.feedback.find({"customerId": customer_id}, {"_id": 0}).sort("createdAt", -1).limit(200),
+        db.feedback.find({"customerId": customer_id, **scope}, {"_id": 0}).sort("createdAt", -1).limit(200),
         lambda d: {"type": "review", "at": d.get("createdAt"), "title": f"Feedback · {d.get('rating', '?')}★", "meta": d, "icon": "star"},
     )
 
@@ -679,13 +694,22 @@ async def create_refund(body: dict, user: dict = Depends(get_user)):
     if abs(split_total - amount) > 0.01:
         raise HTTPException(400, f"Splits total ${split_total} does not match refund ${amount}")
 
-    txn = await db.transactions.find_one({"id": tx_id}, {"_id": 0}) if tx_id else None
+    scope = tenant_scope_filter(user.get("businessId"))
+    txn = await db.transactions.find_one({"id": tx_id, **scope}, {"_id": 0}) if tx_id else None
+    if tx_id and not txn:
+        raise HTTPException(404, "Transaction not found")
+    resolved_customer_id = customer_id or (txn or {}).get("customerId")
+    if resolved_customer_id and not await db.customers.find_one(
+        {"id": resolved_customer_id, **scope}, {"_id": 1}
+    ):
+        raise HTTPException(404, "Customer not found")
 
     rid = f"RF-{uuid.uuid4().hex[:8].upper()}"
     refund_doc: dict = {
         "id": rid,
         "transactionId": tx_id,
-        "customerId": customer_id or (txn or {}).get("customerId"),
+        "customerId": resolved_customer_id,
+        "businessId": user.get("businessId"),
         "amount": round(amount, 2),
         "reason": body.get("reason"),
         "note": body.get("note"),
@@ -750,11 +774,14 @@ async def create_refund(body: dict, user: dict = Depends(get_user)):
 
     # Mark original transaction as refunded/partial-refunded
     if tx_id:
-        prev_refunds = await db.refunds.find({"transactionId": tx_id}, {"_id": 0, "amount": 1}).to_list(50)
+        prev_refunds = await db.refunds.find({"transactionId": tx_id, **scope}, {"_id": 0, "amount": 1}).to_list(50)
         refunded_total = sum(r.get("amount", 0) for r in prev_refunds)
         original_total = (txn or {}).get("total", 0) or 0
         new_status = "refunded" if refunded_total >= original_total - 0.01 else "partial_refund"
-        await db.transactions.update_one({"id": tx_id}, {"$set": {"refundStatus": new_status, "refundedAmount": round(refunded_total, 2)}})
+        await db.transactions.update_one(
+            {"id": tx_id, **scope},
+            {"$set": {"refundStatus": new_status, "refundedAmount": round(refunded_total, 2)}},
+        )
 
     return refund_doc
 
@@ -843,9 +870,10 @@ def _fallback_template(goal: str, name: str, vt: str, val: float, days: list,
 # Promotion Analytics
 # ═════════════════════════════════════════════════════════════════════════
 @router.get("/promo-analytics/summary")
-async def promo_analytics(days: int = 30, _: dict = Depends(get_user)):
+async def promo_analytics(days: int = 30, user: dict = Depends(get_user)):
     since = (_now() - timedelta(days=days)).isoformat()
-    vs = await db.vouchers.find({"issuedAt": {"$gte": since}}, {"_id": 0}).to_list(20000)
+    scope = tenant_scope_filter(user.get("businessId"))
+    vs = await db.vouchers.find({"issuedAt": {"$gte": since}, **scope}, {"_id": 0}).to_list(20000)
     issued = len(vs)
     redeemed = sum(1 for v in vs if v.get("redemptionCount", 0) > 0)
     expired = sum(1 for v in vs if v.get("status") == "expired")
@@ -861,7 +889,7 @@ async def promo_analytics(days: int = 30, _: dict = Depends(get_user)):
     totals_by_txn = {}
     if txn_ids:
         rows = await db.transactions.find(
-            {"id": {"$in": txn_ids}}, {"_id": 0, "id": 1, "total": 1}
+            {"id": {"$in": txn_ids}, **scope}, {"_id": 0, "id": 1, "total": 1}
         ).to_list(len(txn_ids))
         totals_by_txn = {row["id"]: row.get("total", 0) for row in rows}
     revenue_generated = sum(
@@ -908,7 +936,11 @@ async def loyalty_status(customer_id: str, _: dict = Depends(get_user)):
     c = await db.customers.find_one({**tenant_scope_filter(), "id": customer_id}, {"_id": 0})
     if not c:
         raise HTTPException(404, "Customer not found")
-    txns = await db.transactions.find({"customerId": customer_id, "status": {"$in": ["completed", "paid", "closed"]}}, {"_id": 0}).to_list(5000)
+    scope = tenant_scope_filter()
+    txns = await db.transactions.find({
+        "customerId": customer_id, "status": {"$in": ["completed", "paid", "closed"]},
+        **scope,
+    }, {"_id": 0}).to_list(5000)
     total_visits = len(txns)
     total_spend = sum(t.get("total", 0) for t in txns)
 
@@ -919,7 +951,7 @@ async def loyalty_status(customer_id: str, _: dict = Depends(get_user)):
     # thresholds instead, so the same customer could show as one tier on
     # the wallet panel and a different tier everywhere else in the app.
     points = int(c.get("points") or 0)
-    tiers = await db.loyalty_tiers.find({}, {"_id": 0}).sort("minPoints", 1).to_list(20)
+    tiers = await db.loyalty_tiers.find(scope, {"_id": 0}).sort("minPoints", 1).to_list(20)
     current_tier_doc = tiers[0] if tiers else None
     next_tier_doc = None
     for t in tiers:
@@ -953,7 +985,7 @@ async def loyalty_status(customer_id: str, _: dict = Depends(get_user)):
         prev = datetime.fromisocalendar(y, w, 1) - timedelta(days=1)
         y, w = prev.isocalendar()[:2]
     # Awarded milestones (persisted to db.loyalty_awards; auto-award new ones)
-    awarded_docs = await db.loyalty_awards.find({"customerId": customer_id}, {"_id": 0}).to_list(200)
+    awarded_docs = await db.loyalty_awards.find({"customerId": customer_id, **scope}, {"_id": 0}).to_list(200)
     awarded_keys = {a["key"] for a in awarded_docs}
     newly_awarded = []
     for m in _MILESTONES:
@@ -961,7 +993,8 @@ async def loyalty_status(customer_id: str, _: dict = Depends(get_user)):
             continue
         hit = (m["type"] == "visits" and total_visits >= m["threshold"]) or (m["type"] == "spend" and total_spend >= m["threshold"])
         if hit:
-            doc = {"customerId": customer_id, "key": m["key"], "label": m["label"], "awardedAt": _iso(now)}
+            doc = {"customerId": customer_id, "key": m["key"], "label": m["label"],
+                   "awardedAt": _iso(now), "businessId": c.get("businessId")}
             await db.loyalty_awards.insert_one(dict(doc))
             doc.pop("_id", None)
             newly_awarded.append(doc)
@@ -993,8 +1026,13 @@ async def loyalty_status(customer_id: str, _: dict = Depends(get_user)):
 async def loyalty_award(body: dict, user: dict = Depends(get_user)):
     if user["role"] not in ("owner", "manager"):
         raise HTTPException(403, "Owner/manager only")
+    if not await db.customers.find_one(
+        {"id": body["customerId"], **tenant_scope_filter(user.get("businessId"))}, {"_id": 1}
+    ):
+        raise HTTPException(404, "Customer not found")
     doc = {
         "customerId": body["customerId"],
+        "businessId": user.get("businessId"),
         "key": body["key"],
         "label": body.get("label", body["key"]),
         "awardedAt": _iso(_now()),
@@ -1009,11 +1047,15 @@ async def loyalty_award(body: dict, user: dict = Depends(get_user)):
 # AI Personalisation — recommended offers per customer
 # ═════════════════════════════════════════════════════════════════════════
 @router.get("/personalisation/{customer_id}")
-async def personalisation(customer_id: str, _: dict = Depends(get_user)):
-    c = await db.customers.find_one({**tenant_scope_filter(), "id": customer_id}, {"_id": 0})
+async def personalisation(customer_id: str, user: dict = Depends(get_user)):
+    scope = tenant_scope_filter(user.get("businessId"))
+    c = await db.customers.find_one({**scope, "id": customer_id}, {"_id": 0})
     if not c:
         raise HTTPException(404, "Customer not found")
-    txns = await db.transactions.find({"customerId": customer_id, "status": {"$in": ["completed", "paid", "closed"]}}, {"_id": 0}).sort("createdAt", -1).to_list(500)
+    txns = await db.transactions.find(
+        {"customerId": customer_id, "status": {"$in": ["completed", "paid", "closed"]}, **scope},
+        {"_id": 0},
+    ).sort("createdAt", -1).to_list(500)
 
     fav_items: Dict[str, dict] = {}
     hour_counts: Dict[int, int] = {}
@@ -1132,20 +1174,23 @@ async def schedule_gift(body: dict, user: dict = Depends(get_user)):
 async def reload_gift(voucher_id: str, body: dict, user: dict = Depends(get_user)):
     if user["role"] not in ("owner", "manager"):
         raise HTTPException(403, "Owner/manager only")
-    v = await db.vouchers.find_one({"id": voucher_id}, {"_id": 0})
+    scope = tenant_scope_filter(user.get("businessId"))
+    v = await db.vouchers.find_one({"id": voucher_id, **scope}, {"_id": 0})
     if not v or v.get("sourceType") != "gift_card":
         raise HTTPException(404, "Gift card not found")
     amt = float(body.get("amount", 0))
     if amt <= 0:
         raise HTTPException(400, "amount must be > 0")
-    new_value = round(v["value"] + amt, 2)
-    new_residual = round((v.get("residualValue") or 0.0) + amt, 2)
-    await db.vouchers.update_one({"id": voucher_id}, {"$set": {
-        "value": new_value,
-        "residualValue": new_residual,
-        "faceValue": round(v.get("faceValue", 0) + amt, 2),
-        "status": "partial" if new_residual > 0 else v.get("status"),
-    }})
+    updated = await db.vouchers.find_one_and_update(
+        {"id": voucher_id, "sourceType": "gift_card", **scope},
+        {"$inc": {"value": amt, "residualValue": amt, "faceValue": amt},
+         "$set": {"status": "partial"}},
+        return_document=True,
+    )
+    if not updated:
+        raise HTTPException(404, "Gift card not found")
+    new_value = round(updated["value"], 2)
+    new_residual = round(updated.get("residualValue") or 0.0, 2)
     from services.audit_service import log_event
     await log_event(entity_type="gift_card", entity_id=voucher_id, action="updated",
                      before=v, after={**v, "value": new_value, "residualValue": new_residual},

@@ -39,7 +39,8 @@ async def effective_permissions(user: dict) -> list:
     if custom:
         return custom
     from services.permission_catalog import DEFAULT_ROLE_PERMISSIONS
-    doc = await db.role_permissions.find_one({"role": role}, {"_id": 0})
+    doc = await db.role_permissions.find_one(
+        {"role": role, **tenant_scope_filter(user.get("businessId"))}, {"_id": 0})
     if doc and isinstance(doc.get("permissions"), list):
         return doc["permissions"]
     return list(DEFAULT_ROLE_PERMISSIONS.get(role, ROLE_PERMISSIONS.get(role, [])))
@@ -526,7 +527,10 @@ async def delete_staff(staff_id: str, request: Request):
         raise HTTPException(status_code=403, detail="Owner access only")
     if staff_id == user["id"]:
         raise HTTPException(status_code=400, detail="Cannot delete yourself")
-    await db.auth_users.delete_one({"id": staff_id})
+    result = await db.auth_users.delete_one(
+        {"id": staff_id, **tenant_scope_filter(user.get("businessId"))})
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Staff not found")
     return {"message": "Staff deleted"}
 
 # --- Owner-Only Reports ---
@@ -536,10 +540,10 @@ async def get_labor_cost_report(request: Request):
     user = await get_current_user(request)
     if user["role"] != "owner":
         raise HTTPException(status_code=403, detail="Owner access only")
-    staff = await db.auth_users.find({"role": {"$ne": "owner"}}, {"_id": 0}).to_list(1000)
-    txns = await db.transactions.find({}, {"_id": 0}).to_list(10000)
+    staff = await db.auth_users.find({"role": {"$ne": "owner"}, **tenant_scope_filter(user.get("businessId"))}, {"_id": 0}).to_list(1000)
+    txns = await db.transactions.find(tenant_scope_filter(user.get("businessId")), {"_id": 0}).to_list(10000)
     total_revenue = sum(t.get("total", 0) for t in txns)
-    expenses = await db.expenses.find({}, {"_id": 0}).to_list(10000)
+    expenses = await db.expenses.find(tenant_scope_filter(user.get("businessId")), {"_id": 0}).to_list(10000)
     total_expenses = sum(e.get("amount", 0) for e in expenses)
     total_cogs = sum(e.get("amount", 0) for e in expenses if e.get("category") in ("Ingredients", "Food Supplies", "Beverages"))
     # payRate is stored in whatever unit salaryType names — convert to an

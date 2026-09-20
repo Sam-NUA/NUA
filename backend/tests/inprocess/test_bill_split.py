@@ -37,8 +37,10 @@ def _seed_table_order(table_number, order_id="KORD-SPLIT-1", items=None, busines
         "id": order_id, "tableNumber": str(table_number), "businessId": business_id,
         "items": items, "status": "new",
     }))
-    _run(db.products.insert_one({"id": "PROD-BURGER", "name": "Burger", "price": 15.0, "category": "Mains"}))
-    _run(db.products.insert_one({"id": "PROD-FRIES", "name": "Fries", "price": 6.0, "category": "Sides"}))
+    _run(db.products.insert_one({"id": "PROD-BURGER", "name": "Burger", "price": 15.0,
+                                 "category": "Mains", "businessId": business_id}))
+    _run(db.products.insert_one({"id": "PROD-FRIES", "name": "Fries", "price": 6.0,
+                                 "category": "Sides", "businessId": business_id}))
     return order_id
 
 

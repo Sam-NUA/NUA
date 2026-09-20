@@ -1009,7 +1009,8 @@ async def _execute_campaign_send(campaign: dict) -> dict:
             skipped += 1
             continue
         existing = await db.vouchers.find_one(
-            {"customerId": c["id"], "sourceType": "campaign", "sourceRef": campaign_id},
+            {"customerId": c["id"], "sourceType": "campaign", "sourceRef": campaign_id,
+             **scope},
             {"_id": 0},
         )
         voucher = existing or await issue_campaign_voucher(c, campaign)
@@ -1030,7 +1031,7 @@ async def _execute_campaign_send(campaign: dict) -> dict:
             "delivered": bool(receipt.get("delivered")),
         })
 
-    await db.marketing_campaigns.update_one({"id": campaign_id}, {"$set": {
+    await db.marketing_campaigns.update_one({"id": campaign_id, **scope}, {"$set": {
         "status": "sent", "sentAt": _now(),
         "vouchersIssued": issued, "sent": sent, "skipped": skipped,
         "recipientLog": recipients[:2000],
@@ -1094,7 +1095,8 @@ async def marketing_performance(campaign_id: str, user: dict = Depends(get_user)
     if campaign is None or not tenant_owns_strict(campaign.get("businessId"), user.get("businessId")):
         raise HTTPException(status_code=404, detail="Campaign not found")
     vouchers = await db.vouchers.find(
-        {"sourceType": "campaign", "sourceRef": campaign_id}, {"_id": 0}
+        {"sourceType": "campaign", "sourceRef": campaign_id,
+         **tenant_scope_filter(user.get("businessId"))}, {"_id": 0}
     ).to_list(5000)
     redeemed = [v for v in vouchers if v.get("status") == "redeemed"
                 or int(v.get("redemptionCount") or 0) > 0]
@@ -1368,15 +1370,16 @@ async def universal_guest(customer_id: str, user: dict = Depends(get_user)):
     c = await db.customers.find_one({**tenant_scope_filter(user.get("businessId")), "id": customer_id}, {"_id": 0})
     if c is None or not tenant_owns(c.get("businessId"), user.get("businessId")):
         raise HTTPException(status_code=404, detail="Customer not found")
-    visits = await db.transactions.count_documents({"customerId": customer_id})
+    scope = tenant_scope_filter(user.get("businessId"))
+    visits = await db.transactions.count_documents({"customerId": customer_id, **scope})
     spend_agg = await db.transactions.aggregate([
-        {"$match": {"customerId": customer_id}},
+        {"$match": {"customerId": customer_id, **scope}},
         {"$group": {"_id": None, "total": {"$sum": "$total"}}}
     ]).to_list(1)
     total_spend = float(spend_agg[0]["total"]) if spend_agg else 0
-    reservations = await db.reservations.count_documents({"customerId": customer_id})
+    reservations = await db.reservations.count_documents({"customerId": customer_id, **scope})
     points = await db.loyalty_ledger.aggregate([
-        {"$match": {"customerId": customer_id}},
+        {"$match": {"customerId": customer_id, **scope}},
         {"$group": {"_id": None, "balance": {"$sum": "$delta"}}}
     ]).to_list(1)
     return {

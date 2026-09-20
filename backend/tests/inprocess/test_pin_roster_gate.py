@@ -135,16 +135,17 @@ def test_is_rostered_now_handles_overnight_shifts_deterministically():
         await db.roster_shifts.insert_one({
             "id": "SHIFT-OVERNIGHT-TEST", "staffId": staff_id, "staffName": "Overnight Tester",
             "date": today.isoformat(), "startTime": "20:00", "endTime": "02:00",
+            "businessId": "biz-default",
         })
 
         late_night = datetime.combine(today, datetime.min.time(), tzinfo=timezone.utc).replace(hour=23, minute=30)
-        assert await _is_rostered_now(staff_id, now=late_night) is True
+        assert await _is_rostered_now(staff_id, now=late_night, business_id="biz-default") is True
 
         after_midnight = datetime.combine(today + timedelta(days=1), datetime.min.time(), tzinfo=timezone.utc).replace(hour=1, minute=30)
-        assert await _is_rostered_now(staff_id, now=after_midnight) is True
+        assert await _is_rostered_now(staff_id, now=after_midnight, business_id="biz-default") is True
 
         broad_daylight = datetime.combine(today, datetime.min.time(), tzinfo=timezone.utc).replace(hour=12, minute=0)
-        assert await _is_rostered_now(staff_id, now=broad_daylight) is False
+        assert await _is_rostered_now(staff_id, now=broad_daylight, business_id="biz-default") is False
 
     asyncio.get_event_loop().run_until_complete(run())
 

@@ -14,6 +14,7 @@ import re
 from typing import Any, Dict, List, Optional, Tuple
 
 from database import db
+from middleware.actor_context import tenant_scope_filter
 
 # Leading words people type before the actual identifier.
 _PREFIX_RE = re.compile(r"^(?:table|tbl|tab|t)?\s*[#\-.]?\s*", re.IGNORECASE)
@@ -34,22 +35,23 @@ def normalize_table_number(raw: Any) -> str:
     return s.upper()
 
 
-async def get_plans(active_only: bool = True) -> List[Dict[str, Any]]:
+async def get_plans(active_only: bool = True, business_id: Optional[str] = None) -> List[Dict[str, Any]]:
     """Floor plans, newest-updated first, optionally only the active ones."""
-    query = {"isActive": True} if active_only else {}
+    scope = tenant_scope_filter(business_id)
+    query = {**scope, **({"isActive": True} if active_only else {})}
     plans = await db.floor_plans.find(query, {"_id": 0}).to_list(100)
     if active_only and not plans:
         # A venue may have plans that predate the isActive flag; rather than
         # report "no floor plan" (which would switch validation off) fall back
         # to every plan on file.
-        plans = await db.floor_plans.find({}, {"_id": 0}).to_list(100)
+        plans = await db.floor_plans.find(scope, {"_id": 0}).to_list(100)
     return plans
 
 
-async def list_tables(active_only: bool = True) -> List[Dict[str, Any]]:
+async def list_tables(active_only: bool = True, business_id: Optional[str] = None) -> List[Dict[str, Any]]:
     """Every table across the relevant plans, each tagged with its planId."""
     out: List[Dict[str, Any]] = []
-    for plan in await get_plans(active_only=active_only):
+    for plan in await get_plans(active_only=active_only, business_id=business_id):
         for t in plan.get("tables") or []:
             if t.get("isActive") is False:
                 continue
@@ -60,21 +62,21 @@ async def list_tables(active_only: bool = True) -> List[Dict[str, Any]]:
     return out
 
 
-async def has_floor_plan() -> bool:
+async def has_floor_plan(business_id: Optional[str] = None) -> bool:
     """True when at least one table is configured anywhere.
 
     Callers use this to decide whether an unrecognised table number is an
     error or simply a venue that types its own table names.
     """
-    return len(await list_tables()) > 0
+    return len(await list_tables(business_id=business_id)) > 0
 
 
-async def resolve_table(raw: Any) -> Optional[Tuple[Dict[str, Any], str]]:
+async def resolve_table(raw: Any, business_id: Optional[str] = None) -> Optional[Tuple[Dict[str, Any], str]]:
     """Return (table, planId) for a typed table number, or None if unknown."""
     key = normalize_table_number(raw)
     if not key:
         return None
-    for t in await list_tables():
+    for t in await list_tables(business_id=business_id):
         if normalize_table_number(t.get("number")) == key:
             return t, t.get("planId")
         # Some venues name tables instead of numbering them.
@@ -107,7 +109,8 @@ async def suggest(raw: Any, limit: int = 6) -> List[str]:
 async def set_table_status(table_id: str, plan_id: str, status: str,
                            order_id: Optional[str] = None,
                            reservation_id: Optional[str] = None,
-                           clear_reservation: bool = False) -> bool:
+                           clear_reservation: bool = False,
+                           business_id: Optional[str] = None) -> bool:
     """Write a table's status back onto its plan. Returns True if it changed.
 
     `reservation_id` links the table to a booking/walk-in the same way
@@ -117,7 +120,8 @@ async def set_table_status(table_id: str, plan_id: str, status: str,
     freeing the table outright (e.g. a completed reservation moves the
     table to "cleaning", not straight back to "available").
     """
-    plan = await db.floor_plans.find_one({"id": plan_id}, {"_id": 0})
+    scope = tenant_scope_filter(business_id)
+    plan = await db.floor_plans.find_one({"id": plan_id, **scope}, {"_id": 0})
     if not plan:
         return False
     tables = plan.get("tables") or []
@@ -141,7 +145,7 @@ async def set_table_status(table_id: str, plan_id: str, status: str,
         return False
     from datetime import datetime
     await db.floor_plans.update_one(
-        {"id": plan_id},
+        {"id": plan_id, **scope},
         {"$set": {"tables": tables, "updatedAt": datetime.utcnow().isoformat()}},
     )
     return True

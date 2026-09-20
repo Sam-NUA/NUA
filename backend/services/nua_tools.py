@@ -99,7 +99,7 @@ def register(tool: Tool) -> None:
 # Individual tool implementations
 # ═════════════════════════════════════════════════════════════════════════
 async def _tx_dismiss_insight(a):
-    r = await db.ash_insights.update_one({"id": a["insightId"]},
+    r = await db.ash_insights.update_one({"id": a["insightId"], **tenant_scope_filter()},
                                           {"$set": {"resolvedAt": _now(), "resolvedBy": "ash-agent"}})
     if r.matched_count == 0:
         return {"error": "insight not found"}
@@ -150,15 +150,18 @@ async def _tx_reject_pending_approval(a):
 
 async def _tx_adjust_menu_price(a):
     pid = a["productId"]; new_price = float(a["newPrice"])
-    before = await db.products.find_one({"id": pid}, {"_id": 0})
+    before = await db.products.find_one({"id": pid, **tenant_scope_filter()}, {"_id": 0})
     if not before:
         return {"error": "product not found"}
-    await db.products.update_one({"id": pid}, {"$set": {"price": new_price, "updatedAt": _now(), "updatedBy": "ash-agent"}})
+    await db.products.update_one(
+        {"id": pid, **tenant_scope_filter()},
+        {"$set": {"price": new_price, "updatedAt": _now(), "updatedBy": "ash-agent"}},
+    )
     return {"productId": pid, "oldPrice": before.get("price"), "newPrice": new_price}
 
 
 async def _rollback_menu_price(outcome):
-    await db.products.update_one({"id": outcome["productId"]},
+    await db.products.update_one({"id": outcome["productId"], **tenant_scope_filter()},
                                   {"$set": {"price": outcome["oldPrice"]}})
 
 
@@ -181,7 +184,9 @@ async def _tx_issue_voucher(a):
 async def _tx_create_purchase_order(a):
     pid = a["productId"]; qty = int(a.get("quantity") or 10)
     est = float(a.get("estimatedCost") or (qty * float(a.get("unitCost") or 25)))
-    product = await db.products.find_one({"id": pid}, {"_id": 0})
+    product = await db.products.find_one({"id": pid, **tenant_scope_filter()}, {"_id": 0})
+    if not product:
+        return {"error": "product not found"}
     po = {
         "id": str(uuid.uuid4()),
         "productId": pid,
@@ -192,6 +197,7 @@ async def _tx_create_purchase_order(a):
         "status": "draft",
         "createdBy": "ash-agent",
         "createdAt": _now(),
+        "businessId": get_actor_context().get("businessId"),
     }
     await db.purchase_orders.insert_one(dict(po))
     return {"purchaseOrderId": po["id"], "quantity": qty, "estimatedCost": est}
@@ -201,7 +207,7 @@ async def _rollback_purchase_order(outcome):
     """Soft-cancel, not delete — a PO already sent to a supplier shouldn't
     vanish from the record just because it was undone after the fact."""
     await db.purchase_orders.update_one(
-        {"id": outcome["purchaseOrderId"]},
+        {"id": outcome["purchaseOrderId"], **tenant_scope_filter()},
         {"$set": {"status": "cancelled", "cancelledBy": "ash-agent-rollback", "cancelledAt": _now()}},
     )
 
@@ -231,6 +237,7 @@ async def _tx_add_wallet_credit(a):
             "id": ledger_id, "customerId": cid, "type": "credit_grant",
             "amount": amount, "sourceType": "ash_agent", "createdAt": _now(),
             "description": a.get("reason", "Ash credit"),
+            "businessId": get_actor_context().get("businessId"),
         })
     return {"customerId": cid, "credit": amount, "matched": r.matched_count, "ledgerId": ledger_id}
 
@@ -249,6 +256,7 @@ async def _rollback_wallet_credit(outcome):
         "amount": -amount, "sourceType": "ash_agent_rollback", "createdAt": _now(),
         "description": f"Rollback of ledger entry {outcome.get('ledgerId')}",
         "reversalOf": outcome.get("ledgerId"),
+        "businessId": get_actor_context().get("businessId"),
     })
 
 
@@ -270,10 +278,13 @@ async def _rollback_customer_tier(outcome):
 
 async def _tx_mark_waste(a):
     pid = a["productId"]; qty = float(a.get("quantity") or 1); reason = a.get("reason", "spoilage")
+    if not await db.products.find_one({"id": pid, **tenant_scope_filter()}, {"_id": 1}):
+        return {"error": "product not found"}
     doc = {"id": str(uuid.uuid4()), "productId": pid, "quantity": qty, "reason": reason,
-           "recordedBy": "ash-agent", "createdAt": _now()}
+           "recordedBy": "ash-agent", "createdAt": _now(),
+           "businessId": get_actor_context().get("businessId")}
     await db.waste_events.insert_one(dict(doc))
-    await db.products.update_one({"id": pid}, {"$inc": {"stock": -qty}})
+    await db.products.update_one({"id": pid, **tenant_scope_filter()}, {"$inc": {"stock": -qty}})
     from utils.stock_ops import clamp_negative_stock
     await clamp_negative_stock([pid])
     return {"wasteId": doc["id"], "productId": pid, "quantity": qty}
@@ -283,8 +294,9 @@ async def _rollback_waste(outcome):
     """Restores the deducted stock and marks the waste record reversed —
     kept, not deleted, so the audit trail still shows the original entry
     plus the fact it was undone."""
-    await db.products.update_one({"id": outcome["productId"]}, {"$inc": {"stock": outcome["quantity"]}})
-    await db.waste_events.update_one({"id": outcome["wasteId"]},
+    await db.products.update_one(
+        {"id": outcome["productId"], **tenant_scope_filter()}, {"$inc": {"stock": outcome["quantity"]}})
+    await db.waste_events.update_one({"id": outcome["wasteId"], **tenant_scope_filter()},
                                       {"$set": {"reversed": True, "reversedAt": _now()}})
 
 
@@ -296,11 +308,11 @@ async def _tx_mark_dish_86(a):
     nothing anywhere visible. services/rules_engine.py's identical action
     had the same bug, fixed alongside this one."""
     pid = a["productId"]
-    before = await db.products.find_one({"id": pid})
+    before = await db.products.find_one({"id": pid, **tenant_scope_filter()})
     if before is None:
         return {"error": "product not found"}
     r = await db.products.update_one(
-        {"id": pid},
+        {"id": pid, **tenant_scope_filter()},
         {"$set": {"eightySixed": True, "eightySixedAt": _now(), "eightySixedBy": "ash-agent",
                    "eightySixedReason": a.get("reason", "ash-agent")}},
     )
@@ -313,14 +325,14 @@ async def _rollback_dish_86(outcome):
         return
     was_86ed = outcome.get("wasAlready86ed", False)
     await db.products.update_one(
-        {"id": outcome["productId"]},
+        {"id": outcome["productId"], **tenant_scope_filter()},
         {"$set": {"eightySixed": was_86ed, "eightySixedReason": outcome.get("oldReason"),
                    "eightySixedAt": _now() if was_86ed else None}},
     )
 
 
 async def _tx_cancel_reservation(a):
-    r = await db.reservations.update_one({"id": a["reservationId"]},
+    r = await db.reservations.update_one({"id": a["reservationId"], **tenant_scope_filter()},
                                           {"$set": {"status": "cancelled", "cancelledBy": "ash-agent",
                                                     "cancellationReason": a.get("reason")}})
     return {"reservationId": a["reservationId"], "matched": r.matched_count}
@@ -373,13 +385,14 @@ async def _tx_send_customer_email(a):
 async def _tx_create_task(a):
     doc = {"id": str(uuid.uuid4()), "title": a["title"], "assignee": a.get("assignee", "manager"),
            "priority": a.get("priority", "normal"), "dueAt": a.get("dueAt"),
-           "createdBy": "ash-agent", "status": "open", "createdAt": _now()}
+           "createdBy": "ash-agent", "status": "open", "createdAt": _now(),
+           "businessId": get_actor_context().get("businessId")}
     await db.tasks.insert_one(dict(doc))
     return {"taskId": doc["id"]}
 
 
 async def _rollback_task(outcome):
-    await db.tasks.update_one({"id": outcome["taskId"]},
+    await db.tasks.update_one({"id": outcome["taskId"], **tenant_scope_filter()},
                                {"$set": {"status": "cancelled", "cancelledBy": "ash-agent-rollback"}})
 
 
@@ -393,7 +406,8 @@ async def _tx_check_promo_voucher(a):
     if not code:
         return {"error": "code required"}
     v = await db.commerce_vouchers.find_one(
-        {"$or": [{"manualCode": code}, {"barcode": code}, {"id": code}]}, {"_id": 0},
+        {"$or": [{"manualCode": code}, {"barcode": code}, {"id": code}],
+         **tenant_scope_filter(get_actor_context().get("businessId"))}, {"_id": 0},
     )
     if not v:
         return {"valid": False, "code": code, "reason": "Code not found"}
@@ -413,13 +427,14 @@ async def _tx_check_promo_voucher(a):
 async def _tx_create_promotion(a):
     doc = {"id": str(uuid.uuid4()), "name": a["name"], "type": a.get("type", "percent"),
            "discount": float(a.get("discount") or 10), "active": True, "createdBy": "ash-agent",
-           "createdAt": _now(), "productId": a.get("productId")}
+           "createdAt": _now(), "productId": a.get("productId"),
+           "businessId": get_actor_context().get("businessId")}
     await db.promotions.insert_one(dict(doc))
     return {"promotionId": doc["id"]}
 
 
 async def _rollback_promotion(outcome):
-    await db.promotions.update_one({"id": outcome["promotionId"]},
+    await db.promotions.update_one({"id": outcome["promotionId"], **tenant_scope_filter()},
                                     {"$set": {"active": False, "deactivatedBy": "ash-agent-rollback"}})
 
 
@@ -434,8 +449,9 @@ async def _tx_generate_weekly_summary(a):
     if not doc:
         return {"error": "no summary generated"}
     await db.ash_insights.update_one(
-        {"category": doc["category"], "key": doc["key"]},
-        {"$set": doc, "$setOnInsert": {"firstSeenAt": doc["createdAt"]}},
+        {"category": doc["category"], "key": doc["key"], **tenant_scope_filter()},
+        {"$set": {**doc, "businessId": get_actor_context().get("businessId")},
+         "$setOnInsert": {"firstSeenAt": doc["createdAt"]}},
         upsert=True,
     )
     return {"summary": doc["body"], "data": doc["data"]}
@@ -455,7 +471,9 @@ async def _tx_fetch_kpis(a):
 
 
 async def _tx_fetch_open_insights(a):
-    rows = await db.ash_insights.find({"resolvedAt": None}, {"_id": 0}).sort("createdAt", -1).limit(50).to_list(50)
+    rows = await db.ash_insights.find(
+        {"resolvedAt": None, **tenant_scope_filter()}, {"_id": 0}
+    ).sort("createdAt", -1).limit(50).to_list(50)
     return {"insights": [{"id": i["id"], "category": i["category"], "severity": i["severity"],
                             "title": i["title"], "body": i["body"]} for i in rows]}
 
@@ -477,7 +495,8 @@ async def _tx_lookup_customer(a):
 
 async def _tx_lookup_product(a):
     q = (a.get("query") or "").strip()
-    row = await db.products.find_one({"name": {"$regex": q, "$options": "i"}}, {"_id": 0})
+    row = await db.products.find_one(
+        {"name": {"$regex": q, "$options": "i"}, **tenant_scope_filter()}, {"_id": 0})
     if not row:
         return {"error": "not found"}
     return {"product": {k: row.get(k) for k in ("id", "name", "price", "cost", "stock", "category")}}

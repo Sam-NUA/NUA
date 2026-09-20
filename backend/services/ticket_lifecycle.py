@@ -85,17 +85,19 @@ async def close_tickets(table_number: Optional[str] = None,
     return closed
 
 
-async def free_table(table_number: Optional[str], actor: Optional[str] = None) -> bool:
+async def free_table(table_number: Optional[str], actor: Optional[str] = None,
+                     business_id: Optional[str] = None) -> bool:
     """Release the table on the floor plan and clear its pacing state."""
     if not table_number:
         return False
     try:
         from services import floor_tables
-        hit = await floor_tables.resolve_table(table_number)
+        hit = await floor_tables.resolve_table(table_number, business_id=business_id)
         if not hit:
             return False
         table, plan_id = hit
-        await floor_tables.set_table_status(table["id"], plan_id, "available")
+        await floor_tables.set_table_status(
+            table["id"], plan_id, "available", business_id=business_id)
         # Pacing state is what drives the dwell timers; leaving it behind
         # would show the next party as having been seated since lunch.
         await db.table_states.delete_one({"tableId": table["id"]})
@@ -173,7 +175,7 @@ async def settle(table_number: Optional[str] = None,
         result = await settle_seats(seats, table_number=table_number,
                                     order_id=order_id, actor=actor, business_id=business_id)
         fully_done = bool(result["closedOrders"]) and not result["remainingSeats"]
-        freed = (await free_table(table_number, actor)
+        freed = (await free_table(table_number, actor, business_id)
                  if (release_table and fully_done) else False)
         return {**result, "tableFreed": freed, "tableNumber": table_number,
                 "partial": not fully_done}
@@ -181,7 +183,7 @@ async def settle(table_number: Optional[str] = None,
     closed = await close_tickets(table_number=table_number,
                                  transaction_id=transaction_id,
                                  order_id=order_id, actor=actor, business_id=business_id)
-    freed = await free_table(table_number, actor) if release_table else False
+    freed = await free_table(table_number, actor, business_id) if release_table else False
     return {"closedOrders": closed, "tableFreed": freed, "tableNumber": table_number,
             "partial": False}
 

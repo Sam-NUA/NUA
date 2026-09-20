@@ -5,6 +5,7 @@ import uuid
 
 class BASReport(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    businessId: str
     quarter: str
     period: str
     totalSales: float

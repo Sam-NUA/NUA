@@ -89,12 +89,13 @@ def test_cleanup_legacy_categories_batches_product_counts(client, owner_headers)
     used_name = f"Used Legacy {uuid.uuid4().hex[:8]}"
     _run(db.categories.delete_many({"id": {"$in": [empty_cat_id, used_cat_id]}}))
     _run(db.categories.insert_many([
-        {"id": empty_cat_id, "name": empty_name},
-        {"id": used_cat_id, "name": used_name},
+        {"id": empty_cat_id, "name": empty_name, "businessId": "default"},
+        {"id": used_cat_id, "name": used_name, "businessId": "default"},
     ]))
     prod_id = str(uuid.uuid4())
     _run(db.products.delete_many({"id": prod_id}))
-    _run(db.products.insert_one({"id": prod_id, "name": "Widget", "category": used_name, "price": 5}))
+    _run(db.products.insert_one({"id": prod_id, "name": "Widget", "category": used_name,
+                                 "price": 5, "businessId": "default"}))
 
     r = req(client, "POST", "/api/categories/cleanup-legacy", headers=owner_headers)
     assert r.status_code == 200, r.text[:200]

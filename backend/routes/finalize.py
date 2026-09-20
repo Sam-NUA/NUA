@@ -173,7 +173,7 @@ class DayRuleIn(BaseModel):
 
 @router.get("/bookings/day-rules")
 async def get_day_rules(_: dict = Depends(get_user)):
-    rows = await db.booking_day_rules.find({}, {"_id": 0}).to_list(20)
+    rows = await db.booking_day_rules.find(tenant_scope_filter(), {"_id": 0}).to_list(20)
     have = {r["weekday"] for r in rows}
     # Fill any missing weekday with a sensible default so the UI always has 7 rows.
     for i in range(7):
@@ -192,7 +192,10 @@ async def update_day_rule(weekday: int, body: DayRuleIn, user: dict = Depends(ge
     if not (0 <= weekday <= 6):
         raise HTTPException(400, "weekday must be 0..6")
     payload = {**body.dict(), "weekday": weekday, "updatedAt": _now(), "updatedBy": user.get("email")}
-    await db.booking_day_rules.update_one({"weekday": weekday}, {"$set": payload}, upsert=True)
+    payload["businessId"] = user.get("businessId")
+    await db.booking_day_rules.update_one(
+        {"weekday": weekday, **tenant_scope_filter(user.get("businessId"))},
+        {"$set": payload}, upsert=True)
     return payload
 
 
@@ -208,9 +211,25 @@ def _sign_qr(payload: dict) -> str:
     return f"{b64}.{sig}"
 
 
+def _verify_qr(token: str) -> Optional[dict]:
+    """Return the signed payload, rejecting forged or malformed scan data."""
+    try:
+        b64, supplied = token.split(".", 1)
+        raw = base64.urlsafe_b64decode(b64 + "=" * (-len(b64) % 4))
+        expected = hmac.new(
+            os.environ["JWT_SECRET"].encode(), raw, hashlib.sha256
+        ).hexdigest()[:16]
+        if not hmac.compare_digest(supplied, expected):
+            return None
+        payload = json.loads(raw)
+        return payload if isinstance(payload, dict) else None
+    except Exception:
+        return None
+
+
 @router.get("/marketing/promo-qr")
 async def promo_qr(type: str, id: str, campaign: Optional[str] = None,
-                    _: dict = Depends(get_user)):
+                    user: dict = Depends(get_user)):
     """Return a signed payload the SPA can turn into a QR code / short-URL for
     any promoted asset (experience, voucher, gift card, loyalty tier, ...).
 
@@ -219,7 +238,9 @@ async def promo_qr(type: str, id: str, campaign: Optional[str] = None,
     allowed = {"experience", "voucher", "gift_card", "loyalty", "promotion", "event", "club"}
     if type not in allowed:
         raise HTTPException(400, f"type must be one of {sorted(allowed)}")
-    payload = {"t": type, "id": id, "c": campaign or "", "ts": int(datetime.now(timezone.utc).timestamp())}
+    payload = {"t": type, "id": id, "c": campaign or "",
+               "b": user.get("businessId"),
+               "ts": int(datetime.now(timezone.utc).timestamp())}
     token = _sign_qr(payload)
     origin = os.environ.get("FRONTEND_URL", "").rstrip("/")
     return {
@@ -233,10 +254,14 @@ async def promo_qr(type: str, id: str, campaign: Optional[str] = None,
 async def marketing_scan(body: dict):
     """Public endpoint — the QR landing page pings this so we can track
     scan → booking attribution. Fingerprint by IP is deliberately loose."""
+    payload = _verify_qr(str(body.get("token") or ""))
+    if not payload or not payload.get("b"):
+        raise HTTPException(400, "Invalid scan token")
     await db.marketing_scans.insert_one({
         "id": str(uuid.uuid4()),
         "token": body.get("token"),
-        "t": body.get("t"), "sourceId": body.get("id"), "campaign": body.get("c"),
+        "t": payload.get("t"), "sourceId": payload.get("id"), "campaign": payload.get("c"),
+        "businessId": payload.get("b"),
         "referrer": body.get("referrer"), "ua": body.get("ua"),
         "createdAt": _now(),
     })
@@ -244,11 +269,14 @@ async def marketing_scan(body: dict):
 
 
 @router.get("/marketing/analytics")
-async def marketing_analytics(days: int = 30, _: dict = Depends(get_user)):
+async def marketing_analytics(days: int = 30, user: dict = Depends(get_user)):
     """Rolls up scans + bookings + revenue by source over `days`."""
     since = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
-    scans = await db.marketing_scans.find({"createdAt": {"$gte": since}}, {"_id": 0}).to_list(5000)
-    bookings = await db.reservations.find({"createdAt": {"$gte": since}}, {"_id": 0}).to_list(5000)
+    scope = tenant_scope_filter(user.get("businessId"))
+    scans = await db.marketing_scans.find(
+        {"createdAt": {"$gte": since}, **scope}, {"_id": 0}).to_list(5000)
+    bookings = await db.reservations.find(
+        {"createdAt": {"$gte": since}, **scope}, {"_id": 0}).to_list(5000)
     by_source = {}
     for b in bookings:
         src = (b.get("source") or b.get("channel") or "walk-in").lower()
@@ -282,7 +310,7 @@ class ChannelStateIn(BaseModel):
 
 @router.get("/channels/state")
 async def channel_states(_: dict = Depends(get_user)):
-    rows = await db.channel_states.find({}, {"_id": 0}).to_list(50)
+    rows = await db.channel_states.find(tenant_scope_filter(), {"_id": 0}).to_list(50)
     return rows
 
 
@@ -610,7 +638,7 @@ def _pdf_from_lines(title: str, lines: List[str], meta: Optional[dict] = None) -
 
 @router.get("/inventory/low-stock/pdf")
 async def low_stock_pdf(_: dict = Depends(get_user)):
-    prods = await db.products.find({}, {"_id": 0}).to_list(2000)
+    prods = await db.products.find(tenant_scope_filter(), {"_id": 0}).to_list(2000)
     low = [p for p in prods
            if p.get("stock") is not None
            and p["stock"] <= (p.get("lowStockThreshold") or 5)]
@@ -630,7 +658,7 @@ async def low_stock_xlsx(_: dict = Depends(get_user)):
     from openpyxl import Workbook
     from openpyxl.styles import Font, PatternFill, Alignment
 
-    prods = await db.products.find({}, {"_id": 0}).to_list(2000)
+    prods = await db.products.find(tenant_scope_filter(), {"_id": 0}).to_list(2000)
     low = [p for p in prods
            if p.get("stock") is not None
            and p["stock"] <= (p.get("lowStockThreshold") or p.get("parLevel") or 5)]
@@ -672,17 +700,21 @@ async def low_stock_xlsx(_: dict = Depends(get_user)):
 
 
 @router.get("/ai-pantry/order-sheet/pdf")
-async def ai_pantry_pdf(_: dict = Depends(get_user)):
+async def ai_pantry_pdf(user: dict = Depends(get_user)):
     # Reuse whatever the AI Pantry produces; fall back to low-stock if the
     # collection isn't there yet.
     rows = []
     try:
-        rows = await db.ai_pantry_orders.find({"status": {"$in": ["draft", "suggested"]}},
+        scope = tenant_scope_filter(user.get("businessId"))
+        rows = await db.ai_pantry_orders.find({"status": {"$in": ["draft", "suggested"]}, **scope},
                                                {"_id": 0}).sort("createdAt", -1).to_list(500)
     except Exception:
         pass
     if not rows:
-        prods = await db.products.find({"stock": {"$lte": 5}}, {"_id": 0}).to_list(2000)
+        prods = await db.products.find(
+            {"stock": {"$lte": 5}, **tenant_scope_filter(user.get("businessId"))},
+            {"_id": 0},
+        ).to_list(2000)
         for p in prods:
             rows.append({"item": p.get("name"), "qty": max(10, (p.get("lowStockThreshold") or 5) * 3),
                           "supplier": p.get("supplier", "TBD"), "unit": "units"})
@@ -711,7 +743,7 @@ class TriggerIn(BaseModel):
 
 @router.get("/automations/triggers")
 async def list_triggers(_: dict = Depends(get_user)):
-    return await db.automation_triggers.find({}, {"_id": 0}).sort("createdAt", -1).to_list(200)
+    return await db.automation_triggers.find(tenant_scope_filter(), {"_id": 0}).sort("createdAt", -1).to_list(200)
 
 
 @router.post("/automations/triggers")
@@ -719,6 +751,7 @@ async def create_trigger(body: TriggerIn, user: dict = Depends(get_user)):
     if user["role"] not in ("owner", "manager"):
         raise HTTPException(403, "Owner or manager only")
     doc = {"id": str(uuid.uuid4()), **body.dict(),
+           "businessId": user.get("businessId"),
            "createdBy": user.get("email"), "createdAt": _now(), "updatedAt": _now()}
     await db.automation_triggers.insert_one(doc)
     doc.pop("_id", None)
@@ -730,17 +763,19 @@ async def update_trigger(trigger_id: str, data: dict, user: dict = Depends(get_u
     if user["role"] not in ("owner", "manager"):
         raise HTTPException(403, "Owner or manager only")
     data["updatedAt"] = _now()
-    r = await db.automation_triggers.update_one({"id": trigger_id}, {"$set": data})
+    scope = tenant_scope_filter(user.get("businessId"))
+    r = await db.automation_triggers.update_one({"id": trigger_id, **scope}, {"$set": data})
     if r.matched_count == 0:
         raise HTTPException(404, "Trigger not found")
-    return await db.automation_triggers.find_one({"id": trigger_id}, {"_id": 0})
+    return await db.automation_triggers.find_one({"id": trigger_id, **scope}, {"_id": 0})
 
 
 @router.delete("/automations/triggers/{trigger_id}")
 async def delete_trigger(trigger_id: str, user: dict = Depends(get_user)):
     if user["role"] != "owner":
         raise HTTPException(403, "Owner only")
-    r = await db.automation_triggers.delete_one({"id": trigger_id})
+    r = await db.automation_triggers.delete_one(
+        {"id": trigger_id, **tenant_scope_filter(user.get("businessId"))})
     if r.deleted_count == 0:
         raise HTTPException(404, "Trigger not found")
     return {"deleted": True}

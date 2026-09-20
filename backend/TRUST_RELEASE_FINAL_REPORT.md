@@ -1,5 +1,16 @@
 # NUA POS Trust Release — Final Report
 
+> **2026-09-20 addendum:** The dependency debt described in the historical
+> report below is now closed: the coordinated FastAPI/Starlette,
+> cryptography, pytest, and black upgrade reports zero known vulnerabilities
+> in the exact pinned environment. The expanded backend suite passes 810/810,
+> and the frontend production build compiles successfully. Additional tenant
+> isolation fixes covering analytics, BAS, commerce, gift cards/vouchers,
+> online orders, inventory, appointments, floor/print routing, and Ash tools
+> are included in the same follow-up. See `SECURITY_DEPENDENCY_DEBT.md` Pass 4
+> for the current dependency status. Older counts and deferral recommendations
+> below remain as an audit trail and are no longer current.
+
 **Date:** 2026-09-16 (updated four times; originally 2026-09-14)
 **Branch:** `trust-release/p0-security-foundation` (82 commits ahead of `main`, all pushed to origin — none merged; `main` confirmed a strict ancestor, zero divergence, no rebase/merge needed)
 **Verdict: MERGE-READY.** See §10 for this update's own verdict table (four levels: merge/staging/controlled-pilot/general-production), which supersedes the summary line below for anything it disagrees with. The two named pre-merge P0 risks from the prior CONDITIONAL-GO pass — shared-singleton settings scoping and Stripe/Coinbase checkout-session idempotency — are both closed, with regression and genuine-concurrency tests. Dependency advisories were re-triaged by reachability/severity/blast-radius and cut from 97 to 26 (9 affected packages to 4); the 4 remaining are either structurally blocked without a separate framework bump or have zero production reachability. The complete backend/frontend/tenant-isolation/payment-race/offline/Ash-safety/lint/build/security gate battery was run end to end: backend suite 629/629 passed, frontend build clean, flake8 clean, all 4 Playwright specs pass (one required a real fix — a pre-existing, unrelated e2e assertion bug surfaced when opening the PR hit it on GitHub Actions' own runners; root-caused and fixed, not just retried; see §8) and a gitleaks secret-scan false positive from pre-existing commits was allowlisted after manual verification. This is still not the same claim as "no security issues exist anywhere" — read §7's remaining conditions before treating every corner of this platform as cleared.

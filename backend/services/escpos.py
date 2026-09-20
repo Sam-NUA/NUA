@@ -357,10 +357,12 @@ def self_test(printer_name: str, width: int = DEFAULT_WIDTH,
     return bytes(out)
 
 
-async def printer_target(printer_name: str) -> Optional[Dict[str, Any]]:
+async def printer_target(printer_name: str, business_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
     """Look up a configured network address for a station printer."""
     from database import db
-    row = await db.printer_targets.find_one({"printer": printer_name}, {"_id": 0})
+    from middleware.actor_context import tenant_scope_filter
+    row = await db.printer_targets.find_one(
+        {"printer": printer_name, **tenant_scope_filter(business_id)}, {"_id": 0})
     if row and row.get("host"):
         return row
     return None

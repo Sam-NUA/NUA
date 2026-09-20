@@ -157,7 +157,7 @@ async def build_reporting_map() -> dict:
     """name -> the name its sales should be attributed to in revenue reports,
     following reportsUnderId chains. Cycle-safe; falls back to the category's
     own name if the chain is broken or missing."""
-    cats = await db.categories.find({}, {"_id": 0}).to_list(500)
+    cats = await db.categories.find(tenant_scope_filter(), {"_id": 0}).to_list(500)
     by_id = {c["id"]: c for c in cats}
 
     def resolve(cat: dict, seen: set) -> str:
@@ -174,19 +174,20 @@ async def build_reporting_map() -> dict:
 
 
 @router.post("/categories/cleanup-legacy")
-async def cleanup_legacy_categories(_: dict = Depends(require_owner)):
+async def cleanup_legacy_categories(user: dict = Depends(require_owner)):
     """Owner one-click: removes ANY category that has zero products attached
     AND is not in the canonical seed-catalog set (Coffee/Burgers/Mains/
     Cakes & Slices/Pasta). Safe — products are unaffected."""
     canonical = {c["name"] for c in SEED_CATEGORIES}
-    all_cats = await db.categories.find({}, {"_id": 0}).to_list(200)
+    scope = tenant_scope_filter(user.get("businessId"))
+    all_cats = await db.categories.find(scope, {"_id": 0}).to_list(200)
     candidates = [cat for cat in all_cats if cat["name"] not in canonical]
     # One aggregation for all candidate categories' product counts, instead
     # of one count_documents() per category.
     counts_by_category = {}
     if candidates:
         agg = await db.products.aggregate([
-            {"$match": {"category": {"$in": [c["name"] for c in candidates]}}},
+            {"$match": {"category": {"$in": [c["name"] for c in candidates]}, **scope}},
             {"$group": {"_id": "$category", "count": {"$sum": 1}}},
         ]).to_list(len(candidates))
         counts_by_category = {row["_id"]: row["count"] for row in agg}
@@ -194,7 +195,7 @@ async def cleanup_legacy_categories(_: dict = Depends(require_owner)):
     for cat in candidates:
         product_count = counts_by_category.get(cat["name"], 0)
         if product_count == 0:
-            await db.categories.delete_one({"id": cat["id"]})
+            await db.categories.delete_one({"id": cat["id"], **scope})
             removed.append(cat["name"])
         else:
             kept.append({"name": cat["name"], "productCount": product_count})

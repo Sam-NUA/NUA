@@ -14,6 +14,7 @@ insufficient stock).
 """
 from typing import Iterable
 from database import db
+from middleware.actor_context import tenant_scope_filter
 from pymongo import UpdateOne
 
 
@@ -24,11 +25,15 @@ async def clamp_negative_stock(product_ids: Iterable[str]) -> None:
     if not ids:
         return
     negative = await db.products.find(
-        {"id": {"$in": ids}, "stock": {"$lt": 0}}, {"_id": 0, "id": 1}
+        {"id": {"$in": ids}, "stock": {"$lt": 0}, **tenant_scope_filter()},
+        {"_id": 0, "id": 1},
     ).to_list(len(ids))
     if not negative:
         return
     await db.products.bulk_write([
-        UpdateOne({"id": row["id"], "stock": {"$lt": 0}}, {"$set": {"stock": 0}})
+        UpdateOne(
+            {"id": row["id"], "stock": {"$lt": 0}, **tenant_scope_filter()},
+            {"$set": {"stock": 0}},
+        )
         for row in negative
     ])

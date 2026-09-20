@@ -43,17 +43,19 @@ from utils.ids import now_utc as _now, to_iso as _iso, gen_uid as _uid
 _STATUS_ORDER = ["pending", "accepted", "preparing", "ready", "out_for_delivery", "completed", "cancelled"]
 
 
-async def _kitchen_load() -> dict:
+async def _kitchen_load(business_id: str) -> dict:
     """Snapshot of currently-active orders feeding the ETA buffer."""
-    pending = await db.online_orders.count_documents({"status": "pending"})
-    preparing = await db.online_orders.count_documents({"status": "preparing"})
-    accepted = await db.online_orders.count_documents({"status": "accepted"})
+    scope = tenant_scope_filter(business_id)
+    pending = await db.online_orders.count_documents({"status": "pending", **scope})
+    preparing = await db.online_orders.count_documents({"status": "preparing", **scope})
+    accepted = await db.online_orders.count_documents({"status": "accepted", **scope})
     # Per active order add a small queue penalty (1 min). 2x penalty for orders
     # >5min stale to keep ETA honest in busy periods.
     now = _now()
     queue_penalty = 0.0
     rows = await db.online_orders.find(
-        {"status": {"$in": ["accepted", "preparing"]}}, {"_id": 0, "createdAt": 1}).to_list(50)
+        {"status": {"$in": ["accepted", "preparing"]}, **scope},
+        {"_id": 0, "createdAt": 1}).to_list(50)
     for r in rows:
         try:
             created = datetime.fromisoformat(r.get("createdAt").replace("Z", "+00:00")) if isinstance(r.get("createdAt"), str) else r.get("createdAt")
@@ -65,10 +67,10 @@ async def _kitchen_load() -> dict:
             "queuePenaltyMins": round(queue_penalty, 1)}
 
 
-async def _compute_eta(items: list, channel: str, kitchen_load: dict) -> dict:
+async def _compute_eta(items: list, channel: str, kitchen_load: dict, business_id: str) -> dict:
     """Deterministic ETA = max category prep time × surge factor + delivery offset
     + kitchen load buffer. AI then drafts a natural-language explanation."""
-    cats = await db.categories.find({}, {"_id": 0}).to_list(200)
+    cats = await db.categories.find(tenant_scope_filter(business_id), {"_id": 0}).to_list(200)
     cat_prep = {c["name"].lower(): int(c.get("prepTime", 8)) for c in cats}
     item_prep_mins = []
     cat_breakdown = {}
@@ -131,7 +133,7 @@ async def _ai_eta_explanation(order: dict, eta: dict) -> str:
         return fallback
 
 
-async def _adjust_stock_for_items(items: list, sign: int):
+async def _adjust_stock_for_items(items: list, sign: int, business_id: str):
     """+1 to restock, -1 to deduct. Online orders never touched db.products
     stock at all before this — an accepted online order didn't reduce
     on-hand count the way a POS sale does, so this is what accepting one
@@ -144,7 +146,8 @@ async def _adjust_stock_for_items(items: list, sign: int):
         qty = int(item.get("quantity", 1))
         if not pid or qty <= 0:
             continue
-        await db.products.update_one({"id": pid}, {"$inc": {"stock": sign * qty}})
+        await db.products.update_one(
+            {"id": pid, **tenant_scope_filter(business_id)}, {"$inc": {"stock": sign * qty}})
         touched.append(pid)
     if sign < 0 and touched:
         from utils.stock_ops import clamp_negative_stock
@@ -250,6 +253,7 @@ async def place_order(data: dict, business: Optional[str] = None):
     channel = data.get("channel", "pickup")  # pickup | delivery | dine-in
     if channel not in ("pickup", "delivery", "dine-in"):
         raise HTTPException(status_code=400, detail="Invalid channel")
+    business_id = await _resolve_business_id(business or data.get("business"))
     customer = {
         "name": (data.get("customerName") or "").strip(),
         "phone": (data.get("customerPhone") or "").strip(),
@@ -284,7 +288,7 @@ async def place_order(data: dict, business: Optional[str] = None):
     voucher_label = None
     if voucher_code:
         try:
-            v = await _resolve_voucher(voucher_code, None)
+            v = await _resolve_voucher(voucher_code, None, business_id=business_id)
             if not _validate_voucher_rules(v, cart=items):
                 voucher_discount = _compute_voucher_discount(v, subtotal)
                 voucher_label = v.get("label")
@@ -293,9 +297,8 @@ async def place_order(data: dict, business: Optional[str] = None):
     total = round(max(0.0, subtotal - voucher_discount), 2)
     gst = round(total / 11, 2)
     code = _uid("ORD")
-    load = await _kitchen_load()
-    eta = await _compute_eta(items, channel, load)
-    business_id = await _resolve_business_id(business or data.get("business"))
+    load = await _kitchen_load(business_id)
+    eta = await _compute_eta(items, channel, load, business_id)
     order = {
         "id": code, "trackingCode": code,
         "businessId": business_id,
@@ -352,7 +355,9 @@ async def create_online_order_checkout(data: dict, http_request: Request):
     order_id = data.get("orderId")
     if not order_id:
         raise HTTPException(status_code=400, detail="orderId is required")
-    order = await db.online_orders.find_one({"id": order_id}, {"_id": 0})
+    business_id = await _resolve_business_id(data.get("business"))
+    scope = tenant_scope_filter(business_id)
+    order = await db.online_orders.find_one({"id": order_id, **scope}, {"_id": 0})
     if not order:
         raise HTTPException(status_code=404, detail="Order not found")
     if order.get("paymentStatus") == "paid":
@@ -411,9 +416,11 @@ async def create_online_order_checkout(data: dict, http_request: Request):
         "provider": "stripe",
         "kind": "online_order",
         "createdAt": _iso(_now()),
+        "businessId": business_id,
     }
     await db.payment_transactions.insert_one(payment_doc)
-    await db.online_orders.update_one({"id": order_id}, {"$set": {"paymentSessionId": session.session_id}})
+    await db.online_orders.update_one(
+        {"id": order_id, **scope}, {"$set": {"paymentSessionId": session.session_id}})
     result = {"url": session.url, "sessionId": session.session_id}
     await record_result("stripe_online_order", order_id, result)
     return {"configured": True, **result}
@@ -447,7 +454,9 @@ async def update_status(order_id: str, data: dict, user: dict = Depends(get_user
     new_status = data.get("status")
     if new_status not in _STATUS_ORDER:
         raise HTTPException(status_code=400, detail=f"Invalid status. Allowed: {_STATUS_ORDER}")
-    order = await db.online_orders.find_one({"id": order_id}, {"_id": 0})
+    business_id = user.get("businessId")
+    scope = tenant_scope_filter(business_id)
+    order = await db.online_orders.find_one({"id": order_id, **scope}, {"_id": 0})
     if not order: raise HTTPException(status_code=404, detail="Order not found")
 
     # Atomically claim this exact transition before doing any side effects.
@@ -468,7 +477,7 @@ async def update_status(order_id: str, data: dict, user: dict = Depends(get_user
     # effects applied. Accepted as strictly safer than the prior
     # no-protection-at-all state; see FINANCIAL_OFFLINE_INTEGRITY_REMAINING_WORK.md.
     claimed = await db.online_orders.find_one_and_update(
-        {"id": order_id, "status": order["status"]},
+        {"id": order_id, "status": order["status"], **scope},
         {"$set": {"status": new_status}},
         projection={"_id": 0},
     )
@@ -521,11 +530,11 @@ async def update_status(order_id: str, data: dict, user: dict = Depends(get_user
             logging.getLogger(__name__).warning(
                 "online order %s: kitchen ticket failed — %s", order_id, e)
         if not order.get("stockDeducted"):
-            await _adjust_stock_for_items(order.get("items") or [], sign=-1)
+            await _adjust_stock_for_items(order.get("items") or [], sign=-1, business_id=business_id)
             order["stockDeducted"] = True
         # Recompute ETA with fresh kitchen-load snapshot
-        load = await _kitchen_load()
-        order["eta"] = await _compute_eta(order.get("items", []), ch, load)
+        load = await _kitchen_load(business_id)
+        order["eta"] = await _compute_eta(order.get("items", []), ch, load, business_id)
         order["etaMessage"] = await _ai_eta_explanation(order, order["eta"])
     if new_status == "out_for_delivery":
         order["driver"] = data.get("driver", "")
@@ -538,7 +547,7 @@ async def update_status(order_id: str, data: dict, user: dict = Depends(get_user
         # Only accepted orders ever deducted stock (above) — an order
         # cancelled while still "pending" never touched inventory, so there's
         # nothing to give back.
-        await _adjust_stock_for_items(order.get("items") or [], sign=1)
+        await _adjust_stock_for_items(order.get("items") or [], sign=1, business_id=business_id)
         order["stockRestored"] = True
     if new_status == "cancelled" and order.get("paymentStatus") in ("paid", "refund_failed"):
         # This order was actually charged (Stripe checkout added last round)
@@ -551,14 +560,14 @@ async def update_status(order_id: str, data: dict, user: dict = Depends(get_user
         # payment() is itself safe to call again against an already-refunded
         # charge, so this can't produce a double refund.
         payment = await db.payment_transactions.find_one(
-            {"orderId": order_id, "kind": "online_order", "paymentStatus": "paid"}, {"_id": 0})
+            {"orderId": order_id, "kind": "online_order", "paymentStatus": "paid", **scope}, {"_id": 0})
         if payment and payment.get("sessionId"):
             from routes.integrations import refund_stripe_payment
             refunded = await refund_stripe_payment(payment["sessionId"])
             if refunded:
                 order["paymentStatus"] = "refunded"
                 await db.payment_transactions.update_one(
-                    {"sessionId": payment["sessionId"]},
+                    {"sessionId": payment["sessionId"], **scope},
                     {"$set": {"paymentStatus": "refunded", "status": "refunded", "updatedAt": _iso(_now())}},
                 )
                 _append_event(order, "payment:refunded", "Payment refunded in full.")
@@ -569,26 +578,28 @@ async def update_status(order_id: str, data: dict, user: dict = Depends(get_user
                 logging.getLogger(__name__).error(
                     "online order %s: cancelled but Stripe refund failed — needs manual reconciliation", order_id)
     update_fields = {k: v for k, v in order.items() if k != "id"}
-    await db.online_orders.update_one({"id": order_id}, {"$set": update_fields})
+    await db.online_orders.update_one({"id": order_id, **scope}, {"$set": update_fields})
     return order
 
 
 @router.post("/online/orders/{order_id}/eta")
-async def recompute_eta(order_id: str, _: dict = Depends(get_user)):
-    order = await db.online_orders.find_one({"id": order_id}, {"_id": 0})
+async def recompute_eta(order_id: str, user: dict = Depends(get_user)):
+    business_id = user.get("businessId")
+    scope = tenant_scope_filter(business_id)
+    order = await db.online_orders.find_one({"id": order_id, **scope}, {"_id": 0})
     if not order: raise HTTPException(status_code=404, detail="Order not found")
-    load = await _kitchen_load()
-    eta = await _compute_eta(order.get("items", []), order.get("channel", "pickup"), load)
+    load = await _kitchen_load(business_id)
+    eta = await _compute_eta(order.get("items", []), order.get("channel", "pickup"), load, business_id)
     msg = await _ai_eta_explanation(order, eta)
     _append_event(order, "eta:recomputed", f"New ETA: {eta['etaMinutes']} min")
     await db.online_orders.update_one(
-        {"id": order_id}, {"$set": {"eta": eta, "etaMessage": msg, "events": order["events"]}})
+        {"id": order_id, **scope}, {"$set": {"eta": eta, "etaMessage": msg, "events": order["events"]}})
     return {"eta": eta, "etaMessage": msg}
 
 
 @router.get("/online/kitchen/load")
-async def kitchen_load_endpoint(_: dict = Depends(get_user)):
-    return await _kitchen_load()
+async def kitchen_load_endpoint(user: dict = Depends(get_user)):
+    return await _kitchen_load(user.get("businessId"))
 
 
 # =============================================================================

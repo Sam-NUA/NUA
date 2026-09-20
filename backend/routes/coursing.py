@@ -103,7 +103,8 @@ async def send_to_kitchen(body: dict, request: Request, user: dict = Depends(get
     # creating the table's order twice.
     client_key = body.get("clientKey")
     if client_key:
-        existing = await db.kitchen_orders.find_one({"clientKey": client_key}, {"_id": 0})
+        existing = await db.kitchen_orders.find_one(
+            {"clientKey": client_key, **tenant_scope_filter(user.get("businessId"))}, {"_id": 0})
         if existing:
             return existing
 
@@ -454,7 +455,10 @@ async def coursing_stream(request: Request, tableNumber: Optional[str] = None,
             payload = _jwt.decode(token, _secret(), algorithms=[JWT_ALGORITHM])
             if payload.get("type") != "access":
                 raise HTTPException(status_code=401, detail="Invalid token type")
-            token_user = await db.auth_users.find_one({"id": payload["sub"]}, {"_id": 0})
+            token_user = await db.auth_users.find_one({
+                "id": payload["sub"],
+                **tenant_scope_filter(payload.get("businessId")),
+            }, {"_id": 0})
             if not token_user:
                 raise HTTPException(status_code=401, detail="User not found")
             business_id = token_user.get("businessId")
@@ -504,7 +508,7 @@ async def coursing_stream(request: Request, tableNumber: Optional[str] = None,
 @router.get("/print-targets")
 async def list_print_targets(_: dict = Depends(get_user)):
     """Network addresses configured for station printers."""
-    return await db.printer_targets.find({}, {"_id": 0}).to_list(50)
+    return await db.printer_targets.find(tenant_scope_filter(), {"_id": 0}).to_list(50)
 
 
 @router.put("/print-targets/{printer}")
@@ -518,7 +522,8 @@ async def set_print_target(printer: str, body: dict, user: dict = Depends(get_us
     if user.get("role") not in ("owner", "manager"):
         raise HTTPException(status_code=403, detail="Owner or manager only")
     from services import escpos
-    existing = await db.printer_targets.find_one({"printer": printer}, {"_id": 0}) or {}
+    scope = tenant_scope_filter(user.get("businessId"))
+    existing = await db.printer_targets.find_one({"printer": printer, **scope}, {"_id": 0}) or {}
     doc = {
         "printer": printer,
         "host": (body["host"].strip() or None) if "host" in body else existing.get("host"),
@@ -537,8 +542,9 @@ async def set_print_target(printer: str, body: dict, user: dict = Depends(get_us
         "paddingLines": max(0, min(9, int(body.get("paddingLines", existing.get("paddingLines", 3))))),
         "updatedAt": _now(),
         "updatedBy": user.get("email"),
+        "businessId": user.get("businessId"),
     }
-    await db.printer_targets.update_one({"printer": printer}, {"$set": doc}, upsert=True)
+    await db.printer_targets.update_one({"printer": printer, **scope}, {"$set": doc}, upsert=True)
     return doc
 
 
@@ -550,7 +556,7 @@ async def print_targets_health(_: dict = Depends(get_user)):
     the middle of service, which is the worst moment to find out.
     """
     from services import escpos
-    rows = await db.printer_targets.find({}, {"_id": 0}).to_list(50)
+    rows = await db.printer_targets.find(tenant_scope_filter(), {"_id": 0}).to_list(50)
     out = []
     for row in rows:
         if not row.get("host") or not row.get("enabled", True):
@@ -568,7 +574,7 @@ async def print_target_test(printer: str, user: dict = Depends(get_user)):
     if user.get("role") not in ("owner", "manager"):
         raise HTTPException(status_code=403, detail="Owner or manager only")
     from services import escpos
-    target = await escpos.printer_target(printer)
+    target = await escpos.printer_target(printer, user.get("businessId"))
     if not target:
         raise HTTPException(status_code=404, detail=f"No device configured for '{printer}'")
     payload = escpos.self_test(
@@ -589,7 +595,7 @@ async def print_profiles(_: dict = Depends(get_user)):
 
 
 @router.post("/print-jobs/{job_id}/dry-run")
-async def print_job_dry_run(job_id: str, body: dict = None, _: dict = Depends(get_user)):
+async def print_job_dry_run(job_id: str, body: dict = None, user: dict = Depends(get_user)):
     """Render a docket to ESC/POS and describe it without sending anything.
 
     No physical printer has seen this output, so the honest way to validate it
@@ -597,13 +603,14 @@ async def print_job_dry_run(job_id: str, body: dict = None, _: dict = Depends(ge
     character the configured codepage couldn't represent.
     """
     from services import escpos
-    job = await db.print_jobs.find_one({"id": job_id}, {"_id": 0})
+    job = await db.print_jobs.find_one(
+        {"id": job_id, **tenant_scope_filter(user.get("businessId"))}, {"_id": 0})
     if not job:
         raise HTTPException(status_code=404, detail="Print job not found")
 
     body = body or {}
     profile = escpos.DEVICE_PROFILES.get(body.get("profile") or "")
-    target = await escpos.printer_target(job.get("printer")) or {}
+    target = await escpos.printer_target(job.get("printer"), user.get("businessId")) or {}
     opts = {
         "width": body.get("width") or (profile or {}).get("width") or target.get("width") or escpos.DEFAULT_WIDTH,
         "codepage": body.get("codepage") or (profile or {}).get("codepage") or target.get("codepage") or escpos.DEFAULT_CODEPAGE,
@@ -617,7 +624,7 @@ async def print_job_dry_run(job_id: str, body: dict = None, _: dict = Depends(ge
 
 
 @router.post("/print-jobs/{job_id}/escpos")
-async def print_job_escpos(job_id: str, body: dict = None, _: dict = Depends(get_user)):
+async def print_job_escpos(job_id: str, body: dict = None, user: dict = Depends(get_user)):
     """Render a queued docket as ESC/POS and send it to the station printer.
 
     Returns `sent: False` with a reason when no device is configured or it
@@ -635,19 +642,20 @@ async def print_job_escpos(job_id: str, body: dict = None, _: dict = Depends(get
     never five accidental ones.
     """
     from services import escpos
+    scope = tenant_scope_filter(user.get("businessId"))
     force = bool((body or {}).get("force"))
-    query = {"id": job_id} if force else {"id": job_id, "status": "queued"}
+    query = {"id": job_id, **scope} if force else {"id": job_id, "status": "queued", **scope}
     job = await db.print_jobs.find_one_and_update(
         query, {"$set": {"status": "printing"}}, return_document=True)
     if not job:
-        existing = await db.print_jobs.find_one({"id": job_id}, {"_id": 0})
+        existing = await db.print_jobs.find_one({"id": job_id, **scope}, {"_id": 0})
         if not existing:
             raise HTTPException(status_code=404, detail="Print job not found")
         return {"sent": False, "reason": f"already {existing['status']} — pass force:true to reprint",
                 "status": existing["status"]}
     job.pop("_id", None)
 
-    target = await escpos.printer_target(job.get("printer"))
+    target = await escpos.printer_target(job.get("printer"), user.get("businessId"))
     payload = escpos.render(
         job,
         width=(target or {}).get("width") or escpos.DEFAULT_WIDTH,
@@ -658,19 +666,21 @@ async def print_job_escpos(job_id: str, body: dict = None, _: dict = Depends(get
         padding_lines=(target or {}).get("paddingLines", 3),
     )
     if not target or not target.get("enabled", True):
-        await db.print_jobs.update_one({"id": job_id}, {"$set": {"status": "queued"}})
+        await db.print_jobs.update_one({"id": job_id, **scope}, {"$set": {"status": "queued"}})
         return {"sent": False, "reason": "no device configured for this printer",
                 "bytes": len(payload), "printer": job.get("printer")}
 
     result = await escpos.send(target["host"], payload, port=target.get("port", 9100))
     if result.get("ok"):
         await db.print_jobs.update_one(
-            {"id": job_id},
+            {"id": job_id, **scope},
             {"$set": {"status": "printed", "printedAt": _now(),
                       "printedVia": f"escpos://{target['host']}:{target.get('port', 9100)}"}},
         )
         return {"sent": True, **result}
-    await db.print_jobs.update_one({"id": job_id}, {"$set": {"status": "queued", "lastError": result.get("error")}})
+    await db.print_jobs.update_one(
+        {"id": job_id, **scope},
+        {"$set": {"status": "queued", "lastError": result.get("error")}})
     return {"sent": False, "reason": result.get("error"), "bytes": len(payload)}
 
 

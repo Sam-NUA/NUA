@@ -275,11 +275,16 @@ def test_mark_dish_86_rollback_restores_the_prior_state(client, owner_headers):
     product_id = product.json()["id"]
 
     from services import nua_tools
-    outcome = _run(nua_tools._tx_mark_dish_86({"productId": product_id, "reason": "test 86"}))
-    assert outcome["matched"] == 1
-    row = _run(db.products.find_one({"id": product_id}, {"_id": 0, "eightySixed": 1}))
-    assert row["eightySixed"] is True
+    from middleware.actor_context import _actor_ctx
+    token = _actor_ctx.set({"businessId": "default", "email": "owner@nua.com", "role": "owner"})
+    try:
+        outcome = _run(nua_tools._tx_mark_dish_86({"productId": product_id, "reason": "test 86"}))
+        assert outcome["matched"] == 1
+        row = _run(db.products.find_one({"id": product_id}, {"_id": 0, "eightySixed": 1}))
+        assert row["eightySixed"] is True
 
-    _run(nua_tools._rollback_dish_86(outcome))
-    row_after = _run(db.products.find_one({"id": product_id}, {"_id": 0, "eightySixed": 1}))
-    assert row_after["eightySixed"] is False
+        _run(nua_tools._rollback_dish_86(outcome))
+        row_after = _run(db.products.find_one({"id": product_id}, {"_id": 0, "eightySixed": 1}))
+        assert row_after["eightySixed"] is False
+    finally:
+        _actor_ctx.reset(token)

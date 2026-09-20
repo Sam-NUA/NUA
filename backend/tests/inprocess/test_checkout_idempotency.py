@@ -451,7 +451,8 @@ def test_bill_split_guest_checkout_shares_a_stable_key_per_split(client, monkeyp
         "id": "KORD-IDEM-SPLIT-1", "tableNumber": "T-IDEM-1", "businessId": "default", "status": "new",
         "items": [{"productId": "PROD-IDEM-BURGER", "productName": "Burger", "category": "Mains", "quantity": 1}],
     }))
-    _run(_db.products.insert_one({"id": "PROD-IDEM-BURGER", "name": "Burger", "price": 12.0, "category": "Mains"}))
+    _run(_db.products.insert_one({"id": "PROD-IDEM-BURGER", "name": "Burger", "price": 12.0,
+                                  "category": "Mains", "businessId": "default"}))
     split_id = None
     try:
         from services import guest_session

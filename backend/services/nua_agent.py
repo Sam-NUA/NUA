@@ -8,6 +8,7 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional
 from datetime import datetime, timezone
 from database import db
+from middleware.actor_context import tenant_scope_filter
 from services import nua_tools, nua_personas, nua_memory, audit_service
 import json
 import logging
@@ -129,9 +130,9 @@ def _extract_json(txt: str) -> Optional[Dict[str, Any]]:
 
 
 async def _grounding_context() -> Dict[str, Any]:
-    audit = await db.audit_events.find({}, {"_id": 0}).sort("ts", -1).limit(15).to_list(15)
-    insights = await db.ash_insights.find({"resolvedAt": None}, {"_id": 0}).sort("createdAt", -1).limit(10).to_list(10)
-    approvals = await db.approvals.find({"status": "pending"}, {"_id": 0}).sort("createdAt", -1).limit(10).to_list(10)
+    audit = await db.audit_events.find(tenant_scope_filter(), {"_id": 0}).sort("ts", -1).limit(15).to_list(15)
+    insights = await db.ash_insights.find({"resolvedAt": None, **tenant_scope_filter()}, {"_id": 0}).sort("createdAt", -1).limit(10).to_list(10)
+    approvals = await db.approvals.find({"status": "pending", **tenant_scope_filter()}, {"_id": 0}).sort("createdAt", -1).limit(10).to_list(10)
     return {
         "recentAudit": [{"actor": a.get("actor"), "action": a.get("action"),
                           "entity": f"{a.get('entityType')}:{(a.get('entityId') or '')[:8]}",

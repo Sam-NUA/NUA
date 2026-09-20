@@ -2,6 +2,30 @@
 
 `pip-audit -r requirements.txt` is wired into CI (see `.github/workflows/ci.yml`) and runs on every PR. This file tracks what's been fixed and what's deliberately deferred, with the reasoning, so the CI step's output is honest and traceable rather than either silently suppressed or blocking merges on a scope a given pass didn't cover. As of Pass 3 there's also a real merge gate, not just a report: `backend/scripts/check_dependency_baseline.py`, checked against `backend/dependency_baseline.json`, fails CI if pip-audit reports an advisory for a package or advisory id that isn't already triaged there.
 
+## Pass 4 — 2026-09-20: coordinated framework and dependency upgrade
+
+The previously deferred upgrade was completed and verified rather than left as
+accepted debt. FastAPI/Starlette, cryptography, pytest, black, and their pinned
+transitive dependencies were upgraded together. FastAPI's new lazy included-
+router representation required one compatibility adjustment in the auth-gate
+test so that it continues to enumerate the complete effective route table; the
+test still sweeps all 926 registered API routes.
+
+Verification against the exact pinned environment:
+
+- `pip-audit --local`: **0 known vulnerabilities**
+- backend in-process suite: **810 passed**
+- frontend production build: **compiled successfully**
+- undefined-name/syntax lint gate and `git diff --check`: **passed**
+
+`dependency_baseline.json` is now intentionally empty. Any future advisory is
+therefore new debt and will fail the differential CI gate until it is fixed or
+explicitly investigated and documented.
+
+The older pass notes below are retained as the audit trail explaining what was
+previously deferred; their package versions and recommendations are historical
+and are superseded by this pass.
+
 ## Pass 3 — 2026-09-15: final pre-merge assurance pass — reachability proof + a real bypass found and fixed
 
 Reproduced pip-audit independently against the exact same requirements.txt Pass 2 left: **26 advisory rows pip-audit reports, 14 distinct advisory IDs across 4 packages** (pip-audit's own row count double-counts a handful of IDs that resolve through more than one OSV alias path — e.g. starlette's PYSEC-2026-161 and PYSEC-2026-1943 each appear as 2 rows for 1 real advisory; the earlier "26 advisories" framing was pip-audit's row count, not distinct-ID count — noted here so the two numbers don't look like a discrepancy). Confirmed byte-for-byte identical to Pass 2's set: same 4 packages, same IDs, nothing regressed or drifted since.

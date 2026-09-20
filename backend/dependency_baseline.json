@@ -1,23 +1,3 @@
 {
-  "_comment": "Accepted-and-triaged dependency advisories, as of the Trust Release final assurance pass (see SECURITY_DEPENDENCY_DEBT.md's 'Pass 3'). scripts/check_dependency_baseline.py fails CI if pip-audit reports an advisory for a package not listed here, or a new advisory ID for a listed package that isn't in its accepted list — either means something changed and needs re-triage, not a silent pass.",
-  "black": {
-    "reachability": "unreachable",
-    "reason": "Dev-only formatter, never imported by application code (grep -rn '^import black|^from black' outside tests/scripts is empty).",
-    "accepted_ids": ["PYSEC-2026-2120", "PYSEC-2026-2121"]
-  },
-  "pytest": {
-    "reachability": "unreachable",
-    "reason": "Dev/CI-only, never imported by application code. The one open advisory (CVE-2025-71176) also requires local multi-user access to the machine running the suite, which is not this app's threat model.",
-    "accepted_ids": ["PYSEC-2026-1845"]
-  },
-  "cryptography": {
-    "reachability": "reachable-package-not-reachable-api",
-    "reason": "cryptography is imported directly (services/connect/credentials.py's Fernet, utils/wallet_passes.py's hazmat.primitives/x509 for Apple Wallet pass signing). All 3 CVEs (PYSEC-2026-3552 PKCS7 decrypt oracle, -3553 x509 chain-build DoS, -3554 x509.verification DNS-wildcard bypass) are in cryptography.x509.verification/pkcs7_decrypt_* APIs that grep confirms this codebase never calls (no PolicyBuilder/x509.verification/pkcs7_decrypt/.verify( usage). GHSA-537c-gmf6-5ccf (bundled OpenSSL advisory) is accepted pending the deferred 46->48->49->50 major-version walk documented in SECURITY_DEPENDENCY_DEBT.md.",
-    "accepted_ids": ["GHSA-537c-gmf6-5ccf", "PYSEC-2026-3552", "PYSEC-2026-3553", "PYSEC-2026-3554"]
-  },
-  "starlette": {
-    "reachability": "reachable",
-    "reason": "Imported directly by server.py/middleware for BaseHTTPMiddleware/CORSMiddleware/JSONResponse. Version is structurally pinned by fastapi==0.110.1's own metadata (starlette<0.38.0,>=0.37.2); closing these requires a coordinated FastAPI bump, tracked separately. PYSEC-2026-161 (Host-header path-injection auth-bypass) was the one advisory in this set with a confirmed, exploitable, in-app impact (RequireAuthMiddleware's request.url.path check) -- fixed directly at the application layer in this pass (server.py/middleware/license_middleware.py/services/observability.py now read request.scope['path']) rather than waiting on the framework bump, so it no longer represents live risk regardless of when starlette itself is upgraded. The remaining 6 (two multipart-form DoS, two low-severity misc) are accepted pending the same FastAPI bump.",
-    "accepted_ids": ["PYSEC-2026-161", "PYSEC-2026-1941", "PYSEC-2026-1943", "PYSEC-2026-2280", "PYSEC-2026-2281", "PYSEC-2026-248", "PYSEC-2026-249"]
-  }
+  "_comment": "No accepted dependency advisories as of 2026-09-20. Any advisory reported by pip-audit is new and must be fixed or explicitly investigated before adding it here."
 }

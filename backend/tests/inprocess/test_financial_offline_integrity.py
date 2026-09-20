@@ -81,7 +81,7 @@ def test_concurrent_refunds_for_the_same_transaction_cannot_both_exceed_the_cap(
 # ─────────────────────────────────────────────────────────────────────────
 def test_retrying_accept_on_an_already_accepted_order_does_not_double_deduct_stock(client, owner_headers):
     _run(db.products.insert_one({"id": "FIN-ORDER-PROD-1", "name": "Retry Burger", "category": "Mains",
-                                   "stock": 10, "price": 15.0, "active": True}))
+                                   "stock": 10, "price": 15.0, "active": True, "businessId": "default"}))
     try:
         placed = req(client, "POST", "/api/online/orders?business=default", json={
             "channel": "pickup", "customerName": "Retry Test",
@@ -109,7 +109,7 @@ def test_retrying_accept_on_an_already_accepted_order_does_not_double_deduct_sto
 
 def test_concurrent_accept_requests_for_the_same_order_only_one_wins(client, owner_headers):
     _run(db.products.insert_one({"id": "FIN-ORDER-PROD-RACE", "name": "Race Burger", "category": "Mains",
-                                   "stock": 10, "price": 15.0, "active": True}))
+                                   "stock": 10, "price": 15.0, "active": True, "businessId": "default"}))
     try:
         placed = req(client, "POST", "/api/online/orders?business=default", json={
             "channel": "pickup", "customerName": "Race Test",
@@ -150,7 +150,8 @@ def test_concurrent_accept_requests_for_the_same_order_only_one_wins(client, own
 # ─────────────────────────────────────────────────────────────────────────
 def test_stock_is_clamped_at_zero_after_overselling_the_last_units(client, owner_headers):
     _run(db.products.insert_one({"id": "FIN-STOCK-FLOOR-1", "name": "Last Units", "category": "Mains",
-                                   "stock": 2, "price": 10.0, "active": True, "sku": "FIN-FLOOR-1"}))
+                                   "stock": 2, "price": 10.0, "active": True, "sku": "FIN-FLOOR-1",
+                                   "businessId": "default"}))
     try:
         # Two POS sales for 2 units each against only 2 in stock — both
         # sales must still succeed (oversell isn't blocked), but stock must
@@ -174,7 +175,8 @@ def test_stock_is_clamped_at_zero_after_overselling_the_last_units(client, owner
 # ─────────────────────────────────────────────────────────────────────────
 def test_a_repeated_clientopid_does_not_create_a_second_transaction(client, owner_headers):
     _run(db.products.insert_one({"id": "FIN-DEDUP-PROD-1", "name": "Dedup Widget", "category": "Mains",
-                                   "stock": 50, "price": 20.0, "active": True, "sku": "FIN-DEDUP-1"}))
+                                   "stock": 50, "price": 20.0, "active": True, "sku": "FIN-DEDUP-1",
+                                   "businessId": "default"}))
     try:
         payload = {
             "items": [{"productId": "FIN-DEDUP-PROD-1", "productName": "Dedup Widget", "price": 20.0,
@@ -204,7 +206,8 @@ def test_a_repeated_clientopid_does_not_create_a_second_transaction(client, owne
 
 def test_concurrent_posts_with_the_same_clientopid_only_create_one_transaction(client, owner_headers):
     _run(db.products.insert_one({"id": "FIN-DEDUP-PROD-RACE", "name": "Dedup Race Widget", "category": "Mains",
-                                   "stock": 50, "price": 20.0, "active": True, "sku": "FIN-DEDUP-RACE"}))
+                                   "stock": 50, "price": 20.0, "active": True, "sku": "FIN-DEDUP-RACE",
+                                   "businessId": "default"}))
     try:
         payload = {
             "items": [{"productId": "FIN-DEDUP-PROD-RACE", "productName": "Dedup Race Widget", "price": 20.0,

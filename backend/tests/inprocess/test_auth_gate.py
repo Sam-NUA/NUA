@@ -48,6 +48,22 @@ def _is_public(path):
     return path in INTENTIONALLY_PUBLIC or path.startswith(PUBLIC_PREFIXES)
 
 
+def _registered_routes(app):
+    """Return concrete routes across FastAPI's eager and lazy router layouts.
+
+    FastAPI 0.141 keeps included routers as lazy ``_IncludedRouter`` entries
+    instead of flattening every APIRoute into ``app.routes``.  Walking the
+    effective contexts preserves this security test's full-route sweep while
+    remaining compatible with the eager layout used by older releases.
+    """
+    for route in app.routes:
+        effective_contexts = getattr(route, "effective_route_contexts", None)
+        if effective_contexts:
+            yield from effective_contexts()
+        else:
+            yield route
+
+
 @pytest.mark.parametrize("method,path", MUST_BE_SHUT, ids=lambda v: str(v).replace("/", "_"))
 def test_internal_endpoints_refuse_anonymous(anon, method, path):
     r = req(anon, method, path, json={})
@@ -56,10 +72,10 @@ def test_internal_endpoints_refuse_anonymous(anon, method, path):
 
 
 def test_a_forged_host_header_cannot_smuggle_a_protected_path_past_the_gate(anon):
-    """Final pre-merge assurance pass: starlette 0.37.2 (pinned by
-    fastapi==0.110.1's own constraint — see backend/SECURITY_DEPENDENCY_DEBT.md)
-    carries PYSEC-2026-161 / GHSA-86qp-5c8j-p5mr — Request.url rebuilds a URL
-    by string-concatenating the raw, unvalidated Host header with the real
+    """Regression coverage for PYSEC-2026-161 / GHSA-86qp-5c8j-p5mr.
+
+    The vulnerable legacy Starlette version rebuilt Request.url by
+    string-concatenating the raw, unvalidated Host header with the real
     path and reparsing it. server.py's RequireAuthMiddleware used to read
     `request.url.path` for its public/protected decision — a Host header of
     "x/api/public" turned "/api/users" into "/api/public/api/users" for that
@@ -85,7 +101,7 @@ def test_a_forged_host_header_cannot_smuggle_a_protected_path_past_the_gate(anon
 def test_no_get_route_answers_anonymously_unless_allow_listed(anon, app):
     """The sweep itself — this is what found the original 66."""
     paths = sorted({
-        r.path for r in app.routes
+        r.path for r in _registered_routes(app)
         if "GET" in (getattr(r, "methods", set()) or set())
         and getattr(r, "path", "").startswith("/api")
         and "{" not in getattr(r, "path", "")
@@ -256,14 +272,14 @@ def test_staff_still_see_cost_and_stock(client, owner_headers):
 
 def test_every_public_path_entry_matches_a_real_route(app):
     import server
-    real_paths = {r.path for r in app.routes if hasattr(r, "path")}
+    real_paths = {r.path for r in _registered_routes(app) if hasattr(r, "path")}
     for path in server.PUBLIC_API_PATHS:
         assert path in real_paths, f"{path!r} is in PUBLIC_API_PATHS but no route is registered at that exact path"
 
 
 def test_every_public_prefix_covers_at_least_one_real_route(app):
     import server
-    real_paths = [r.path for r in app.routes if hasattr(r, "path")]
+    real_paths = [r.path for r in _registered_routes(app) if hasattr(r, "path")]
     for prefix in server.PUBLIC_API_PREFIXES:
         assert any(p.startswith(prefix) for p in real_paths), \
             f"{prefix!r} is in PUBLIC_API_PREFIXES but no registered route starts with it"
@@ -281,7 +297,7 @@ def test_public_prefixes_dont_accidentally_cover_a_staff_only_neighbor(app):
     after it) is the staff "list everything active" pattern, never
     something a single unauthenticated guest should reach."""
     import server
-    real_paths = {r.path for r in app.routes if hasattr(r, "path")}
+    real_paths = {r.path for r in _registered_routes(app) if hasattr(r, "path")}
 
     for prefix in server.PUBLIC_API_PREFIXES:
         assert prefix.endswith("/"), \
@@ -298,7 +314,7 @@ def test_public_prefixes_dont_accidentally_cover_a_staff_only_neighbor(app):
 def test_kiosk_session_prefix_does_not_reach_the_staff_session_list(app):
     import server
     assert "/api/v25/kiosk/session/" in server.PUBLIC_API_PREFIXES
-    real_paths = {r.path for r in app.routes if hasattr(r, "path")}
+    real_paths = {r.path for r in _registered_routes(app) if hasattr(r, "path")}
     assert "/api/v25/kiosk/sessions" in real_paths, "the staff session-list route moved or was renamed"
     assert not "/api/v25/kiosk/sessions".startswith("/api/v25/kiosk/session/"), \
         "the kiosk prefix would now also cover the staff-only session list"

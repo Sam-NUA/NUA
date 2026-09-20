@@ -67,9 +67,11 @@ def _fingerprint(line: dict) -> tuple:
     return (line["productId"], line["productName"], line["unitPrice"])
 
 
-async def _build_lines(orders: List[dict]) -> List[dict]:
+async def _build_lines(orders: List[dict], business_id: str) -> List[dict]:
     product_ids = {it.get("productId") for o in orders for it in o.get("items", []) if it.get("productId")}
-    products = await db.products.find({"id": {"$in": list(product_ids)}}, {"_id": 0}).to_list(1000)
+    products = await db.products.find(
+        {"id": {"$in": list(product_ids)}, "businessId": business_id}, {"_id": 0}
+    ).to_list(1000)
     products_by_id = {p["id"]: p for p in products}
 
     lines: List[dict] = []
@@ -114,7 +116,7 @@ async def get_or_create_split(table_number: str, business_id: str) -> dict:
 
     existing = await db.bill_splits.find_one(
         {"tableNumber": str(table_number), "businessId": business_id, "status": "open"}, {"_id": 0})
-    fresh_lines = await _build_lines(orders)
+    fresh_lines = await _build_lines(orders, business_id)
 
     if not existing:
         doc = {

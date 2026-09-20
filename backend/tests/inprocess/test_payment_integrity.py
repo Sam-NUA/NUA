@@ -37,7 +37,7 @@ def test_online_order_stock_deducts_on_accept_and_restores_on_cancel(client, own
 
     loop.run_until_complete(db.products.insert_one(
         {"id": "PAYINT-PROD-1", "name": "Test Burger", "category": "Mains",
-         "stock": 10, "price": 15.0, "active": True}
+         "stock": 10, "price": 15.0, "active": True, "businessId": "default"}
     ))
     try:
         r = req(client, "POST", "/api/online/orders?business=default", json={
@@ -73,7 +73,7 @@ def test_cancelling_a_never_accepted_order_does_not_over_restock(client, owner_h
 
     loop.run_until_complete(db.products.insert_one(
         {"id": "PAYINT-PROD-2", "name": "Test Fries", "category": "Sides",
-         "stock": 5, "price": 6.0, "active": True}
+         "stock": 5, "price": 6.0, "active": True, "businessId": "default"}
     ))
     try:
         r = req(client, "POST", "/api/online/orders?business=default", json={
