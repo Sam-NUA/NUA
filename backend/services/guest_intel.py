@@ -9,8 +9,10 @@ normal case at the booking desk.
 """
 import re
 from collections import Counter
+from typing import Optional
 
 from database import db
+from middleware.actor_context import tenant_scope_filter
 
 # Requests that recur across visits are worth surfacing; one-off notes aren't.
 FREQUENT_REQUEST_MIN_COUNT = 2
@@ -34,11 +36,12 @@ def _iso_date(value) -> str:
 
 
 async def find_customers(query: str = "", phone: str = "", email: str = "",
-                         limit: int = 8) -> list[dict]:
+                         limit: int = 8, business_id: Optional[str] = None) -> list[dict]:
     """Match on name, phone, or email. Phone matching is digit-normalized so
     an inbound caller ID matches however the number was typed when saved."""
     matches: list[dict] = []
     seen: set[str] = set()
+    scope = tenant_scope_filter(business_id)
 
     def _add(rows):
         for c in rows:
@@ -52,7 +55,7 @@ async def find_customers(query: str = "", phone: str = "", email: str = "",
             # Mongo can't normalize stored formatting, so scan candidates and
             # compare digits in Python. Customer lists are small enough
             # (thousands) that this stays comfortably fast.
-            everyone = await db.customers.find({}, {"_id": 0}).to_list(5000)
+            everyone = await db.customers.find(scope, {"_id": 0}).to_list(5000)
             tail = normalize_phone(phone)
             # Exact tail match first — that's the caller-ID case, where the
             # whole number is known and the best match must win.
@@ -69,24 +72,25 @@ async def find_customers(query: str = "", phone: str = "", email: str = "",
 
     if email:
         _add(await db.customers.find(
-            {"email": {"$regex": f"^{re.escape(email)}$", "$options": "i"}}, {"_id": 0}
+            {**tenant_scope_filter(business_id), "$and": [scope, {"email": {"$regex": f"^{re.escape(email)}$", "$options": "i"}}]}, {"_id": 0}
         ).to_list(20))
 
     if query:
-        _add(await db.customers.find({"$or": [
+        _add(await db.customers.find({**tenant_scope_filter(business_id), "$and": [scope, {"$or": [
             {"name": {"$regex": re.escape(query), "$options": "i"}},
             {"email": {"$regex": re.escape(query), "$options": "i"}},
             {"phone": {"$regex": re.escape(query), "$options": "i"}},
-        ]}, {"_id": 0}).to_list(limit))
+        ]}]}, {"_id": 0}).to_list(limit))
 
     return matches[:limit]
 
 
-async def build_guest_intel(customer: dict) -> dict:
+async def build_guest_intel(customer: dict, business_id: Optional[str] = None) -> dict:
     """The booking-desk summary for one customer."""
     cid = customer.get("id")
     email = (customer.get("email") or "").strip()
     phone_tail = normalize_phone(customer.get("phone", ""))
+    scope = tenant_scope_filter(business_id or customer.get("businessId"))
 
     # --- Reservations (match by id, email, or phone; older rows may lack
     # customerId entirely, and a guest who only ever gave a phone number at
@@ -101,12 +105,14 @@ async def build_guest_intel(customer: dict) -> dict:
     if phone_tail:
         phone_regex = r"\D*".join(re.escape(d) for d in phone_tail)
         or_clauses.append({"guestPhone": {"$regex": phone_regex}})
-    res_query = {"$or": or_clauses}
+    res_query = {"$and": [scope, {"$or": or_clauses}]}
     reservations = await db.reservations.find(res_query, {"_id": 0}).to_list(500)
     reservations.sort(key=lambda r: f"{r.get('date','')} {r.get('time','')}", reverse=True)
 
     # --- Transactions (what they actually ate/drank)
-    transactions = await db.transactions.find({"customerId": cid}, {"_id": 0}).to_list(500)
+    transactions = await db.transactions.find(
+        {"$and": [scope, {"customerId": cid}]}, {"_id": 0}
+    ).to_list(500)
     transactions.sort(key=lambda t: str(t.get("timestamp", "")), reverse=True)
 
     # Last booking = most recent reservation of any status.
@@ -202,14 +208,16 @@ async def build_guest_intel(customer: dict) -> dict:
 
 
 async def lookup(query: str = "", phone: str = "", email: str = "",
-                 limit: int = 8, with_intel: bool = True) -> list[dict]:
+                 limit: int = 8, with_intel: bool = True,
+                 business_id: Optional[str] = None) -> list[dict]:
     """One call for both front doors: staff typing a name/phone/email into the
     booking dialog, and the phone agent resolving an inbound caller ID."""
-    customers = await find_customers(query=query, phone=phone, email=email, limit=limit)
+    customers = await find_customers(query=query, phone=phone, email=email, limit=limit,
+                                      business_id=business_id)
     if not with_intel:
         return [{
             "customerId": c.get("id"), "name": c.get("name", ""),
             "phone": c.get("phone", ""), "email": c.get("email", ""),
             "isVip": bool(c.get("isVip")),
         } for c in customers]
-    return [await build_guest_intel(c) for c in customers]
+    return [await build_guest_intel(c, business_id=business_id) for c in customers]

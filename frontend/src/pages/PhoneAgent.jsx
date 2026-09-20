@@ -77,7 +77,18 @@ export default function PhoneAgent() {
                 </div>
                 <p className="text-sm text-gray-600 bg-gray-50 p-2 rounded">"{c.transcript}"</p>
                 {(c.actions || []).map((a, i) => (
-                  <div key={i} className="mt-2 text-xs text-green-700 flex items-center gap-1"><CheckCircle2 size={12} /> {a.action}{a.id ? ` (${a.id})` : ''}</div>
+                  <div key={i} className="mt-2 space-y-1">
+                    <div className="text-xs text-green-700 flex items-center gap-1">
+                      <CheckCircle2 size={12} /> {a.action}{a.id ? ` (${a.id})` : ''}
+                      {a.kitchenOrderId ? ` — sent to kitchen (${a.kitchenOrderId})` : ''}
+                    </div>
+                    {a.items?.length > 0 && (
+                      <div className="text-xs text-gray-500 pl-4">Ordered: {a.items.map(it => `${it.quantity}x ${it.productName}`).join(', ')}</div>
+                    )}
+                    {a.unmatchedItems?.length > 0 && (
+                      <div className="text-xs text-amber-600 pl-4">Couldn't match to the menu: {a.unmatchedItems.join(', ')}</div>
+                    )}
+                  </div>
                 ))}
               </div>
             ))}

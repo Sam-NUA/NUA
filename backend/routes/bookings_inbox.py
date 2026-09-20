@@ -10,11 +10,13 @@ each into a Reservation.
 Channels are stored as free-text strings so we can absorb new ones without a
 migration.
 """
-from fastapi import APIRouter, HTTPException, Request, Response
+from fastapi import APIRouter, HTTPException, Response, Depends
 from typing import Optional
 from datetime import datetime, timezone, date as date_cls
 from pydantic import BaseModel
 from database import db
+from deps import get_user, require_owner_or_manager
+from middleware.actor_context import tenant_scope_filter, tenant_owns_strict
 import os
 import json
 import uuid
@@ -41,8 +43,9 @@ class IngestBody(BaseModel):
     fromHandle: Optional[str] = None
 
 @router.get("/bookings/inbox")
-async def list_inbox(status: Optional[str] = None, channel: Optional[str] = None, limit: int = 100):
-    q: dict = {}
+async def list_inbox(status: Optional[str] = None, channel: Optional[str] = None, limit: int = 100,
+                      user: dict = Depends(get_user)):
+    q: dict = tenant_scope_filter(user.get("businessId"))
     if status:
         q["status"] = status
     if channel:
@@ -52,7 +55,7 @@ async def list_inbox(status: Optional[str] = None, channel: Optional[str] = None
     return rows
 
 @router.post("/bookings/inbox")
-async def ingest_booking(body: IngestBody, response: Response):
+async def ingest_booking(body: IngestBody, response: Response, user: dict = Depends(get_user)):
     """Accept a raw inbound message — run AI parse + suggested reply.
 
     Sets `x-ai-parsed-fallback: true` on the response when the LLM
@@ -67,6 +70,7 @@ async def ingest_booking(body: IngestBody, response: Response):
         "fromHandle": body.fromHandle,
         "receivedAt": datetime.now(timezone.utc).isoformat(),
         "status": "new",
+        "businessId": user.get("businessId"),
     }
 
     parsed, summary, reply, fallback = await _ai_parse(body.rawMessage, body.channel)
@@ -83,26 +87,16 @@ async def ingest_booking(body: IngestBody, response: Response):
     return item
 
 @router.post("/bookings/inbox/{item_id}/ack")
-async def acknowledge_booking(item_id: str, body: dict, request: Request):
+async def acknowledge_booking(item_id: str, body: dict, user: dict = Depends(require_owner_or_manager)):
     """Mark as acknowledged. Optionally convert to a reservation.
 
     The acknowledging user is taken from the auth token, never from the body.
     """
     convert = bool(body.get("convertToReservation", False))
+    user_name = user.get("name") or user.get("email") or "system"
 
-    # Authenticated user — never trust body['user']
-    user_name = "system"
-    try:
-        from routes.auth import get_current_user
-        u = await get_current_user(request)
-        user_name = u.get("name") or u.get("email") or "system"
-    except Exception:
-        # If auth fails, still proceed but log who-as 'system' — endpoint is
-        # already wired behind frontend auth.
-        pass
-
-    row = await db.booking_inbox.find_one({"id": item_id}, {"_id": 0})
-    if not row:
+    row = await db.booking_inbox.find_one({"$and": [{"id": item_id}, tenant_scope_filter(user.get("businessId"))]}, {"_id": 0})
+    if not row or not tenant_owns_strict(row.get("businessId"), user.get("businessId")):
         raise HTTPException(status_code=404, detail="Inbox item not found")
 
     now = datetime.now(timezone.utc).isoformat()
@@ -128,19 +122,21 @@ async def acknowledge_booking(item_id: str, body: dict, request: Request):
             "source": f"ai-inbox/{row.get('channel', 'unknown')}",
             "status": "confirmed",
             "createdAt": now,
+            "businessId": user.get("businessId"),
         }
         await db.reservations.insert_one(dict(res))
         patch["status"] = "converted"
         patch["reservationId"] = res["id"]
 
-    await db.booking_inbox.update_one({"id": item_id}, {"$set": patch})
+    await db.booking_inbox.update_one({"$and": [{"id": item_id}, tenant_scope_filter(user.get("businessId"))]}, {"$set": patch})
     return {"ok": True, **patch}
 
 @router.post("/bookings/inbox/{item_id}/dismiss")
-async def dismiss(item_id: str):
-    res = await db.booking_inbox.update_one({"id": item_id}, {"$set": {"status": "dismissed"}})
-    if res.matched_count == 0:
+async def dismiss(item_id: str, user: dict = Depends(require_owner_or_manager)):
+    row = await db.booking_inbox.find_one({"$and": [{"id": item_id}, tenant_scope_filter(user.get("businessId"))]}, {"_id": 0})
+    if not row or not tenant_owns_strict(row.get("businessId"), user.get("businessId")):
         raise HTTPException(status_code=404, detail="Not found")
+    await db.booking_inbox.update_one({"$and": [{"id": item_id}, tenant_scope_filter(user.get("businessId"))]}, {"$set": {"status": "dismissed"}})
     return {"ok": True}
 
 # -- helpers ---------------------------------------------------------------

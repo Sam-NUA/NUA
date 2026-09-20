@@ -1,6 +1,7 @@
 from fastapi import APIRouter, HTTPException, Depends
 from deps import get_user, require_owner_or_manager
 from database import db
+from middleware.actor_context import tenant_scope_filter, tenant_owns_strict
 import os
 import uuid
 from datetime import datetime
@@ -25,9 +26,10 @@ async def generate_pantry_list(user: dict = Depends(require_owner_or_manager)):
     """AI-powered weekly ordering list based on menu, sales, and reservations"""
 
     # Gather data
-    products = await db.products.find({}, {"_id": 0}).to_list(1000)
-    txns = await db.transactions.find({}, {"_id": 0}).to_list(5000)
-    reservations = await db.reservations.find({}, {"_id": 0}).to_list(500)
+    biz_scope = tenant_scope_filter(user.get("businessId"))
+    products = await db.products.find(biz_scope, {"_id": 0}).to_list(1000)
+    txns = await db.transactions.find(biz_scope, {"_id": 0}).to_list(5000)
+    reservations = await db.reservations.find(biz_scope, {"_id": 0}).to_list(500)
 
     # Build sales summary
     product_sales = {}
@@ -108,15 +110,17 @@ Generate a JSON response with this EXACT structure:
         "menuItemCount": len(products),
         "transactionCount": len(txns),
         "upcomingCovers": upcoming_covers,
+        "businessId": user.get("businessId"),
     }
     await db.pantry_lists.insert_one(pantry_doc)
     pantry_doc.pop("_id", None)
     return pantry_doc
 
 @router.get("/ai-pantry/history")
-async def get_pantry_history(_: dict = Depends(require_owner_or_manager)):
+async def get_pantry_history(user: dict = Depends(require_owner_or_manager)):
     """Get previous pantry list generations"""
-    lists = await db.pantry_lists.find({}, {"_id": 0}).sort("generatedAt", -1).to_list(20)
+    q = tenant_scope_filter(user.get("businessId"))
+    lists = await db.pantry_lists.find(q, {"_id": 0}).sort("generatedAt", -1).to_list(20)
     return lists
 
 
@@ -173,8 +177,11 @@ async def parse_invoice(data: dict, user: dict = Depends(require_owner_or_manage
     if not parsed or "items" not in parsed:
         raise HTTPException(status_code=422, detail=f"Could not parse invoice. AI returned: {reply[:300]}")
 
-    # Match each parsed line against existing products by case-insensitive name.
-    products = await db.products.find({}, {"_id": 0}).to_list(2000)
+    # Match each parsed line against existing products by case-insensitive name
+    # — scoped to this business's own catalogue, so an invoice can never
+    # match (and later, via apply-invoice, silently reprice) another
+    # business's products.
+    products = await db.products.find(tenant_scope_filter(user.get("businessId")), {"_id": 0}).to_list(2000)
     by_name = {p["name"].lower(): p for p in products}
     matches = []
     for line in parsed.get("items", []):
@@ -219,6 +226,7 @@ async def parse_invoice(data: dict, user: dict = Depends(require_owner_or_manage
         "parsed": parsed,
         "matches": matches,
         "applied": False,
+        "businessId": user.get("businessId"),
     }
     await db.invoices.insert_one(invoice_doc); invoice_doc.pop("_id", None)
     return invoice_doc
@@ -228,8 +236,9 @@ async def parse_invoice(data: dict, user: dict = Depends(require_owner_or_manage
 async def apply_invoice(invoice_id: str, data: dict, user: dict = Depends(require_owner_or_manager)):
     """Apply selected price/cost updates from a parsed invoice. `selections` is
     a list of `{matchedProductId, applyPrice (bool), applyCost (bool), priceOverride}`."""
-    inv = await db.invoices.find_one({"id": invoice_id}, {"_id": 0})
-    if not inv: raise HTTPException(status_code=404, detail="Invoice not found")
+    inv = await db.invoices.find_one({"$and": [{"id": invoice_id}, tenant_scope_filter(user.get("businessId"))]}, {"_id": 0})
+    if not inv or not tenant_owns_strict(inv.get("businessId"), user.get("businessId")):
+        raise HTTPException(status_code=404, detail="Invoice not found")
     selections = {s.get("matchedProductId"): s for s in (data.get("selections") or []) if s.get("matchedProductId")}
     updated, audit = 0, []
     for m in inv["matches"]:
@@ -244,8 +253,15 @@ async def apply_invoice(invoice_id: str, data: dict, user: dict = Depends(requir
             new_price = sel.get("priceOverride") or m.get("suggestedPrice")
             if new_price: upd["price"] = float(new_price)
         if not upd: continue
+        # Defense in depth: parse-invoice already scopes its product match to
+        # this business's own catalogue, but re-checking ownership here means
+        # a crafted request can't reprice another business's product even if
+        # it somehow got a matchedProductId that isn't really this business's.
+        product = await db.products.find_one({"$and": [{"id": pid}, tenant_scope_filter(user.get("businessId"))]}, {"_id": 0, "id": 1, "businessId": 1})
+        if product is None or not tenant_owns_strict(product.get("businessId"), user.get("businessId")):
+            continue
         upd["updatedAt"] = datetime.utcnow().isoformat()
-        await db.products.update_one({"id": pid}, {"$set": upd})
+        await db.products.update_one({"$and": [{"id": pid}, tenant_scope_filter(user.get("businessId"))]}, {"$set": upd})
         audit.append({
             "productId": pid, "name": m.get("matchedProductName"),
             "from": {"price": m.get("currentPrice"), "cost": m.get("currentCost")},
@@ -253,7 +269,7 @@ async def apply_invoice(invoice_id: str, data: dict, user: dict = Depends(requir
         })
         updated += 1
     await db.invoices.update_one(
-        {"id": invoice_id},
+        {"$and": [{"id": invoice_id}, tenant_scope_filter(user.get("businessId"))]},
         {"$set": {"applied": True, "appliedAt": datetime.utcnow().isoformat(),
                   "appliedBy": user["id"], "audit": audit, "updatedCount": updated}},
     )
@@ -261,8 +277,9 @@ async def apply_invoice(invoice_id: str, data: dict, user: dict = Depends(requir
 
 
 @router.get("/ai-pantry/invoices")
-async def list_invoices(_: dict = Depends(require_owner_or_manager)):
-    rows = await db.invoices.find({}, {"_id": 0}).sort("uploadedAt", -1).to_list(50)
+async def list_invoices(user: dict = Depends(require_owner_or_manager)):
+    q = tenant_scope_filter(user.get("businessId"))
+    rows = await db.invoices.find(q, {"_id": 0}).sort("uploadedAt", -1).to_list(50)
     return rows
 
 
@@ -275,15 +292,17 @@ async def product_insights(user: dict = Depends(get_user)):
     colour-coded badges on the Items dashboard."""
     if user["role"] not in ("owner", "manager", "cashier", "kitchen"):
         raise HTTPException(status_code=403, detail="Staff only")
+    biz_scope = tenant_scope_filter(user.get("businessId"))
     now = datetime.now()
     week_ago = (now - __import__("datetime").timedelta(days=7)).isoformat()
-    txns = await db.transactions.find({"createdAt": {"$gte": week_ago}}, {"_id": 0, "items": 1}).to_list(5000)
+    txns = await db.transactions.find(
+        {"createdAt": {"$gte": week_ago}, **biz_scope}, {"_id": 0, "items": 1}).to_list(5000)
     sold = {}
     for t in txns:
         for it in t.get("items", []) or []:
             pid = it.get("productId") or it.get("id")
             sold[pid] = sold.get(pid, 0) + int(it.get("quantity", 0))
-    products = await db.products.find({}, {"_id": 0}).to_list(2000)
+    products = await db.products.find(biz_scope, {"_id": 0}).to_list(2000)
     rows = []
     for p in products:
         price = float(p.get("price", 0) or 0)

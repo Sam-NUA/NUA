@@ -17,14 +17,16 @@ def _run(coro):
 
 def _set_target(printer, **kw):
     from database import db
-    doc = {"printer": printer, "host": "10.0.0.50", "port": 9100, "enabled": True, **kw}
-    _run(db.printer_targets.update_one({"printer": printer}, {"$set": doc}, upsert=True))
+    doc = {"printer": printer, "host": "10.0.0.50", "port": 9100, "enabled": True,
+           "businessId": "default", **kw}
+    _run(db.printer_targets.update_one(
+        {"printer": printer, "businessId": "default"}, {"$set": doc}, upsert=True))
     return doc
 
 
 def _clear_target(printer):
     from database import db
-    _run(db.printer_targets.delete_one({"printer": printer}))
+    _run(db.printer_targets.delete_one({"printer": printer, "businessId": "default"}))
 
 
 def _clear_jobs(order_id):
@@ -48,7 +50,7 @@ def test_auto_print_sends_exactly_once_when_a_target_is_configured(monkeypatch):
     try:
         records = _run(print_routing.route_and_queue(
             [{"productName": "Burger", "category": "Mains", "quantity": 1}],
-            order_id="ORD-AUTOPRINT-1"))
+            order_id="ORD-AUTOPRINT-1", business_id="default"))
         assert len(records) == 1
         assert len(calls) == 1, "expected exactly one send to the physical printer"
 
@@ -75,7 +77,7 @@ def test_auto_print_does_nothing_when_no_target_is_configured(monkeypatch):
     try:
         records = _run(print_routing.route_and_queue(
             [{"productName": "Burger", "category": "Mains", "quantity": 1}],
-            order_id="ORD-NOTARGET-1"))
+            order_id="ORD-NOTARGET-1", business_id="default"))
         assert len(calls) == 0
         from database import db
         job = _run(db.print_jobs.find_one({"id": records[0]["id"]}, {"_id": 0}))
@@ -96,7 +98,7 @@ def test_auto_print_releases_the_claim_when_the_printer_is_unreachable(monkeypat
     try:
         records = _run(print_routing.route_and_queue(
             [{"productName": "Burger", "category": "Mains", "quantity": 1}],
-            order_id="ORD-UNREACHABLE-1"))
+            order_id="ORD-UNREACHABLE-1", business_id="default"))
         from database import db
         job = _run(db.print_jobs.find_one({"id": records[0]["id"]}, {"_id": 0}))
         # Not stuck in "printing" — back to "queued" so it's retryable.
@@ -121,7 +123,7 @@ def test_a_job_disabled_at_the_printer_profile_does_not_auto_print(monkeypatch):
     try:
         records = _run(print_routing.route_and_queue(
             [{"productName": "Burger", "category": "Mains", "quantity": 1}],
-            order_id="ORD-DISABLED-1"))
+            order_id="ORD-DISABLED-1", business_id="default"))
         assert len(calls) == 0
         from database import db
         job = _run(db.print_jobs.find_one({"id": records[0]["id"]}, {"_id": 0}))
@@ -151,7 +153,7 @@ def test_a_second_device_clicking_print_after_auto_print_gets_refused(client, ow
     try:
         records = _run(print_routing.route_and_queue(
             [{"productName": "Burger", "category": "Mains", "quantity": 1}],
-            order_id="ORD-MULTIDEVICE-1"))
+            order_id="ORD-MULTIDEVICE-1", business_id="default"))
         assert len(calls) == 1  # auto-print at creation
 
         job_id = records[0]["id"]
@@ -180,7 +182,7 @@ def test_force_allows_a_deliberate_reprint(client, owner_headers, monkeypatch):
     try:
         records = _run(print_routing.route_and_queue(
             [{"productName": "Burger", "category": "Mains", "quantity": 1}],
-            order_id="ORD-FORCE-1"))
+            order_id="ORD-FORCE-1", business_id="default"))
         assert len(calls) == 1
 
         job_id = records[0]["id"]

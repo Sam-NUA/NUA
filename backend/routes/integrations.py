@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from typing import Optional
 from datetime import datetime, timedelta
 from database import db
@@ -31,6 +31,21 @@ async def _mark_online_order_paid_if_applicable(session_id: str):
     await db.online_orders.update_one(
         {"id": payment["orderId"]},
         {"$set": {"paymentStatus": "paid", "paidAt": datetime.utcnow().isoformat()}},
+    )
+
+
+async def _mark_reservation_deposit_paid_if_applicable(session_id: str):
+    """A payment_transactions doc tagged kind='booking_deposit' (set by
+    routes/reservations.py's request_deposit) means this Stripe session paid
+    a booking's deposit — flip depositPaid on the reservation itself so it's
+    genuinely collected money, not a staff-ticked checkbox, and something
+    mark_no_show can actually forfeit."""
+    payment = await db.payment_transactions.find_one({"sessionId": session_id}, {"_id": 0})
+    if not payment or payment.get("kind") != "booking_deposit" or not payment.get("reservationId"):
+        return
+    await db.reservations.update_one(
+        {"id": payment["reservationId"]},
+        {"$set": {"depositPaid": True, "updatedAt": datetime.utcnow().isoformat()}},
     )
 
 
@@ -180,12 +195,50 @@ async def _create_stripe_session(data: dict, http_request: Request, cashier: dic
     from emergentintegrations.payments.stripe.checkout import StripeCheckout, CheckoutSessionRequest
 
     origin_url = data.get("originUrl", str(http_request.base_url).rstrip("/"))
-    order_id = data.get("orderId", f"ORD-{str(uuid.uuid4())[:8].upper()}")
+    client_order_id = data.get("orderId")
+    order_id = client_order_id or f"ORD-{str(uuid.uuid4())[:8].upper()}"
     amount = data.get("amount", 0)
     sale_payload = data.get("sale")
 
     if amount <= 0:
         raise HTTPException(status_code=400, detail="Invalid amount")
+
+    # A double-click or a client retry after a dropped response must not
+    # create two live Stripe sessions for the same cart. `idempotencyKey`
+    # (explicit, e.g. the POS's per-attempt UUID) takes priority; falling
+    # back to order_id means callers whose orderId is already a stable
+    # resource identity — routes/bill_split.py's split_id,
+    # routes/online_orders.py's placed-order id — get real protection with
+    # no caller change at all. See services/payment_idempotency.py.
+    #
+    # Namespaced by the cashier's own businessId: order_id/idempotencyKey
+    # is client-supplied on this generic endpoint (unlike bill_split's
+    # server-derived split_id), so without this a staff member at business
+    # A using the same orderId as business B within the claim window would
+    # have gotten back business B's live Stripe session instead of their
+    # own. A guest checkout (routes/bill_split.py's synthetic cashier, no
+    # businessId) still gets real per-split protection from split_id's own
+    # uniqueness — "guest" here is just this endpoint's shared fallback
+    # bucket for callers with no business of their own, not a weakening of
+    # bill_split's actual guarantee.
+    from services.payment_idempotency import claim_or_wait, record_result, fingerprint, IdempotencyConflict
+    idempotency_key = f"{cashier.get('businessId') or 'guest'}:{data.get('idempotencyKey') or order_id}"
+    # Pinned to amount + the CLIENT-supplied orderId (client_order_id, not
+    # order_id — order_id falls back to a fresh random value every call
+    # when the client omits it, which would make every retry look like a
+    # "different request" and 409 on its own legitimate retry). originUrl/
+    # sale legitimately vary across a genuine retry (different tab, cart
+    # snapshot re-serialized) without meaning a different transaction. A
+    # DIFFERENT amount or client-supplied orderId under the same key is
+    # exactly the "client reused a stale idempotency key across two
+    # different carts" bug this guards against.
+    try:
+        prior_result = await claim_or_wait("stripe", idempotency_key,
+                                            payload_fingerprint=fingerprint(amount, client_order_id))
+    except IdempotencyConflict as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    if prior_result is not None:
+        return prior_result
 
     host_url = str(http_request.base_url).rstrip("/")
     webhook_url = f"{host_url}/api/webhook/stripe"
@@ -234,7 +287,9 @@ async def _create_stripe_session(data: dict, http_request: Request, cashier: dic
     await db.payment_transactions.insert_one(payment_doc)
     payment_doc.pop("_id", None)
 
-    return {"url": session.url, "sessionId": session.session_id}
+    result = {"url": session.url, "sessionId": session.session_id}
+    await record_result("stripe", idempotency_key, result)
+    return result
 
 
 @router.post("/stripe/checkout")
@@ -290,6 +345,7 @@ async def get_stripe_checkout_status(session_id: str, http_request: Request):
             if status.payment_status == "paid":
                 await _mark_online_order_paid_if_applicable(session_id)
                 await _finalize_pos_sale_if_applicable(session_id)
+                await _mark_reservation_deposit_paid_if_applicable(session_id)
 
     # Split-bill payments carry a splitSessionId on the payment doc — a
     # guest's own PaymentSuccess screen uses this to route back to their
@@ -308,33 +364,62 @@ async def get_stripe_checkout_status(session_id: str, http_request: Request):
     }
 
 @router.post("/webhook/stripe")
-async def stripe_webhook(request: Request):
-    """Handle Stripe webhook events"""
-    from emergentintegrations.payments.stripe.checkout import StripeCheckout
+async def stripe_webhook(request: Request, stripe_signature: Optional[str] = Header(None, alias="Stripe-Signature")):
+    """Handle Stripe webhook events for POS/online-order checkout sessions.
+
+    Previously delegated verification to emergentintegrations.payments.stripe
+    .checkout.StripeCheckout.handle_webhook — an opaque third-party wrapper
+    that isn't installed in this environment (not in requirements.txt) and
+    whose verification internals can't be inspected or trusted. Worse, the
+    bare `except Exception` around it turned ANY failure — including a
+    rejected/invalid signature — into an HTTP 200 {"received": True}, which
+    is exactly the "silently return success" failure mode this endpoint must
+    not have: it marks online orders and POS sales as paid. Now verified
+    directly with the official `stripe` SDK (the same package and pattern
+    already used by refund_stripe_payment in this file and by
+    routes/licensing.py's webhook), and fails closed — 503 when no secret is
+    configured, 400 on a bad/missing signature — instead of ever reporting
+    received:true for something that wasn't verified.
+    """
+    import stripe
 
     api_key = os.environ.get("STRIPE_API_KEY")
     if not api_key:
         raise HTTPException(status_code=500, detail="Stripe not configured")
+    stripe.api_key = api_key
 
-    host_url = str(request.base_url).rstrip("/")
-    webhook_url = f"{host_url}/api/webhook/stripe"
-    stripe_checkout = StripeCheckout(api_key=api_key, webhook_url=webhook_url)
+    # Reuses STRIPE_WEBHOOK_SECRET rather than a dedicated var: today only
+    # one Stripe webhook secret is documented/configured for this deployment
+    # (README.md). If this checkout endpoint and routes/licensing.py's
+    # billing endpoint are ever registered with Stripe as two separate
+    # webhook endpoints in production, Stripe issues a distinct signing
+    # secret per endpoint URL and this should split into its own
+    # STRIPE_CHECKOUT_WEBHOOK_SECRET rather than sharing one.
+    secret = os.environ.get("STRIPE_WEBHOOK_SECRET", "")
+    if not secret:
+        logging.getLogger(__name__).error("STRIPE_WEBHOOK_SECRET not set; rejecting checkout webhook instead of skipping signature verification")
+        raise HTTPException(status_code=503, detail="Webhook signature verification is not configured")
 
     body = await request.body()
-    signature = request.headers.get("Stripe-Signature", "")
-
     try:
-        event = await stripe_checkout.handle_webhook(body, signature)
-        if event.payment_status == "paid":
-            await db.payment_transactions.update_one(
-                {"sessionId": event.session_id},
-                {"$set": {"status": "completed", "paymentStatus": "paid", "updatedAt": datetime.utcnow().isoformat()}}
-            )
-            await _mark_online_order_paid_if_applicable(event.session_id)
-            await _finalize_pos_sale_if_applicable(event.session_id)
-        return {"received": True}
-    except Exception as e:
-        return {"received": True, "note": str(e)}
+        # .to_dict() converts the stripe.Event (a StripeObject) to a plain
+        # dict — StripeObject supports [] and attribute access but not
+        # .get(), which the checks below rely on.
+        event = stripe.Webhook.construct_event(body, stripe_signature, secret).to_dict()
+    except (ValueError, stripe.error.SignatureVerificationError) as e:
+        raise HTTPException(status_code=400, detail=f"Webhook verification failed: {e}")
+
+    obj = (event.get("data") or {}).get("object") or {}
+    if event.get("type") == "checkout.session.completed" and obj.get("payment_status") == "paid":
+        session_id = obj.get("id")
+        await db.payment_transactions.update_one(
+            {"sessionId": session_id},
+            {"$set": {"status": "completed", "paymentStatus": "paid", "updatedAt": datetime.utcnow().isoformat()}}
+        )
+        await _mark_online_order_paid_if_applicable(session_id)
+        await _finalize_pos_sale_if_applicable(session_id)
+        await _mark_reservation_deposit_paid_if_applicable(session_id)
+    return {"received": True}
 
 # ============ NUA CONNECT — INTEGRATIONS HUB API ============
 # Real registry-driven integration hub. Status is never faked: a provider is

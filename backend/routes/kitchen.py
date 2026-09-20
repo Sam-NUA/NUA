@@ -4,6 +4,7 @@ import logging
 from datetime import datetime, timezone
 from database import db
 from deps import get_user, require_permission
+from middleware.actor_context import tenant_scope_filter
 from models.kitchen_order import KitchenOrder, KitchenOrderCreate
 
 router = APIRouter()
@@ -44,7 +45,7 @@ async def _broadcast_kitchen_update(order: dict, event: str) -> None:
         pass
 
 
-async def _clear_overnight_tickets() -> int:
+async def _clear_overnight_tickets(business_id: Optional[str] = None) -> int:
     """A ticket left in new/preparing/ready from a previous day (chef forgot
     to mark it served, or it was superseded by close of service) shouldn't
     carry over and clutter tomorrow's board. Runs on every board read rather
@@ -52,8 +53,9 @@ async def _clear_overnight_tickets() -> int:
     overnight or the scheduler missed a beat — the board self-heals the
     moment anyone opens it."""
     today = _today_str()
+    query = {"status": {"$in": ["new", "preparing", "ready"]}, **tenant_scope_filter(business_id)}
     stale = await db.kitchen_orders.find(
-        {"status": {"$in": ["new", "preparing", "ready"]}},
+        query,
         {"_id": 0, "id": 1, "createdAt": 1},
     ).to_list(500)
     stale_ids = [o["id"] for o in stale if (o.get("createdAt") or "")[:10] < today]
@@ -68,9 +70,10 @@ async def _clear_overnight_tickets() -> int:
 
 # ============ KITCHEN DISPLAY (KDS) API ============
 @router.get("/kitchen/orders")
-async def get_kitchen_orders(status: Optional[str] = None, _: dict = Depends(get_user)):
-    await _clear_overnight_tickets()
-    query = {}
+async def get_kitchen_orders(status: Optional[str] = None, user: dict = Depends(get_user)):
+    biz = user.get("businessId")
+    await _clear_overnight_tickets(biz)
+    query = {**tenant_scope_filter(biz)}
     if status:
         query["status"] = status
     else:
@@ -79,10 +82,10 @@ async def get_kitchen_orders(status: Optional[str] = None, _: dict = Depends(get
     return orders
 
 
-async def _avg_order_minutes_today() -> tuple[float, int]:
+async def _avg_order_minutes_today(business_id: Optional[str] = None) -> tuple[float, int]:
     today = _today_str()
     orders = await db.kitchen_orders.find(
-        {"createdAt": {"$gte": today}, "readyAt": {"$ne": None}},
+        {"createdAt": {"$gte": today}, "readyAt": {"$ne": None}, **tenant_scope_filter(business_id)},
         {"_id": 0, "createdAt": 1, "readyAt": 1},
     ).to_list(1000)
     durations = []
@@ -100,14 +103,14 @@ async def _avg_order_minutes_today() -> tuple[float, int]:
 
 
 @router.get("/kitchen/avg-order-time")
-async def get_avg_order_time(_: dict = Depends(get_user)):
+async def get_avg_order_time(user: dict = Depends(get_user)):
     """Average minutes from order fired to ready, across today's completed
     tickets — a rough live gauge for the chef to judge pace mid-service."""
-    avg, count = await _avg_order_minutes_today()
+    avg, count = await _avg_order_minutes_today(user.get("businessId"))
     return {"avgOrderMinutes": avg, "ordersCompletedToday": count}
 
 
-async def _active_queue_depth() -> tuple[int, int, float]:
+async def _active_queue_depth(business_id: Optional[str] = None) -> tuple[int, int, float]:
     """(orders cooking, orders fully held, weighted work in the queue).
 
     A ticket sitting on held courses isn't work the kitchen is doing — a table
@@ -121,7 +124,7 @@ async def _active_queue_depth() -> tuple[int, int, float]:
     actually cooking count — a held course is not on the stove yet.
     """
     rows = await db.kitchen_orders.find(
-        {"status": {"$in": ["new", "preparing"]}},
+        {"status": {"$in": ["new", "preparing"]}, **tenant_scope_filter(business_id)},
         {"_id": 0, "courses": 1, "items": 1}).to_list(500)
     active = held = 0
     work = 0.0
@@ -161,7 +164,7 @@ def _ticket_work(items: list) -> float:
 
 
 @router.get("/kitchen/next-order-eta")
-async def get_next_order_eta(_: dict = Depends(get_user)):
+async def get_next_order_eta(user: dict = Depends(get_user)):
     """A quick, honest ballpark for "how long for a takeaway right now?" when
     a customer asks at the counter.
 
@@ -169,8 +172,9 @@ async def get_next_order_eta(_: dict = Depends(get_user)):
     weighted by how much food that work actually is, not by how many tickets
     it happens to be split across.
     """
-    avg, completed_count = await _avg_order_minutes_today()
-    queue_depth, held_depth, queue_work = await _active_queue_depth()
+    biz = user.get("businessId")
+    avg, completed_count = await _avg_order_minutes_today(biz)
+    queue_depth, held_depth, queue_work = await _active_queue_depth(biz)
     baseline = avg if completed_count > 0 else 12.0  # no data yet today — a sane starting guess
     minutes_per_work_unit = 1.2
     estimated = round(baseline + queue_work * minutes_per_work_unit, 1)
@@ -194,6 +198,7 @@ async def create_kitchen_order(order: KitchenOrderCreate, request: Request, user
     (from reservation if reservationId present), guest name (from reservation).
     """
     order_dict = order.dict()
+    order_dict["businessId"] = user.get("businessId")
 
     # Actor metadata — always set unless already provided (e.g. by table QR flow)
     order_dict["createdByEmail"] = order_dict.get("createdByEmail") or user.get("email")
@@ -223,9 +228,10 @@ async def create_kitchen_order(order: KitchenOrderCreate, request: Request, user
 
 
 @router.post("/kitchen/orders/{order_id}/start")
-async def start_kitchen_order(order_id: str, _: dict = Depends(get_user)):
+async def start_kitchen_order(order_id: str, user: dict = Depends(get_user)):
     result = await db.kitchen_orders.find_one_and_update(
-        {"id": order_id}, {"$set": {"status": "preparing", "startedAt": _now()}},
+        {"id": order_id, **tenant_scope_filter(user.get("businessId"))},
+        {"$set": {"status": "preparing", "startedAt": _now()}},
         return_document=True,
     )
     if not result:
@@ -238,7 +244,8 @@ async def start_kitchen_order(order_id: str, _: dict = Depends(get_user)):
 @router.post("/kitchen/orders/{order_id}/ready")
 async def mark_order_ready(order_id: str, user: dict = Depends(get_user)):
     result = await db.kitchen_orders.find_one_and_update(
-        {"id": order_id}, {"$set": {"status": "ready", "readyAt": _now()}},
+        {"id": order_id, **tenant_scope_filter(user.get("businessId"))},
+        {"$set": {"status": "ready", "readyAt": _now()}},
         return_document=True,
     )
     if not result:
@@ -266,9 +273,10 @@ async def mark_order_ready(order_id: str, user: dict = Depends(get_user)):
 
 
 @router.post("/kitchen/orders/{order_id}/served")
-async def mark_order_served(order_id: str, _: dict = Depends(get_user)):
+async def mark_order_served(order_id: str, user: dict = Depends(get_user)):
     result = await db.kitchen_orders.find_one_and_update(
-        {"id": order_id}, {"$set": {"status": "served", "servedAt": _now()}},
+        {"id": order_id, **tenant_scope_filter(user.get("businessId"))},
+        {"$set": {"status": "served", "servedAt": _now()}},
         return_document=True,
     )
     if not result:
@@ -279,9 +287,10 @@ async def mark_order_served(order_id: str, _: dict = Depends(get_user)):
 
 
 @router.post("/kitchen/orders/{order_id}/cancel")
-async def cancel_kitchen_order(order_id: str, _: dict = Depends(get_user)):
+async def cancel_kitchen_order(order_id: str, user: dict = Depends(get_user)):
     result = await db.kitchen_orders.find_one_and_update(
-        {"id": order_id}, {"$set": {"status": "cancelled", "cancelledAt": _now()}},
+        {"id": order_id, **tenant_scope_filter(user.get("businessId"))},
+        {"$set": {"status": "cancelled", "cancelledAt": _now()}},
         return_document=True,
     )
     if not result:
@@ -297,12 +306,13 @@ async def hold_course(order_id: str, course: int,
                       user: dict = Depends(require_permission("fire-course"))):
     """Explicitly hold a course — it will NOT fire automatically."""
     from services import course_events
-    prior = await db.kitchen_orders.find_one({"id": order_id}, {"_id": 0, "courses": 1})
+    scope = tenant_scope_filter(user.get("businessId"))
+    prior = await db.kitchen_orders.find_one({"id": order_id, **scope}, {"_id": 0, "courses": 1})
     prev_state = course_events.course_state(prior or {}, course)
 
     key = f"courses.{course}"
     result = await db.kitchen_orders.find_one_and_update(
-        {"id": order_id},
+        {"id": order_id, **scope},
         {"$set": {f"{key}.status": "held", f"{key}.heldAt": _now(),
                     f"{key}.firedAt": None, f"{key}.firedBy": None}},
         return_document=True,
@@ -316,21 +326,27 @@ async def hold_course(order_id: str, course: int,
     return result
 
 
-async def fire_course_internal(order_id: str, course: int, actor: str) -> dict:
+async def fire_course_internal(order_id: str, course: int, actor: str,
+                                business_id: Optional[str] = None) -> dict:
     """Fire a course and run every side effect: print the station dockets for
     that course, advance the table's pacing, notify the server.
 
     Shared by the endpoint below and by the timing rules that fire a course
     automatically, so an auto-fire behaves exactly like a server tapping Fire
-    rather than quietly skipping the printing.
+    rather than quietly skipping the printing. `business_id` is optional
+    because the scheduler-driven auto-fire path already resolves order_ids
+    from its own per-business scan (see coursing_scheduler.py) — pass it
+    whenever the caller has an authenticated user in scope (the HTTP route
+    below always does) so a cross-tenant order_id 404s instead of matching.
     """
     from services import course_events
-    prior = await db.kitchen_orders.find_one({"id": order_id}, {"_id": 0, "courses": 1})
+    scope = tenant_scope_filter(business_id)
+    prior = await db.kitchen_orders.find_one({"id": order_id, **scope}, {"_id": 0, "courses": 1})
     prev_state = course_events.course_state(prior or {}, course)
 
     key = f"courses.{course}"
     result = await db.kitchen_orders.find_one_and_update(
-        {"id": order_id},
+        {"id": order_id, **scope},
         {"$set": {
             "currentCourse": course,
             f"{key}.status": "fired",
@@ -345,7 +361,7 @@ async def fire_course_internal(order_id: str, course: int, actor: str) -> dict:
     result.pop("_id", None)
 
     from services import coursing as _coursing
-    cfg = await _coursing.get_config()
+    cfg = await _coursing.get_config(business_id=business_id)
     label = _course_label(course, cfg)
 
     await course_events.record_transition(order_id, course, "fired", actor, prev_state)
@@ -409,7 +425,8 @@ async def fire_course_internal(order_id: str, course: int, actor: str) -> dict:
 async def fire_course(order_id: str, course: int, user: dict = Depends(require_permission("fire-course"))):
     """Fire a specific course — lifts any hold, prints that course's dockets,
     and advances the table's pacing."""
-    return await fire_course_internal(order_id, course, user.get("name") or user.get("email"))
+    return await fire_course_internal(order_id, course, user.get("name") or user.get("email"),
+                                       business_id=user.get("businessId"))
 
 
 @router.post("/kitchen/orders/{order_id}/ready-course/{course}")
@@ -422,7 +439,7 @@ async def ready_course(order_id: str, course: int, user: dict = Depends(require_
     """
     key = f"courses.{course}"
     result = await db.kitchen_orders.find_one_and_update(
-        {"id": order_id},
+        {"id": order_id, **tenant_scope_filter(user.get("businessId"))},
         {"$set": {f"{key}.status": "ready", f"{key}.readyAt": _now()}},
         return_document=True,
     )
@@ -455,12 +472,13 @@ async def ready_course(order_id: str, course: int, user: dict = Depends(require_
 @router.post("/kitchen/orders/{order_id}/serve-course/{course}")
 async def serve_course(order_id: str, course: int, user: dict = Depends(require_permission("fire-course"))):
     from services import course_events
-    prior = await db.kitchen_orders.find_one({"id": order_id}, {"_id": 0, "courses": 1})
+    scope = tenant_scope_filter(user.get("businessId"))
+    prior = await db.kitchen_orders.find_one({"id": order_id, **scope}, {"_id": 0, "courses": 1})
     prev_state = course_events.course_state(prior or {}, course)
 
     key = f"courses.{course}"
     result = await db.kitchen_orders.find_one_and_update(
-        {"id": order_id},
+        {"id": order_id, **scope},
         {"$set": {f"{key}.status": "served", f"{key}.servedAt": _now()}},
         return_document=True,
     )
@@ -474,14 +492,15 @@ async def serve_course(order_id: str, course: int, user: dict = Depends(require_
 
 
 @router.get("/kitchen/orders/{order_id}/timings")
-async def course_timings(order_id: str, _: dict = Depends(get_user)):
+async def course_timings(order_id: str, user: dict = Depends(get_user)):
     """Per-course timings derived from the ticket's history trail.
 
     `atPassMinutes` is the number that actually costs a venue: food sitting
     under a lamp between the kitchen calling it ready and someone running it.
     """
     from services import course_events
-    order = await db.kitchen_orders.find_one({"id": order_id}, {"_id": 0})
+    order = await db.kitchen_orders.find_one(
+        {"id": order_id, **tenant_scope_filter(user.get("businessId"))}, {"_id": 0})
     if not order:
         raise HTTPException(status_code=404, detail="Order not found")
     return {
@@ -493,9 +512,10 @@ async def course_timings(order_id: str, _: dict = Depends(get_user)):
 
 
 @router.post("/kitchen/orders/{order_id}/priority")
-async def set_order_priority(order_id: str, priority: str = "rush", _: dict = Depends(get_user)):
+async def set_order_priority(order_id: str, priority: str = "rush", user: dict = Depends(get_user)):
     result = await db.kitchen_orders.find_one_and_update(
-        {"id": order_id}, {"$set": {"priority": priority}}, return_document=True,
+        {"id": order_id, **tenant_scope_filter(user.get("businessId"))},
+        {"$set": {"priority": priority}}, return_document=True,
     )
     if not result:
         raise HTTPException(status_code=404, detail="Order not found")
@@ -551,13 +571,15 @@ async def update_docket_config(body: dict, user: dict = Depends(get_user)):
 
 # ============ PREP MANAGEMENT API ============
 @router.get("/kitchen/prep-list")
-async def get_prep_list():
+async def get_prep_list(user: dict = Depends(get_user)):
+    biz = user.get("businessId")
+    scope = tenant_scope_filter(biz)
     today = datetime.utcnow().strftime('%Y-%m-%d')
-    reservations = await db.reservations.find({"date": today}, {"_id": 0}).to_list(100)
+    reservations = await db.reservations.find({"date": today, **scope}, {"_id": 0}).to_list(100)
     total_covers = sum(r.get("partySize", 0) for r in reservations)
 
-    products = await db.products.find({}, {"_id": 0}).to_list(1000)
-    all_txns = await db.transactions.find({}, {"_id": 0}).to_list(10000)
+    products = await db.products.find(scope, {"_id": 0}).to_list(1000)
+    all_txns = await db.transactions.find(scope, {"_id": 0}).to_list(10000)
 
     product_popularity = {}
     for txn in all_txns:

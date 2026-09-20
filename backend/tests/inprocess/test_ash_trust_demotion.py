@@ -7,6 +7,7 @@ replays that trail, and flagging one demotes the tool back to
 approval-gated immediately (not just a dent in the streak) and, where the
 tool supports it, undoes the change.
 """
+import asyncio
 from conftest import req
 
 
@@ -89,39 +90,39 @@ def test_flagging_an_execution_instantly_demotes_the_tool_to_approval(client, ow
 
 
 def test_flag_with_undo_rolls_back_a_tool_that_supports_rollback(client, owner_headers):
-    product = req(client, "POST", "/api/products", headers=owner_headers, json={
-        "name": "Trust Rollback Widget", "price": 20, "cost": 8, "category": "Test",
-        "stock": 5, "sku": "TRUST-ROLLBACK-1"})
-    assert product.status_code == 200, product.text[:200]
-    product_id = product.json()["id"]
+    # create_staff_task is risk=low, default_permission=auto — unlike
+    # adjust_menu_price (risk=high), it doesn't need to be force-permissioned
+    # to auto to exercise this path. High/critical-risk tools can no longer
+    # be set to auto at all (see test_ash_safety_controls.py), which is
+    # exactly why this test now uses a low-risk tool that also has a
+    # rollback function instead.
+    created = req(client, "POST", "/api/nua/tools/create_staff_task/execute", headers=owner_headers,
+                  json={"args": {"title": "Trust rollback test task", "priority": "normal"}})
+    assert created.status_code == 200, created.text[:200]
+    outcome = created.json()
+    assert outcome["status"] == "executed"
+    task_id = outcome["outcome"]["taskId"]
 
-    # adjust_menu_price defaults to permission=approval — force it to auto
-    # so this test can exercise the auto-execution + flag/undo path directly.
-    perm = req(client, "PUT", "/api/nua/tools/adjust_menu_price/permission", headers=owner_headers,
-               json={"permission": "auto"})
-    assert perm.status_code == 200, perm.text[:200]
+    def _task_status():
+        # db.tasks has no read-side route — query it directly, same as
+        # other tests in this suite do for collections with no GET endpoint.
+        from database import db
+        loop = asyncio.get_event_loop()
+        doc = loop.run_until_complete(db.tasks.find_one({"id": task_id}, {"_id": 0}))
+        return doc["status"]
 
-    exec_r = req(client, "POST", "/api/nua/tools/adjust_menu_price/execute", headers=owner_headers,
-                 json={"args": {"productId": product_id, "newPrice": 999, "reason": "test"}})
-    assert exec_r.status_code == 200, exec_r.text[:200]
-    assert exec_r.json()["status"] == "executed"
-
-    def _price():
-        rows = req(client, "GET", "/api/products", headers=owner_headers).json()
-        return next(p["price"] for p in rows if p["id"] == product_id)
-
-    assert _price() == 999
+    assert _task_status() == "open"
 
     feed = req(client, "GET", "/api/nua/tools/auto-executions", headers=owner_headers).json()
-    match = next(e for e in feed if e["toolName"] == "adjust_menu_price"
-                 and (e.get("args") or {}).get("productId") == product_id)
+    match = next(e for e in feed if e["toolName"] == "create_staff_task"
+                 and (e.get("outcome") or {}).get("taskId") == task_id)
     assert match["rollbackAvailable"] is True
 
     flag_r = req(client, "POST", f"/api/nua/tools/executions/{match['auditId']}/flag",
-                 headers=owner_headers, json={"reason": "wrong price", "undo": True})
+                 headers=owner_headers, json={"reason": "wrong task", "undo": True})
     assert flag_r.status_code == 200, flag_r.text[:200]
     body = flag_r.json()
     assert body["permission"] == "approval"
     assert body["undo"]["undone"] is True
 
-    assert _price() == 20, "flagging with undo=true must restore the pre-execution price"
+    assert _task_status() == "cancelled", "flagging with undo=true must roll back the created task"

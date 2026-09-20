@@ -25,15 +25,53 @@ from typing import Any, Awaitable, Callable, Dict, List, Optional
 from datetime import datetime, timezone
 from dataclasses import dataclass
 from database import db
+from middleware.actor_context import tenant_scope_filter, get_actor_context
 from services import audit_service, approval_service
+from pymongo import ReturnDocument
+import asyncio
 import uuid
 import logging
 
 logger = logging.getLogger(__name__)
 
+HIGH_RISK_TIERS = {"high", "critical"}  # never allowed to auto-execute, regardless of config
+
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+# ═════════════════════════════════════════════════════════════════════════
+# Global kill switch — halts every mutating/auto tool execution regardless
+# of entry point (chat agent, planner, direct API, approval execution).
+# Stored in db.settings (same singleton-doc pattern as trust settings)
+# rather than per-tool config, since it's meant to be one lever, not 23.
+# ═════════════════════════════════════════════════════════════════════════
+async def get_kill_switch() -> dict:
+    s = await db.settings.find_one({"key": "ash_kill_switch"}, {"_id": 0})
+    value = (s or {}).get("value") or {}
+    return {
+        "enabled": bool(value.get("enabled")),
+        "reason": value.get("reason"),
+        "setBy": value.get("setBy"),
+        "setAt": value.get("setAt"),
+    }
+
+
+async def set_kill_switch(enabled: bool, actor: str, reason: Optional[str] = None) -> dict:
+    """Owner-only at the route layer (see routes/nua.py) — this function
+    itself doesn't re-check role, callers must gate it. Every toggle is
+    audited so 'who paused Ash and when' is always answerable."""
+    value = {"enabled": bool(enabled), "reason": reason, "setBy": actor, "setAt": _now()}
+    await db.settings.update_one(
+        {"key": "ash_kill_switch"}, {"$set": {"key": "ash_kill_switch", "value": value}}, upsert=True
+    )
+    await audit_service.log_event(
+        entity_type="ash_kill_switch", entity_id="global", action="updated",
+        after=value, memo=f"Ash global kill switch {'ENGAGED' if enabled else 'released'} by {actor}",
+        severity="high" if enabled else "notice", tags=["ash_agent", "kill_switch"],
+    )
+    return value
 
 
 @dataclass
@@ -61,7 +99,7 @@ def register(tool: Tool) -> None:
 # Individual tool implementations
 # ═════════════════════════════════════════════════════════════════════════
 async def _tx_dismiss_insight(a):
-    r = await db.ash_insights.update_one({"id": a["insightId"]},
+    r = await db.ash_insights.update_one({"id": a["insightId"], **tenant_scope_filter()},
                                           {"$set": {"resolvedAt": _now(), "resolvedBy": "ash-agent"}})
     if r.matched_count == 0:
         return {"error": "insight not found"}
@@ -70,10 +108,23 @@ async def _tx_dismiss_insight(a):
 
 async def _tx_approve_pending_approval(a):
     """Ash approves a pending approval on the owner's behalf.
-    We never bypass the queue — this only works when caller has permission."""
+    We never bypass the queue — this only works when caller has permission.
+
+    Tenant check added: approval_service.approve() itself has no
+    businessId check (it trusts the caller to have already verified
+    ownership — routes/approvals.py's HTTP endpoint does this before
+    calling it), and this tool previously looked the approval up purely
+    by the model-supplied approvalId with no check at all. Without this,
+    a manager at business A (or a prompt-injected Ash agent acting on
+    their behalf) could execute business B's pending approval — voucher
+    issuance, refund, campaign send, whatever the underlying action is —
+    just by supplying business B's approvalId."""
     from services.rules_engine import ACTION_LIBRARY
-    doc = await db.approvals.find_one({"id": a["approvalId"]}, {"_id": 0})
+    from middleware.actor_context import get_actor_context, tenant_owns_strict
+    doc = await db.approvals.find_one({"$and": [{"id": a["approvalId"]}, tenant_scope_filter(get_actor_context().get("businessId"))]}, {"_id": 0})
     if not doc:
+        return {"error": "approval not found"}
+    if not tenant_owns_strict(doc.get("businessId"), get_actor_context().get("businessId")):
         return {"error": "approval not found"}
     if doc["status"] != "pending":
         return {"error": f"already {doc['status']}"}
@@ -87,6 +138,10 @@ async def _tx_approve_pending_approval(a):
 
 
 async def _tx_reject_pending_approval(a):
+    from middleware.actor_context import get_actor_context, tenant_owns_strict
+    doc = await db.approvals.find_one({"$and": [{"id": a["approvalId"]}, tenant_scope_filter(get_actor_context().get("businessId"))]}, {"_id": 0})
+    if not doc or not tenant_owns_strict(doc.get("businessId"), get_actor_context().get("businessId")):
+        return {"error": "approval not found"}
     try:
         return await approval_service.reject(a["approvalId"], actor="ash-agent", reason=a.get("reason"))
     except ValueError as e:
@@ -95,15 +150,18 @@ async def _tx_reject_pending_approval(a):
 
 async def _tx_adjust_menu_price(a):
     pid = a["productId"]; new_price = float(a["newPrice"])
-    before = await db.products.find_one({"id": pid}, {"_id": 0})
+    before = await db.products.find_one({"id": pid, **tenant_scope_filter()}, {"_id": 0})
     if not before:
         return {"error": "product not found"}
-    await db.products.update_one({"id": pid}, {"$set": {"price": new_price, "updatedAt": _now(), "updatedBy": "ash-agent"}})
+    await db.products.update_one(
+        {"id": pid, **tenant_scope_filter()},
+        {"$set": {"price": new_price, "updatedAt": _now(), "updatedBy": "ash-agent"}},
+    )
     return {"productId": pid, "oldPrice": before.get("price"), "newPrice": new_price}
 
 
 async def _rollback_menu_price(outcome):
-    await db.products.update_one({"id": outcome["productId"]},
+    await db.products.update_one({"id": outcome["productId"], **tenant_scope_filter()},
                                   {"$set": {"price": outcome["oldPrice"]}})
 
 
@@ -126,7 +184,9 @@ async def _tx_issue_voucher(a):
 async def _tx_create_purchase_order(a):
     pid = a["productId"]; qty = int(a.get("quantity") or 10)
     est = float(a.get("estimatedCost") or (qty * float(a.get("unitCost") or 25)))
-    product = await db.products.find_one({"id": pid}, {"_id": 0})
+    product = await db.products.find_one({"id": pid, **tenant_scope_filter()}, {"_id": 0})
+    if not product:
+        return {"error": "product not found"}
     po = {
         "id": str(uuid.uuid4()),
         "productId": pid,
@@ -137,9 +197,19 @@ async def _tx_create_purchase_order(a):
         "status": "draft",
         "createdBy": "ash-agent",
         "createdAt": _now(),
+        "businessId": get_actor_context().get("businessId"),
     }
     await db.purchase_orders.insert_one(dict(po))
     return {"purchaseOrderId": po["id"], "quantity": qty, "estimatedCost": est}
+
+
+async def _rollback_purchase_order(outcome):
+    """Soft-cancel, not delete — a PO already sent to a supplier shouldn't
+    vanish from the record just because it was undone after the fact."""
+    await db.purchase_orders.update_one(
+        {"id": outcome["purchaseOrderId"], **tenant_scope_filter()},
+        {"$set": {"status": "cancelled", "cancelledBy": "ash-agent-rollback", "cancelledAt": _now()}},
+    )
 
 
 async def _tx_add_customer_note(a):
@@ -147,51 +217,122 @@ async def _tx_add_customer_note(a):
     codebase (seed data, the CRM UI, guest_intel.py), not an array — append
     to it rather than $push, which fails outright against a string field."""
     cid = a["customerId"]; note = a["note"]
-    customer = await db.customers.find_one({"id": cid}, {"_id": 0, "notes": 1})
+    customer = await db.customers.find_one({**tenant_scope_filter(), "id": cid}, {"_id": 0, "notes": 1})
     if not customer:
         return {"error": "customer not found"}
     existing = (customer.get("notes") or "").strip()
     entry = f"[{_now()[:10]} · ash-agent] {note}"
     updated = f"{existing}\n{entry}" if existing else entry
-    await db.customers.update_one({"id": cid}, {"$set": {"notes": updated}})
+    await db.customers.update_one({**tenant_scope_filter(), "id": cid}, {"$set": {"notes": updated}})
     return {"customerId": cid, "added": True}
 
 
 async def _tx_add_wallet_credit(a):
     cid = a["customerId"]; amount = float(a["amount"])
-    r = await db.customers.update_one({"id": cid}, {"$inc": {"storeCredit": amount}})
+    r = await db.customers.update_one({**tenant_scope_filter(), "id": cid}, {"$inc": {"storeCredit": amount}})
+    ledger_id = None
     if r.matched_count:
+        ledger_id = str(uuid.uuid4())
         await db.wallet_ledger.insert_one({
-            "id": str(uuid.uuid4()), "customerId": cid, "type": "credit_grant",
+            "id": ledger_id, "customerId": cid, "type": "credit_grant",
             "amount": amount, "sourceType": "ash_agent", "createdAt": _now(),
             "description": a.get("reason", "Ash credit"),
+            "businessId": get_actor_context().get("businessId"),
         })
-    return {"customerId": cid, "credit": amount, "matched": r.matched_count}
+    return {"customerId": cid, "credit": amount, "matched": r.matched_count, "ledgerId": ledger_id}
+
+
+async def _rollback_wallet_credit(outcome):
+    """Reverses the $inc with an equal-and-opposite one, and records a
+    compensating ledger entry rather than deleting the original — deleting
+    would leave storeCredit and wallet_ledger's own running total
+    disagreeing with each other."""
+    if not outcome.get("matched"):
+        return
+    cid = outcome["customerId"]; amount = float(outcome["credit"])
+    await db.customers.update_one({**tenant_scope_filter(), "id": cid}, {"$inc": {"storeCredit": -amount}})
+    await db.wallet_ledger.insert_one({
+        "id": str(uuid.uuid4()), "customerId": cid, "type": "credit_reversal",
+        "amount": -amount, "sourceType": "ash_agent_rollback", "createdAt": _now(),
+        "description": f"Rollback of ledger entry {outcome.get('ledgerId')}",
+        "reversalOf": outcome.get("ledgerId"),
+        "businessId": get_actor_context().get("businessId"),
+    })
 
 
 async def _tx_upgrade_customer_tier(a):
     cid = a["customerId"]; tier = a["tier"]
-    r = await db.customers.update_one({"id": cid}, {"$set": {"membershipTier": tier, "vipUpgradedAt": _now()}})
-    return {"customerId": cid, "newTier": tier, "matched": r.matched_count}
+    before = await db.customers.find_one({**tenant_scope_filter(), "id": cid}, {"_id": 0, "membershipTier": 1})
+    if not before:
+        return {"error": "customer not found"}
+    r = await db.customers.update_one({**tenant_scope_filter(), "id": cid}, {"$set": {"membershipTier": tier, "vipUpgradedAt": _now()}})
+    return {"customerId": cid, "oldTier": before.get("membershipTier"), "newTier": tier, "matched": r.matched_count}
+
+
+async def _rollback_customer_tier(outcome):
+    if not outcome.get("matched"):
+        return
+    await db.customers.update_one({**tenant_scope_filter(), "id": outcome["customerId"]},
+                                   {"$set": {"membershipTier": outcome.get("oldTier")}})
 
 
 async def _tx_mark_waste(a):
     pid = a["productId"]; qty = float(a.get("quantity") or 1); reason = a.get("reason", "spoilage")
+    if not await db.products.find_one({"id": pid, **tenant_scope_filter()}, {"_id": 1}):
+        return {"error": "product not found"}
     doc = {"id": str(uuid.uuid4()), "productId": pid, "quantity": qty, "reason": reason,
-           "recordedBy": "ash-agent", "createdAt": _now()}
+           "recordedBy": "ash-agent", "createdAt": _now(),
+           "businessId": get_actor_context().get("businessId")}
     await db.waste_events.insert_one(dict(doc))
-    await db.products.update_one({"id": pid}, {"$inc": {"stock": -qty}})
+    await db.products.update_one({"id": pid, **tenant_scope_filter()}, {"$inc": {"stock": -qty}})
+    from utils.stock_ops import clamp_negative_stock
+    await clamp_negative_stock([pid])
     return {"wasteId": doc["id"], "productId": pid, "quantity": qty}
 
 
+async def _rollback_waste(outcome):
+    """Restores the deducted stock and marks the waste record reversed —
+    kept, not deleted, so the audit trail still shows the original entry
+    plus the fact it was undone."""
+    await db.products.update_one(
+        {"id": outcome["productId"], **tenant_scope_filter()}, {"$inc": {"stock": outcome["quantity"]}})
+    await db.waste_events.update_one({"id": outcome["wasteId"], **tenant_scope_filter()},
+                                      {"$set": {"reversed": True, "reversedAt": _now()}})
+
+
 async def _tx_mark_dish_86(a):
-    r = await db.products.update_one({"id": a["productId"]},
-                                     {"$set": {"is86ed": True, "eightySixReason": a.get("reason", "ash-agent")}})
-    return {"productId": a["productId"], "matched": r.matched_count}
+    """Field names must match models/product.py (eightySixed/eightySixedAt/
+    eightySixedBy) — an earlier version of this used is86ed/eightySixReason,
+    fields nothing else in the codebase (POS, kitchen display, online
+    ordering, low-stock/OOS endpoints) has ever read, so it silently 86'd
+    nothing anywhere visible. services/rules_engine.py's identical action
+    had the same bug, fixed alongside this one."""
+    pid = a["productId"]
+    before = await db.products.find_one({"id": pid, **tenant_scope_filter()})
+    if before is None:
+        return {"error": "product not found"}
+    r = await db.products.update_one(
+        {"id": pid, **tenant_scope_filter()},
+        {"$set": {"eightySixed": True, "eightySixedAt": _now(), "eightySixedBy": "ash-agent",
+                   "eightySixedReason": a.get("reason", "ash-agent")}},
+    )
+    return {"productId": pid, "matched": r.matched_count,
+            "wasAlready86ed": bool(before.get("eightySixed")), "oldReason": before.get("eightySixedReason")}
+
+
+async def _rollback_dish_86(outcome):
+    if not outcome.get("matched"):
+        return
+    was_86ed = outcome.get("wasAlready86ed", False)
+    await db.products.update_one(
+        {"id": outcome["productId"], **tenant_scope_filter()},
+        {"$set": {"eightySixed": was_86ed, "eightySixedReason": outcome.get("oldReason"),
+                   "eightySixedAt": _now() if was_86ed else None}},
+    )
 
 
 async def _tx_cancel_reservation(a):
-    r = await db.reservations.update_one({"id": a["reservationId"]},
+    r = await db.reservations.update_one({"id": a["reservationId"], **tenant_scope_filter()},
                                           {"$set": {"status": "cancelled", "cancelledBy": "ash-agent",
                                                     "cancellationReason": a.get("reason")}})
     return {"reservationId": a["reservationId"], "matched": r.matched_count}
@@ -244,9 +385,15 @@ async def _tx_send_customer_email(a):
 async def _tx_create_task(a):
     doc = {"id": str(uuid.uuid4()), "title": a["title"], "assignee": a.get("assignee", "manager"),
            "priority": a.get("priority", "normal"), "dueAt": a.get("dueAt"),
-           "createdBy": "ash-agent", "status": "open", "createdAt": _now()}
+           "createdBy": "ash-agent", "status": "open", "createdAt": _now(),
+           "businessId": get_actor_context().get("businessId")}
     await db.tasks.insert_one(dict(doc))
     return {"taskId": doc["id"]}
+
+
+async def _rollback_task(outcome):
+    await db.tasks.update_one({"id": outcome["taskId"], **tenant_scope_filter()},
+                               {"$set": {"status": "cancelled", "cancelledBy": "ash-agent-rollback"}})
 
 
 async def _tx_check_promo_voucher(a):
@@ -259,7 +406,8 @@ async def _tx_check_promo_voucher(a):
     if not code:
         return {"error": "code required"}
     v = await db.commerce_vouchers.find_one(
-        {"$or": [{"manualCode": code}, {"barcode": code}, {"id": code}]}, {"_id": 0},
+        {"$or": [{"manualCode": code}, {"barcode": code}, {"id": code}],
+         **tenant_scope_filter(get_actor_context().get("businessId"))}, {"_id": 0},
     )
     if not v:
         return {"valid": False, "code": code, "reason": "Code not found"}
@@ -279,9 +427,15 @@ async def _tx_check_promo_voucher(a):
 async def _tx_create_promotion(a):
     doc = {"id": str(uuid.uuid4()), "name": a["name"], "type": a.get("type", "percent"),
            "discount": float(a.get("discount") or 10), "active": True, "createdBy": "ash-agent",
-           "createdAt": _now(), "productId": a.get("productId")}
+           "createdAt": _now(), "productId": a.get("productId"),
+           "businessId": get_actor_context().get("businessId")}
     await db.promotions.insert_one(dict(doc))
     return {"promotionId": doc["id"]}
+
+
+async def _rollback_promotion(outcome):
+    await db.promotions.update_one({"id": outcome["promotionId"], **tenant_scope_filter()},
+                                    {"$set": {"active": False, "deactivatedBy": "ash-agent-rollback"}})
 
 
 async def _tx_run_ash_scan(a):
@@ -295,8 +449,9 @@ async def _tx_generate_weekly_summary(a):
     if not doc:
         return {"error": "no summary generated"}
     await db.ash_insights.update_one(
-        {"category": doc["category"], "key": doc["key"]},
-        {"$set": doc, "$setOnInsert": {"firstSeenAt": doc["createdAt"]}},
+        {"category": doc["category"], "key": doc["key"], **tenant_scope_filter()},
+        {"$set": {**doc, "businessId": get_actor_context().get("businessId")},
+         "$setOnInsert": {"firstSeenAt": doc["createdAt"]}},
         upsert=True,
     )
     return {"summary": doc["body"], "data": doc["data"]}
@@ -316,7 +471,9 @@ async def _tx_fetch_kpis(a):
 
 
 async def _tx_fetch_open_insights(a):
-    rows = await db.ash_insights.find({"resolvedAt": None}, {"_id": 0}).sort("createdAt", -1).limit(50).to_list(50)
+    rows = await db.ash_insights.find(
+        {"resolvedAt": None, **tenant_scope_filter()}, {"_id": 0}
+    ).sort("createdAt", -1).limit(50).to_list(50)
     return {"insights": [{"id": i["id"], "category": i["category"], "severity": i["severity"],
                             "title": i["title"], "body": i["body"]} for i in rows]}
 
@@ -326,7 +483,7 @@ async def _tx_lookup_customer(a):
     if not q:
         return {"error": "query required"}
     row = await db.customers.find_one(
-        {"$or": [{"email": {"$regex": q, "$options": "i"}},
+        {**tenant_scope_filter(), "$or": [{"email": {"$regex": q, "$options": "i"}},
                  {"name": {"$regex": q, "$options": "i"}},
                  {"phone": {"$regex": q, "$options": "i"}}]},
         {"_id": 0},
@@ -338,7 +495,8 @@ async def _tx_lookup_customer(a):
 
 async def _tx_lookup_product(a):
     q = (a.get("query") or "").strip()
-    row = await db.products.find_one({"name": {"$regex": q, "$options": "i"}}, {"_id": 0})
+    row = await db.products.find_one(
+        {"name": {"$regex": q, "$options": "i"}, **tenant_scope_filter()}, {"_id": 0})
     if not row:
         return {"error": "not found"}
     return {"product": {k: row.get(k) for k in ("id", "name", "price", "cost", "stock", "category")}}
@@ -432,17 +590,17 @@ _TOOL_DEFS: List[Dict[str, Any]] = [
                                  "supplierId": {"type": "string"}, "unitCost": {"type": "number"},
                                  "estimatedCost": {"type": "number"}},
                  "required": ["productId", "quantity"]},
-     "fn": _tx_create_purchase_order, "impact": "cost"},
+     "fn": _tx_create_purchase_order, "rollback": _rollback_purchase_order, "impact": "cost"},
     {"n": "mark_waste", "l": "Log a waste event & deduct stock", "m": "Inventory", "r": "medium", "p": "approval",
      "params": {"type": "object",
                  "properties": {"productId": {"type": "string"}, "quantity": {"type": "number"},
                                  "reason": {"type": "string"}}, "required": ["productId", "quantity"]},
-     "fn": _tx_mark_waste, "impact": "cost"},
+     "fn": _tx_mark_waste, "rollback": _rollback_waste, "impact": "cost"},
     {"n": "mark_dish_86", "l": "Mark a dish as 86'd", "m": "Inventory", "r": "medium", "p": "approval",
      "params": {"type": "object",
                  "properties": {"productId": {"type": "string"}, "reason": {"type": "string"}},
                  "required": ["productId"]},
-     "fn": _tx_mark_dish_86, "impact": "revenue"},
+     "fn": _tx_mark_dish_86, "rollback": _rollback_dish_86, "impact": "revenue"},
     {"n": "adjust_menu_price", "l": "Change a product price", "m": "Inventory", "r": "high", "p": "approval",
      "params": {"type": "object",
                  "properties": {"productId": {"type": "string"}, "newPrice": {"type": "number"},
@@ -461,7 +619,7 @@ _TOOL_DEFS: List[Dict[str, Any]] = [
                  "properties": {"customerId": {"type": "string"}, "amount": {"type": "number"},
                                  "reason": {"type": "string"}},
                  "required": ["customerId", "amount"]},
-     "fn": _tx_add_wallet_credit, "impact": "cost"},
+     "fn": _tx_add_wallet_credit, "rollback": _rollback_wallet_credit, "impact": "cost"},
     {"n": "issue_voucher", "l": "Issue a voucher to a customer", "m": "Customers", "r": "medium", "p": "approval",
      "params": {"type": "object",
                  "properties": {"customerId": {"type": "string"}, "value": {"type": "number"},
@@ -472,7 +630,7 @@ _TOOL_DEFS: List[Dict[str, Any]] = [
      "params": {"type": "object",
                  "properties": {"customerId": {"type": "string"}, "tier": {"type": "string"}},
                  "required": ["customerId", "tier"]},
-     "fn": _tx_upgrade_customer_tier, "impact": "csat"},
+     "fn": _tx_upgrade_customer_tier, "rollback": _rollback_customer_tier, "impact": "csat"},
 
     # ── Reservations ──
     {"n": "cancel_reservation", "l": "Cancel a reservation", "m": "Reservations", "r": "medium", "p": "approval",
@@ -507,7 +665,7 @@ _TOOL_DEFS: List[Dict[str, Any]] = [
                  "properties": {"name": {"type": "string"}, "discount": {"type": "number"},
                                  "type": {"type": "string"}, "productId": {"type": "string"}},
                  "required": ["name"]},
-     "fn": _tx_create_promotion, "impact": "revenue"},
+     "fn": _tx_create_promotion, "rollback": _rollback_promotion, "impact": "revenue"},
     {"n": "check_promo_voucher", "l": "Check whether a promo/voucher code is still redeemable", "m": "Marketing",
      "r": "low", "p": "auto",
      "params": {"type": "object", "properties": {"code": {"type": "string"}}, "required": ["code"]},
@@ -519,7 +677,7 @@ _TOOL_DEFS: List[Dict[str, Any]] = [
                  "properties": {"title": {"type": "string"}, "assignee": {"type": "string"},
                                  "priority": {"type": "string"}, "dueAt": {"type": "string"}},
                  "required": ["title"]},
-     "fn": _tx_create_task},
+     "fn": _tx_create_task, "rollback": _rollback_task},
 ]
 
 for d in _TOOL_DEFS:
@@ -534,33 +692,118 @@ for d in _TOOL_DEFS:
 # ═════════════════════════════════════════════════════════════════════════
 # Permission resolution & execution
 # ═════════════════════════════════════════════════════════════════════════
-async def resolve_permission(tool_name: str) -> str:
-    """Look up owner override, else fall back to tool default."""
+async def resolve_permission(tool_name: str, business_id: Optional[str] = None) -> str:
+    """Look up owner override, else fall back to tool default.
+
+    A hard floor: high/critical-risk tools can never resolve to "auto", no
+    matter what's stored in db.ash_tool_config. This used to be enforced
+    only by convention (every high-risk tool happened to default to
+    "approval") — a manager could still flip one straight to auto via
+    PUT /tools/{name}/permission with nothing to stop it. The write-side
+    also rejects that now (routes/nua.py's set_tool_permission), but this
+    read-side floor is the one that actually matters: it holds even if a
+    bad value ever ends up in the database by some other path.
+
+    The override lookup is scoped to the caller's own business (defaulting
+    from the request's actor context, same pattern as
+    notification_service.send()) — without this, one business's tool
+    permission override (e.g. disabling issue_voucher, or promoting a
+    low-risk tool to auto) silently applied to every other business on the
+    deployment too.
+    """
     tool = TOOLS.get(tool_name)
     if not tool:
         return "disabled"
-    override = await db.ash_tool_config.find_one({"toolName": tool_name}, {"_id": 0})
-    return (override or {}).get("permission") or tool.default_permission
+    if business_id is None:
+        business_id = get_actor_context().get("businessId")
+    override = await db.ash_tool_config.find_one(
+        {"toolName": tool_name, **tenant_scope_filter(business_id)}, {"_id": 0})
+    perm = (override or {}).get("permission") or tool.default_permission
+    if perm == "auto" and tool.risk in HIGH_RISK_TIERS:
+        return "approval"
+    return perm
 
 
-async def execute_tool(tool_name: str, args: Dict[str, Any], *, actor: str = "ash-agent") -> Dict[str, Any]:
-    """Run a tool through the permission gate. Always returns a dict."""
+async def execute_tool(tool_name: str, args: Dict[str, Any], *, actor: str = "ash-agent",
+                        idempotency_key: Optional[str] = None) -> Dict[str, Any]:
+    """Run a tool through the permission gate. Always returns a dict.
+
+    idempotency_key, when supplied, dedups repeated calls (a retry, a
+    replayed chat message, two near-simultaneous requests) so a mutating
+    tool never runs twice for what is really the same request. Omitting it
+    preserves the old at-most-once-per-call behavior — callers that don't
+    have a natural key (nothing here forces one) just don't get dedup.
+    """
     tool = TOOLS.get(tool_name)
     if not tool:
+        await audit_service.log_event(
+            entity_type="ash_tool:unknown", entity_id=tool_name, action="blocked",
+            after={"reason": "unknown_tool", "args": args},
+            memo=f"Blocked call to unknown Ash tool '{tool_name}'",
+            severity="warning", tags=["ash_agent", "blocked"],
+        )
         return {"status": "error", "error": f"Unknown tool: {tool_name}"}
+
+    if idempotency_key:
+        prior = await db.ash_tool_idempotency.find_one_and_update(
+            {"toolName": tool_name, "idempotencyKey": idempotency_key},
+            {"$setOnInsert": {"toolName": tool_name, "idempotencyKey": idempotency_key,
+                               "createdAt": _now(), "result": None}},
+            upsert=True, return_document=ReturnDocument.BEFORE,
+        )
+        if prior is not None:
+            # A doc already existed before this call — this is a retry,
+            # replay, or a concurrent duplicate racing the first caller.
+            # Wait briefly for that first call to finish and reuse its
+            # result instead of re-running a mutating action.
+            existing = prior
+            for _ in range(20):  # ~2s total
+                if existing.get("result") is not None:
+                    return existing["result"]
+                await asyncio.sleep(0.1)
+                existing = await db.ash_tool_idempotency.find_one(
+                    {"toolName": tool_name, "idempotencyKey": idempotency_key}, {"_id": 0})
+            return {"status": "duplicate_in_progress", "tool": tool_name,
+                     "reason": "An identical request is already being processed"}
+
+    async def _finish(result: Dict[str, Any]) -> Dict[str, Any]:
+        if idempotency_key:
+            await db.ash_tool_idempotency.update_one(
+                {"toolName": tool_name, "idempotencyKey": idempotency_key},
+                {"$set": {"result": result}},
+            )
+        return result
+
+    kill_switch = await get_kill_switch()
+    if kill_switch["enabled"]:
+        await audit_service.log_event(
+            entity_type=f"ash_tool:{tool.module}", entity_id=tool_name, action="blocked",
+            after={"reason": "kill_switch_engaged", "args": args, "killSwitchReason": kill_switch.get("reason")},
+            memo=f"Blocked '{tool_name}' — Ash is globally paused",
+            severity="warning", tags=["ash_agent", "blocked", "kill_switch"],
+        )
+        return await _finish({"status": "blocked", "reason": f"Ash is globally paused: {kill_switch.get('reason') or 'no reason given'}",
+                 "tool": tool_name, "killSwitch": True})
+
     perm = await resolve_permission(tool_name)
     if perm == "disabled":
-        return {"status": "blocked", "reason": f"Tool '{tool_name}' is disabled by policy",
-                 "tool": tool_name, "permission": perm}
+        await audit_service.log_event(
+            entity_type=f"ash_tool:{tool.module}", entity_id=tool_name, action="blocked",
+            after={"reason": "disabled_by_policy", "args": args},
+            memo=f"Blocked call to disabled tool '{tool_name}'",
+            severity="notice", tags=["ash_agent", "blocked", f"risk_{tool.risk}"],
+        )
+        return await _finish({"status": "blocked", "reason": f"Tool '{tool_name}' is disabled by policy",
+                 "tool": tool_name, "permission": perm})
     if perm == "approval":
         appr = await approval_service.enqueue_approval(
             action_type=tool_name, params=args, requested_by=actor,
             source="ash_agent",
             context={"toolName": tool_name, "label": tool.label, "risk": tool.risk},
         )
-        return {"status": "pending_approval", "approvalId": appr["id"],
+        return await _finish({"status": "pending_approval", "approvalId": appr["id"],
                  "tool": tool_name, "permission": perm, "expectedImpact": tool.expected_impact,
-                 "risk": tool.risk}
+                 "risk": tool.risk})
     # auto
     try:
         outcome = await tool.execute(args)
@@ -576,9 +819,9 @@ async def execute_tool(tool_name: str, args: Dict[str, Any], *, actor: str = "as
         severity="notice",
         tags=["ash_agent", f"risk_{tool.risk}"],
     )
-    return {"status": "executed", "tool": tool_name, "outcome": outcome,
+    return await _finish({"status": "executed", "tool": tool_name, "outcome": outcome,
              "risk": tool.risk, "expectedImpact": tool.expected_impact,
-             "rollbackAvailable": tool.rollback is not None}
+             "rollbackAvailable": tool.rollback is not None})
 
 
 # ═════════════════════════════════════════════════════════════════════════

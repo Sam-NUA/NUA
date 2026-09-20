@@ -115,6 +115,19 @@ class Reservation(BaseModel):
     # reservation itself afterward.
     ruleOverrideReason: Optional[str] = None
     ruleOverrideBy: Optional[str] = None
+    businessId: Optional[str] = None
+    # Snapshotted once at creation from services.cancellation_policy — the
+    # cutoff in effect for THIS booking, frozen so a later change to the
+    # business's policy never applies retroactively (see
+    # is_within_free_cancellation_window). None on a reservation created
+    # before this field existed, which falls back to a live policy lookup.
+    cancellationCutoffHours: Optional[float] = None
+    # Real payment capture behind depositRequired/depositPaid above — see
+    # routes/reservations.py's mark_no_show for how this is actually
+    # collected/forfeited.
+    depositSessionId: Optional[str] = None
+    depositForfeited: bool = False
+    depositRefunded: bool = False
 
     @model_validator(mode="before")
     @classmethod
@@ -127,6 +140,14 @@ class Reservation(BaseModel):
                 data["guestPhone"] = data.get("customerPhone") or data.get("phone")
             if not data.get("guestEmail"):
                 data["guestEmail"] = data.get("customerEmail") or data.get("email")
+            # Some table-assignment paths (auto-assign, ai-assign, walk-in
+            # seating) copy a floor-plan table's own `number` field through
+            # verbatim, and that field isn't consistently stored as a
+            # string across every floor plan — coerce here rather than
+            # crash response_model validation on an otherwise-valid
+            # reservation.
+            if isinstance(data.get("tableNumber"), (int, float)):
+                data["tableNumber"] = str(data["tableNumber"])
         return data
 
     def __init__(self, **data):

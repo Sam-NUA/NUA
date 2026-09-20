@@ -15,6 +15,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from database import db
+from middleware.actor_context import tenant_scope_filter, get_actor_context
 
 log = logging.getLogger(__name__)
 
@@ -26,23 +27,44 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _biz(business_id: Optional[str]) -> Optional[str]:
+    """None of this module's current callers routinely pass business_id
+    (routes/coursing.py and v15_features.py run inside a request with an
+    actor context; the two that don't — bill_split.py's guest checkout and
+    refund_effects.py — target an already-known order_id or lack a business
+    context of their own, a pre-existing gap this doesn't widen). Falling
+    back to the actor context, same pattern as notification_service.send()
+    and approval_service.enqueue_approval(), fixes the request-driven
+    callers without editing them individually."""
+    return business_id or get_actor_context().get("businessId")
+
+
 async def close_tickets(table_number: Optional[str] = None,
                         transaction_id: Optional[str] = None,
                         order_id: Optional[str] = None,
-                        actor: Optional[str] = None) -> List[str]:
+                        actor: Optional[str] = None,
+                        business_id: Optional[str] = None) -> List[str]:
     """Close the kitchen tickets a completed payment covers.
 
     Every course is marked served as well as the ticket — a ticket closed
     with courses still showing "fired" reads on the KDS as food nobody
     collected.
     """
+    # By table/transaction, a business-scoped filter is essential — two
+    # businesses on a shared deployment can both have an open "Table 5" or
+    # reuse a transaction-id-shaped string, and without this a payment at
+    # one business could silently close (and mark served) another
+    # business's kitchen ticket. An explicit order_id is already an exact
+    # match on one document, so it's left unscoped rather than risk
+    # rejecting the legitimate case where the caller has no business
+    # context to give (see _biz's docstring).
     query: Dict[str, Any] = {"status": {"$in": OPEN_STATUSES}}
     if order_id:
         query = {"id": order_id}
     elif transaction_id:
-        query["transactionId"] = transaction_id
+        query = {"transactionId": transaction_id, **query, **tenant_scope_filter(_biz(business_id))}
     elif table_number:
-        query["tableNumber"] = table_number
+        query = {"tableNumber": table_number, **query, **tenant_scope_filter(_biz(business_id))}
     else:
         return []
 
@@ -63,17 +85,19 @@ async def close_tickets(table_number: Optional[str] = None,
     return closed
 
 
-async def free_table(table_number: Optional[str], actor: Optional[str] = None) -> bool:
+async def free_table(table_number: Optional[str], actor: Optional[str] = None,
+                     business_id: Optional[str] = None) -> bool:
     """Release the table on the floor plan and clear its pacing state."""
     if not table_number:
         return False
     try:
         from services import floor_tables
-        hit = await floor_tables.resolve_table(table_number)
+        hit = await floor_tables.resolve_table(table_number, business_id=business_id)
         if not hit:
             return False
         table, plan_id = hit
-        await floor_tables.set_table_status(table["id"], plan_id, "available")
+        await floor_tables.set_table_status(
+            table["id"], plan_id, "available", business_id=business_id)
         # Pacing state is what drives the dwell timers; leaving it behind
         # would show the next party as having been seated since lunch.
         await db.table_states.delete_one({"tableId": table["id"]})
@@ -85,7 +109,8 @@ async def free_table(table_number: Optional[str], actor: Optional[str] = None) -
 
 async def settle_seats(seats: List[int], table_number: Optional[str] = None,
                        order_id: Optional[str] = None,
-                       actor: Optional[str] = None) -> Dict[str, Any]:
+                       actor: Optional[str] = None,
+                       business_id: Optional[str] = None) -> Dict[str, Any]:
     """Settle only the given seats' items on a table's ticket.
 
     A guest who pays and leaves at 8pm shouldn't still read as owing at 10pm.
@@ -96,7 +121,7 @@ async def settle_seats(seats: List[int], table_number: Optional[str] = None,
     if order_id:
         query = {"id": order_id}
     elif table_number:
-        query["tableNumber"] = table_number
+        query = {"tableNumber": table_number, **query, **tenant_scope_filter(_biz(business_id))}
     else:
         return {"settledSeats": [], "closedOrders": [], "remainingSeats": []}
 
@@ -139,7 +164,8 @@ async def settle(table_number: Optional[str] = None,
                  order_id: Optional[str] = None,
                  actor: Optional[str] = None,
                  release_table: bool = True,
-                 seats: Optional[List[int]] = None) -> Dict[str, Any]:
+                 seats: Optional[List[int]] = None,
+                 business_id: Optional[str] = None) -> Dict[str, Any]:
     """Close tickets and (for dine-in) hand the table back.
 
     With `seats`, only those seats settle — and the table is only released
@@ -147,23 +173,24 @@ async def settle(table_number: Optional[str] = None,
     """
     if seats:
         result = await settle_seats(seats, table_number=table_number,
-                                    order_id=order_id, actor=actor)
+                                    order_id=order_id, actor=actor, business_id=business_id)
         fully_done = bool(result["closedOrders"]) and not result["remainingSeats"]
-        freed = (await free_table(table_number, actor)
+        freed = (await free_table(table_number, actor, business_id)
                  if (release_table and fully_done) else False)
         return {**result, "tableFreed": freed, "tableNumber": table_number,
                 "partial": not fully_done}
 
     closed = await close_tickets(table_number=table_number,
                                  transaction_id=transaction_id,
-                                 order_id=order_id, actor=actor)
-    freed = await free_table(table_number, actor) if release_table else False
+                                 order_id=order_id, actor=actor, business_id=business_id)
+    freed = await free_table(table_number, actor, business_id) if release_table else False
     return {"closedOrders": closed, "tableFreed": freed, "tableNumber": table_number,
             "partial": False}
 
 
 async def move_ticket(from_table: str, to_table: str,
-                      actor: Optional[str] = None) -> Dict[str, Any]:
+                      actor: Optional[str] = None,
+                      business_id: Optional[str] = None) -> Dict[str, Any]:
     """Follow a moved/merged table with its kitchen ticket.
 
     Move Table relabelled the tab and left the kitchen ticket on the old
@@ -171,8 +198,9 @@ async def move_ticket(from_table: str, to_table: str,
     lookup all pointed at a table the party had left.
     """
     moved: List[str] = []
-    for order in await db.kitchen_orders.find(
-            {"tableNumber": from_table, "status": {"$in": OPEN_STATUSES}}, {"_id": 0}).to_list(50):
+    move_query = {"tableNumber": from_table, "status": {"$in": OPEN_STATUSES},
+                  **tenant_scope_filter(_biz(business_id))}
+    for order in await db.kitchen_orders.find(move_query, {"_id": 0}).to_list(50):
         await db.kitchen_orders.update_one(
             {"id": order["id"]},
             {"$set": {"tableNumber": to_table},
@@ -205,7 +233,8 @@ async def move_ticket(from_table: str, to_table: str,
     return {"movedOrders": moved, "from": from_table, "to": to_table}
 
 
-async def void_items(order_id: str, voids: List[dict], actor: Optional[str] = None) -> Dict[str, Any]:
+async def void_items(order_id: str, voids: List[dict], actor: Optional[str] = None,
+                     business_id: Optional[str] = None) -> Dict[str, Any]:
     """Remove or reduce items on a live ticket.
 
     `voids` is [{productId|productName, quantity, course?, seat?}] — quantity
@@ -216,8 +245,9 @@ async def void_items(order_id: str, voids: List[dict], actor: Optional[str] = No
     Returns the items actually removed, so the caller can print a void docket
     for the stations that were cooking them.
     """
-    order = await db.kitchen_orders.find_one({"id": order_id}, {"_id": 0})
-    if not order:
+    from middleware.actor_context import tenant_owns
+    order = await db.kitchen_orders.find_one({"$and": [{"id": order_id}, tenant_scope_filter(_biz(business_id))]}, {"_id": 0})
+    if not order or not tenant_owns(order.get("businessId"), _biz(business_id)):
         return {"ok": False, "removed": [], "reason": "not found"}
 
     items = [dict(i) for i in (order.get("items") or [])]
@@ -262,7 +292,7 @@ async def void_items(order_id: str, voids: List[dict], actor: Optional[str] = No
     voids_log.append({"at": _now(), "by": actor, "items": removed})
 
     updated = await db.kitchen_orders.find_one_and_update(
-        {"id": order_id},
+        {"$and": [{"id": order_id}, tenant_scope_filter(_biz(business_id))]},
         {"$set": {"items": kept, "courses": courses, "voids": voids_log}},
         return_document=True,
     )

@@ -1,5 +1,5 @@
 from fastapi import APIRouter, HTTPException, Depends
-from deps import require_owner, require_owner_or_manager
+from deps import require_owner, require_owner_or_manager, get_user
 from database import db
 from middleware.actor_context import tenant_scope_filter
 from datetime import datetime, timezone
@@ -8,24 +8,29 @@ import uuid
 router = APIRouter()
 
 # ============ AUTO SURCHARGING (Public Holiday + Weekend) ============
+# Every endpoint in this file previously had no auth dependency at all, and
+# every db.settings read/write below was a single document shared by every
+# business on the deployment — see services/tenant_settings.py.
 @router.get("/surcharge/settings")
-async def get_surcharge_settings():
-    s = await db.settings.find_one({"key": "surcharge_config"}, {"_id": 0})
-    return s.get("value", {}) if s else {
+async def get_surcharge_settings(user: dict = Depends(get_user)):
+    from services.tenant_settings import get_setting
+    value = await get_setting("surcharge_config", user.get("businessId"))
+    return value or {
         "weekendSurcharge": 0, "publicHolidaySurcharge": 0, "enabled": False,
         "publicHolidays": [], "weekendDays": ["Saturday", "Sunday"],
     }
 
 @router.post("/surcharge/settings")
-async def save_surcharge_settings(data: dict, _: dict = Depends(require_owner)):
-    await db.settings.update_one({"key": "surcharge_config"}, {"$set": {"key": "surcharge_config", "value": data}}, upsert=True)
+async def save_surcharge_settings(data: dict, user: dict = Depends(require_owner)):
+    from services.tenant_settings import set_setting
+    await set_setting("surcharge_config", data, user.get("businessId"))
     return {"message": "Surcharge settings saved"}
 
 @router.get("/surcharge/check")
-async def check_surcharge():
+async def check_surcharge(user: dict = Depends(get_user)):
     """Check if surcharge applies right now"""
-    s = await db.settings.find_one({"key": "surcharge_config"}, {"_id": 0})
-    config = s.get("value", {}) if s else {}
+    from services.tenant_settings import get_setting
+    config = await get_setting("surcharge_config", user.get("businessId")) or {}
     if not config.get("enabled"):
         return {"surchargePercent": 0, "reason": None}
     now = datetime.now(timezone.utc)
@@ -43,17 +48,19 @@ async def check_surcharge():
 # discounted net — a discount shouldn't quietly shrink the tip a server
 # earned for the same work.
 @router.get("/gratuity/settings")
-async def get_gratuity_settings():
-    s = await db.settings.find_one({"key": "gratuity_config"}, {"_id": 0})
-    return s.get("value", {}) if s else {
+async def get_gratuity_settings(user: dict = Depends(get_user)):
+    from services.tenant_settings import get_setting
+    value = await get_setting("gratuity_config", user.get("businessId"))
+    return value or {
         "enabled": False,
         "calculateOn": "post_discount",  # pre_discount | post_discount
         "rates": [],  # [{id, label, percent, minCovers, maxCovers}]
     }
 
 @router.post("/gratuity/settings")
-async def save_gratuity_settings(data: dict, _: dict = Depends(require_owner)):
-    await db.settings.update_one({"key": "gratuity_config"}, {"$set": {"key": "gratuity_config", "value": data}}, upsert=True)
+async def save_gratuity_settings(data: dict, user: dict = Depends(require_owner)):
+    from services.tenant_settings import set_setting
+    await set_setting("gratuity_config", data, user.get("businessId"))
     return {"message": "Gratuity settings saved"}
 
 def _match_gratuity_rate(rates, covers):
@@ -72,10 +79,10 @@ def _match_gratuity_rate(rates, covers):
     return None
 
 @router.get("/gratuity/check")
-async def check_gratuity(covers: int = None):
+async def check_gratuity(covers: int = None, user: dict = Depends(get_user)):
     """Which gratuity rate (if any) applies right now, for this party size."""
-    s = await db.settings.find_one({"key": "gratuity_config"}, {"_id": 0})
-    config = s.get("value", {}) if s else {}
+    from services.tenant_settings import get_setting
+    config = await get_setting("gratuity_config", user.get("businessId")) or {}
     calculate_on = config.get("calculateOn", "post_discount")
     if not config.get("enabled"):
         return {"gratuityPercent": 0, "label": None, "calculateOn": calculate_on}
@@ -136,12 +143,13 @@ from services.permission_catalog import (
 ALL_PERMISSIONS = all_permission_ids()
 
 
-async def _role_permissions_for(role: str) -> list:
+async def _role_permissions_for(role: str, business_id: str) -> list:
     """Read per-role permission list from `role_permissions` collection, with
     fallback to the code-level DEFAULT_ROLE_PERMISSIONS. Owner is always full."""
     if role == "owner":
         return ["*"]
-    doc = await db.role_permissions.find_one({"role": role}, {"_id": 0})
+    doc = await db.role_permissions.find_one(
+        {"role": role, **tenant_scope_filter(business_id)}, {"_id": 0})
     if doc and isinstance(doc.get("permissions"), list):
         return [p for p in doc["permissions"] if p in ALL_PERMISSIONS]
     return list(DEFAULT_ROLE_PERMISSIONS.get(role, []))
@@ -160,7 +168,7 @@ async def get_permission_catalog():
 
 
 @router.get("/permissions/roles")
-async def list_role_permissions():
+async def list_role_permissions(user: dict = Depends(require_owner_or_manager)):
     """List of every role → its effective default permissions.
 
     Includes Owner (always `*`), the four built-in roles, plus any custom roles
@@ -168,15 +176,17 @@ async def list_role_permissions():
     """
     roles = list(DEFAULT_ROLE_PERMISSIONS.keys())
     # Pick up any custom roles staff members were assigned
-    user_roles = await db.auth_users.distinct("role")
+    user_roles = await db.auth_users.distinct(
+        "role", tenant_scope_filter(user.get("businessId")))
     for r in user_roles or []:
         if r and r not in roles:
             roles.append(r)
     out = []
     for r in roles:
-        perms = await _role_permissions_for(r)
+        perms = await _role_permissions_for(r, user.get("businessId"))
         # Look up whether it's persisted (dbOverride) or still using code default
-        doc = await db.role_permissions.find_one({"role": r}, {"_id": 0})
+        doc = await db.role_permissions.find_one(
+            {"role": r, **tenant_scope_filter(user.get("businessId"))}, {"_id": 0})
         out.append({
             "role": r,
             "permissions": perms,
@@ -188,7 +198,7 @@ async def list_role_permissions():
 
 
 @router.post("/permissions/roles/{role}")
-async def set_role_permissions(role: str, data: dict, _: dict = Depends(require_owner)):
+async def set_role_permissions(role: str, data: dict, user: dict = Depends(require_owner)):
     """Owner-only: update the default permission list for a role. Owner role
     itself can't be modified — Owner always has full access."""
     role = role.strip()
@@ -201,8 +211,9 @@ async def set_role_permissions(role: str, data: dict, _: dict = Depends(require_
     from datetime import datetime, timezone
     now_iso = datetime.now(timezone.utc).isoformat()
     await db.role_permissions.update_one(
-        {"role": role},
-        {"$set": {"role": role, "permissions": valid, "updatedAt": now_iso}},
+        {"role": role, **tenant_scope_filter(user.get("businessId"))},
+        {"$set": {"role": role, "permissions": valid, "updatedAt": now_iso,
+                  "businessId": user.get("businessId")}},
         upsert=True,
     )
     return {
@@ -214,22 +225,26 @@ async def set_role_permissions(role: str, data: dict, _: dict = Depends(require_
 
 
 @router.delete("/permissions/roles/{role}")
-async def reset_role_permissions(role: str, _: dict = Depends(require_owner)):
+async def reset_role_permissions(role: str, user: dict = Depends(require_owner)):
     """Owner-only: reset a role back to its built-in defaults."""
     if role == "owner":
         raise HTTPException(status_code=400, detail="Owner permissions cannot be modified")
-    await db.role_permissions.delete_one({"role": role})
+    await db.role_permissions.delete_one(
+        {"role": role, **tenant_scope_filter(user.get("businessId"))})
     return {"role": role, "permissions": list(DEFAULT_ROLE_PERMISSIONS.get(role, [])), "message": f"{role} reset to defaults"}
 
 
 @router.get("/permissions/staff/{staff_id}")
-async def get_staff_permissions(staff_id: str, _: dict = Depends(require_owner_or_manager)):
-    staff = await db.auth_users.find_one({"id": staff_id}, {"_id": 0, "password_hash": 0})
+async def get_staff_permissions(staff_id: str, user: dict = Depends(require_owner_or_manager)):
+    staff = await db.auth_users.find_one(
+        {"id": staff_id, **tenant_scope_filter(user.get("businessId"))},
+        {"_id": 0, "password_hash": 0},
+    )
     if not staff:
         raise HTTPException(status_code=404, detail="Staff not found")
     # Effective = customPermissions if set, else the role default
     custom = staff.get("customPermissions")
-    role_default = await _role_permissions_for(staff.get("role"))
+    role_default = await _role_permissions_for(staff.get("role"), user.get("businessId"))
     return {
         "staffId": staff_id,
         "name": staff.get("name"),
@@ -241,46 +256,59 @@ async def get_staff_permissions(staff_id: str, _: dict = Depends(require_owner_o
 
 
 @router.post("/permissions/staff/{staff_id}")
-async def set_staff_permissions(staff_id: str, data: dict, _: dict = Depends(require_owner)):
+async def set_staff_permissions(staff_id: str, data: dict, user: dict = Depends(require_owner)):
     permissions = data.get("permissions", [])
     valid = [p for p in permissions if p in ALL_PERMISSIONS]
-    await db.auth_users.update_one({"id": staff_id}, {"$set": {"customPermissions": valid}})
+    result = await db.auth_users.update_one(
+        {"id": staff_id, **tenant_scope_filter(user.get("businessId"))},
+        {"$set": {"customPermissions": valid}},
+    )
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Staff not found")
     return {"message": f"Permissions updated ({len(valid)} permissions set)", "permissions": valid}
 
 
 @router.delete("/permissions/staff/{staff_id}")
-async def clear_staff_override(staff_id: str, _: dict = Depends(require_owner)):
+async def clear_staff_override(staff_id: str, user: dict = Depends(require_owner)):
     """Remove per-staff overrides — the user falls back to their role defaults."""
-    await db.auth_users.update_one({"id": staff_id}, {"$unset": {"customPermissions": ""}})
+    result = await db.auth_users.update_one(
+        {"id": staff_id, **tenant_scope_filter(user.get("businessId"))},
+        {"$unset": {"customPermissions": ""}},
+    )
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Staff not found")
     role_default = []
-    staff = await db.auth_users.find_one({"id": staff_id}, {"_id": 0, "role": 1})
+    staff = await db.auth_users.find_one(
+        {"id": staff_id, **tenant_scope_filter(user.get("businessId"))}, {"_id": 0, "role": 1})
     if staff:
-        role_default = await _role_permissions_for(staff.get("role"))
+        role_default = await _role_permissions_for(staff.get("role"), user.get("businessId"))
     return {"message": "Reverted to role defaults", "roleDefaults": role_default}
 
 # ============ AUTOMATED REPORTING ============
 @router.get("/reports/automated-config")
-async def get_report_config(_: dict = Depends(require_owner)):
-    s = await db.settings.find_one({"key": "auto_report_config"}, {"_id": 0})
-    return s.get("value", {}) if s else {
+async def get_report_config(user: dict = Depends(require_owner)):
+    from services.tenant_settings import get_setting
+    value = await get_setting("auto_report_config", user.get("businessId"))
+    return value or {
         "enabled": False, "frequency": "daily", "time": "23:00",
         "reportTypes": ["itemised", "category", "detailed"],
         "recipientEmail": "", "includeAIInsights": True,
     }
 
 @router.post("/reports/automated-config")
-async def save_report_config(data: dict, _: dict = Depends(require_owner)):
-    await db.settings.update_one({"key": "auto_report_config"}, {"$set": {"key": "auto_report_config", "value": data}}, upsert=True)
+async def save_report_config(data: dict, user: dict = Depends(require_owner)):
+    from services.tenant_settings import set_setting
+    await set_setting("auto_report_config", data, user.get("businessId"))
     return {"message": "Automated report settings saved"}
 
 # ============ HARDWARE INTEGRATIONS ============
 @router.get("/hardware/printers")
-async def get_printer_configs():
-    printers = await db.hardware_printers.find({}, {"_id": 0}).to_list(100)
+async def get_printer_configs(_: dict = Depends(get_user)):
+    printers = await db.hardware_printers.find(tenant_scope_filter(), {"_id": 0}).to_list(100)
     return printers
 
 @router.post("/hardware/printers")
-async def add_printer(data: dict, _: dict = Depends(require_owner_or_manager)):
+async def add_printer(data: dict, user: dict = Depends(require_owner_or_manager)):
     printer = {
         "id": f"PRT-{str(uuid.uuid4())[:8].upper()}",
         "name": data.get("name", ""), "type": data.get("type", "receipt"),
@@ -288,29 +316,31 @@ async def add_printer(data: dict, _: dict = Depends(require_owner_or_manager)):
         "ipAddress": data.get("ipAddress", ""), "port": data.get("port", 9100),
         "model": data.get("model", ""), "status": "configured",
         "createdAt": datetime.now(timezone.utc).isoformat(),
+        "businessId": user.get("businessId"),
     }
     await db.hardware_printers.insert_one(printer)
     printer.pop("_id", None)
     return printer
 
 @router.delete("/hardware/printers/{printer_id}")
-async def delete_printer(printer_id: str, _: dict = Depends(require_owner_or_manager)):
-    await db.hardware_printers.delete_one({"id": printer_id})
+async def delete_printer(printer_id: str, user: dict = Depends(require_owner_or_manager)):
+    await db.hardware_printers.delete_one({"id": printer_id, **tenant_scope_filter(user.get("businessId"))})
     return {"message": "Printer removed"}
 
 @router.get("/hardware/scanners")
-async def get_scanner_configs():
-    scanners = await db.hardware_scanners.find({}, {"_id": 0}).to_list(100)
+async def get_scanner_configs(_: dict = Depends(get_user)):
+    scanners = await db.hardware_scanners.find(tenant_scope_filter(), {"_id": 0}).to_list(100)
     return scanners
 
 @router.post("/hardware/scanners")
-async def add_scanner(data: dict, _: dict = Depends(require_owner_or_manager)):
+async def add_scanner(data: dict, user: dict = Depends(require_owner_or_manager)):
     scanner = {
         "id": f"SCN-{str(uuid.uuid4())[:8].upper()}",
         "name": data.get("name", ""), "type": data.get("type", "barcode"),
         "connectionType": data.get("connectionType", "usb"),
         "model": data.get("model", ""), "status": "configured",
         "createdAt": datetime.now(timezone.utc).isoformat(),
+        "businessId": user.get("businessId"),
     }
     await db.hardware_scanners.insert_one(scanner)
     scanner.pop("_id", None)

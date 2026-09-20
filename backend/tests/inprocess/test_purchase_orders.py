@@ -14,7 +14,7 @@ def _run(coro):
 
 def _seed_low_stock_product(product_id, name, category, supplier="Test Supplier", stock=1, reorder_level=10, cost=5.0):
     from database import db
-    return _run(db.products.insert_one({
+    return _run(db.products.insert_one({"businessId": "default",
         "id": product_id, "name": name, "category": category, "supplier": supplier,
         "stock": stock, "reorderLevel": reorder_level, "cost": cost, "price": cost * 2,
         "active": True, "sku": product_id,
@@ -60,7 +60,7 @@ def test_generate_po_snapshots_category_per_item(client, owner_headers):
 
 def test_edit_po_recomputes_total_server_side(client, owner_headers):
     from database import db
-    po = {
+    po = {"businessId": "default",
         "id": "PO-EDIT-TEST-1", "supplier": "Acme Supplies", "status": "draft",
         "items": [{"productId": "P1", "productName": "Widget", "category": "Hardware",
                     "currentStock": 1, "orderQty": 5, "unitCost": 2.0}],
@@ -85,7 +85,7 @@ def test_edit_po_recomputes_total_server_side(client, owner_headers):
 
 def test_edit_po_rejects_non_positive_quantity(client, owner_headers):
     from database import db
-    _run(db.purchase_orders.insert_one({
+    _run(db.purchase_orders.insert_one({"businessId": "default",
         "id": "PO-EDIT-TEST-2", "supplier": "Acme", "status": "draft",
         "items": [{"productId": "P1", "productName": "Widget", "category": "Hardware",
                     "currentStock": 1, "orderQty": 5, "unitCost": 2.0}],
@@ -103,7 +103,7 @@ def test_edit_po_rejects_non_positive_quantity(client, owner_headers):
 
 def test_edit_po_rejected_for_a_manager(client, owner_headers):
     from database import db
-    _run(db.purchase_orders.insert_one({
+    _run(db.purchase_orders.insert_one({"businessId": "default",
         "id": "PO-EDIT-TEST-3", "supplier": "Acme", "status": "draft",
         "items": [{"productId": "P1", "productName": "Widget", "category": "Hardware",
                     "currentStock": 1, "orderQty": 5, "unitCost": 2.0}],
@@ -122,7 +122,7 @@ def test_edit_po_rejected_for_a_manager(client, owner_headers):
 
 def test_edit_po_locked_once_sent(client, owner_headers):
     from database import db
-    _run(db.purchase_orders.insert_one({
+    _run(db.purchase_orders.insert_one({"businessId": "default",
         "id": "PO-EDIT-TEST-4", "supplier": "Acme", "status": "sent",
         "items": [{"productId": "P1", "productName": "Widget", "category": "Hardware",
                     "currentStock": 1, "orderQty": 5, "unitCost": 2.0}],
@@ -147,7 +147,7 @@ def test_edit_po_requires_auth(anon):
 
 def test_po_pdf_is_grouped_by_category_and_totalled(client, owner_headers):
     from database import db
-    _run(db.purchase_orders.insert_one({
+    _run(db.purchase_orders.insert_one({"businessId": "default",
         "id": "PO-PDF-TEST-1", "supplier": "Acme Supplies", "status": "draft",
         "items": [
             {"productId": "P1", "productName": "Steel Bolt", "category": "Hardware",

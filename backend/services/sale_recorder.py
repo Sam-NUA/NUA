@@ -26,6 +26,7 @@ from typing import Any, Dict, List, Optional
 
 from database import db
 from utils.errors import log_and_continue
+from middleware.actor_context import tenant_scope_filter
 
 logger = logging.getLogger(__name__)
 
@@ -53,12 +54,13 @@ def compute_points_earned(
     return int(total * loyalty_multiplier * earn_rate * category_mult)
 
 
-async def credit_loyalty_points(customer_id: str, points_earned: int, total: float, transaction_id: str) -> None:
+async def credit_loyalty_points(customer_id: str, points_earned: int, total: float, transaction_id: str,
+                                 business_id: Optional[str] = None) -> None:
     """$inc a customer's points/totalSpent/visits and write the earn-side
     loyalty ledger entry for one sale. Safe to call with points_earned == 0
     (still records the visit/spend)."""
     await db.customers.update_one(
-        {"id": customer_id},
+        {**tenant_scope_filter(business_id), "id": customer_id},
         {
             "$inc": {"totalSpent": total, "visits": 1, "points": points_earned},
             # Two fields for the same fact, kept in lockstep on purpose:
@@ -80,6 +82,7 @@ async def credit_loyalty_points(customer_id: str, points_earned: int, total: flo
                 "transactionId": transaction_id,
                 "type": "earn",
                 "points": points_earned,
+                "businessId": business_id,
                 "createdAt": datetime.utcnow().isoformat(),
             })
         except Exception:

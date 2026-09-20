@@ -14,6 +14,7 @@ from datetime import date, datetime, timezone, timedelta
 from pydantic import BaseModel
 from database import db
 from deps import get_user
+from middleware.actor_context import tenant_scope_filter
 from utils.au_payroll import (
     sg_rate_for, super_due_date_for_quarter,
     assemble_payslip_row, build_stp2_pay_event, roster_compliance_issues,
@@ -53,13 +54,21 @@ async def calculate_payrun(body: PayrunCalcIn, user: dict = Depends(get_user)):
     p_end = date.fromisoformat(body.periodEnd)
     pay_date = date.fromisoformat(body.payDate)
 
-    # Load staff, timecards, and per-employee award assignment
+    # Load staff, timecards, and per-employee award assignment.
+    # Scoped by businessId: timecards/payrun_rows don't carry their own
+    # businessId (pre-existing schema gap — see SECURITY_DEPENDENCY_DEBT.md-
+    # style note in the P0.3 write-up), so isolation here goes through the
+    # staff list instead — a business's payroll run can only ever include
+    # staffIds that belong to its own auth_users records.
+    biz = user.get("businessId")
     staff = await db.auth_users.find(
-        {"role": {"$ne": "owner"}, "status": "active"},
+        {"role": {"$ne": "owner"}, "status": "active", **tenant_scope_filter(biz)},
         {"_id": 0, "password_hash": 0},
     ).to_list(500)
+    staff_ids = {s["id"] for s in staff}
     timecards = await db.timecards.find(
-        {"clockIn": {"$gte": p_start.isoformat()}, "clockOut": {"$lte": (p_end + timedelta(days=1)).isoformat()}},
+        {"clockIn": {"$gte": p_start.isoformat()}, "clockOut": {"$lte": (p_end + timedelta(days=1)).isoformat()},
+         "staffId": {"$in": list(staff_ids)}},
         {"_id": 0},
     ).to_list(50000)
 
@@ -69,7 +78,8 @@ async def calculate_payrun(body: PayrunCalcIn, user: dict = Depends(get_user)):
     # YTD balances (start of fin-year = 1 Jul)
     fy_start = date(p_end.year if p_end.month >= 7 else p_end.year - 1, 7, 1)
     ytd_docs = await db.payrun_rows.find(
-        {"payDate": {"$gte": fy_start.isoformat(), "$lt": pay_date.isoformat()}},
+        {"payDate": {"$gte": fy_start.isoformat(), "$lt": pay_date.isoformat()},
+         "staffId": {"$in": list(staff_ids)}},
         {"_id": 0},
     ).to_list(50000)
     ytd_map: dict = {}
@@ -145,8 +155,10 @@ async def commit_payrun(data: dict, user: dict = Depends(get_user)):
     if user["role"] not in ("owner", "manager"):
         raise HTTPException(403, "Owner or manager only")
     run_id = f"PR-{uuid.uuid4().hex[:8].upper()}"
+    biz = user.get("businessId")
     doc = {
         "id": run_id,
+        "businessId": biz,
         "periodStart": data.get("periodStart"),
         "periodEnd": data.get("periodEnd"),
         "payDate": data.get("payDate"),
@@ -161,10 +173,11 @@ async def commit_payrun(data: dict, user: dict = Depends(get_user)):
     doc.pop("_id", None)   # in case insert_one mutated
     # Persist per-employee rows for YTD reconciliation
     for r in data.get("rows", []):
-        await db.payrun_rows.insert_one({**r, "runId": run_id})
+        await db.payrun_rows.insert_one({**r, "runId": run_id, "businessId": biz})
 
     # Build STP2 event immediately so the ATO submission is one click away.
-    biz = await db.business_settings.find_one({}, {"_id": 0}) or {}
+    from services.tenant_settings import get_scoped_singleton
+    biz = await get_scoped_singleton(db.business_settings, {"key": "main"}, user.get("businessId")) or {}
     stp = build_stp2_pay_event(
         employer_abn=biz.get("abn", ""),
         employer_name=biz.get("name", "NUA"),
@@ -178,9 +191,11 @@ async def commit_payrun(data: dict, user: dict = Depends(get_user)):
 
 
 @router.get("/payroll/register")
-async def payroll_register(days: int = 90, _: dict = Depends(get_user)):
+async def payroll_register(days: int = 90, user: dict = Depends(get_user)):
     since = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
-    runs = await db.payruns.find({"committedAt": {"$gte": since}}, {"_id": 0}).sort("committedAt", -1).to_list(500)
+    runs = await db.payruns.find(
+        {"committedAt": {"$gte": since}, **tenant_scope_filter(user.get("businessId"))},
+        {"_id": 0}).sort("committedAt", -1).to_list(500)
     # Embed each run's per-employee rows so the register can expand a run and
     # link straight to that employee's payslip PDF — the register view
     # existed with just run-level totals for a while with nothing letting an
@@ -201,7 +216,11 @@ async def payroll_register(days: int = 90, _: dict = Depends(get_user)):
 
 
 @router.get("/payroll/ytd/{staff_id}")
-async def payroll_ytd(staff_id: str, _: dict = Depends(get_user)):
+async def payroll_ytd(staff_id: str, user: dict = Depends(get_user)):
+    from middleware.actor_context import tenant_owns_strict
+    staff_doc = await db.auth_users.find_one({"$and": [{"id": staff_id}, tenant_scope_filter(user.get("businessId"))]}, {"_id": 0, "businessId": 1})
+    if not staff_doc or not tenant_owns_strict(staff_doc.get("businessId"), user.get("businessId")):
+        raise HTTPException(404, "Staff member not found")
     today = date.today()
     fy_start = date(today.year if today.month >= 7 else today.year - 1, 7, 1)
     rows = await db.payrun_rows.find(
@@ -221,13 +240,17 @@ async def payroll_ytd(staff_id: str, _: dict = Depends(get_user)):
 
 
 @router.get("/payroll/payslip/{run_id}/{staff_id}/pdf")
-async def payslip_pdf(run_id: str, staff_id: str, _: dict = Depends(get_user)):
+async def payslip_pdf(run_id: str, staff_id: str, user: dict = Depends(get_user)):
     """Fair Work-compliant payslip PDF for one employee, one pay run."""
+    from middleware.actor_context import tenant_owns_strict
+    run = await db.payruns.find_one({"id": run_id}, {"_id": 0}) or {}
+    if run and not tenant_owns_strict(run.get("businessId"), user.get("businessId")):
+        raise HTTPException(404, "Payslip not found")
     row = await db.payrun_rows.find_one({"runId": run_id, "staffId": staff_id}, {"_id": 0})
     if not row:
         raise HTTPException(404, "Payslip not found")
-    run = await db.payruns.find_one({"id": run_id}, {"_id": 0}) or {}
-    biz = await db.business_settings.find_one({}, {"_id": 0}) or {}
+    from services.tenant_settings import get_scoped_singleton
+    biz = await get_scoped_singleton(db.business_settings, {"key": "main"}, user.get("businessId")) or {}
 
     lines = [
         f"{biz.get('name', 'NUA')} — ABN {biz.get('abn', '')}",
@@ -269,10 +292,11 @@ async def payslip_pdf(run_id: str, staff_id: str, _: dict = Depends(get_user)):
 
 
 @router.post("/payroll/stp/build")
-async def build_stp(data: dict, _: dict = Depends(get_user)):
+async def build_stp(data: dict, user: dict = Depends(get_user)):
     """Return the STP2 event body for a pay run — ready to hand off to a
     registered SBR2 submitter (Xero / KeyPay / Reckon / ATO Business Portal)."""
-    biz = await db.business_settings.find_one({}, {"_id": 0}) or {}
+    from services.tenant_settings import get_scoped_singleton
+    biz = await get_scoped_singleton(db.business_settings, {"key": "main"}, user.get("businessId")) or {}
     return build_stp2_pay_event(
         employer_abn=biz.get("abn", ""),
         employer_name=biz.get("name", "NUA"),
@@ -284,11 +308,16 @@ async def build_stp(data: dict, _: dict = Depends(get_user)):
 
 
 @router.get("/payroll/roster-compliance")
-async def roster_compliance(days_ahead: int = 14, _: dict = Depends(get_user)):
+async def roster_compliance(days_ahead: int = 14, user: dict = Depends(get_user)):
     """Scan upcoming rostered shifts and flag Fair Work / Award violations."""
+    # shifts don't carry their own businessId (same pre-existing schema gap
+    # as timecards) — scope transitively through this business's own staff.
+    staff_ids = {s["id"] for s in await db.auth_users.find(
+        {**tenant_scope_filter(user.get("businessId"))}, {"_id": 0, "id": 1}).to_list(500)}
     cutoff = (datetime.now(timezone.utc) + timedelta(days=days_ahead)).isoformat()
     shifts = await db.shifts.find(
-        {"start": {"$gte": datetime.now(timezone.utc).isoformat(), "$lte": cutoff}},
+        {"start": {"$gte": datetime.now(timezone.utc).isoformat(), "$lte": cutoff},
+         "staffId": {"$in": list(staff_ids)}},
         {"_id": 0},
     ).to_list(2000)
     flagged = []

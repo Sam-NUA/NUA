@@ -33,7 +33,7 @@ async def live_feed(websocket: WebSocket, token: str = ""):
         await websocket.close(code=4401)
         return
     await websocket.accept()
-    await realtime.register(websocket)
+    await realtime.register(websocket, business_id=payload.get("businessId"))
     try:
         await websocket.send_json({"type": "connected"})
         while True:

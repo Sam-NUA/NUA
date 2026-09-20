@@ -78,3 +78,34 @@ def test_a_tampered_signature_is_rejected_and_never_touches_license_state(client
         assert lic["state"] == "past_due", "an unverified event must never change license state"
     finally:
         loop.run_until_complete(db.tenant_licenses.delete_one({"tenantId": "TEN-WEBHOOK-TAMPER"}))
+
+
+def test_an_unconfigured_webhook_secret_fails_closed_instead_of_skipping_verification(client, monkeypatch):
+    # Regression test for a prior insecure dev-fallback: when
+    # STRIPE_WEBHOOK_SECRET wasn't set, the route used to accept the raw
+    # payload with zero signature verification. It must now refuse to
+    # process anything at all rather than silently degrade to "unsigned
+    # accepted" — a missing secret is a deployment misconfiguration, not a
+    # reason to trust unverified input.
+    monkeypatch.delenv("STRIPE_WEBHOOK_SECRET", raising=False)
+
+    loop = asyncio.get_event_loop()
+    from database import db
+    loop.run_until_complete(db.tenant_licenses.insert_one({
+        "tenantId": "TEN-WEBHOOK-NOSECRET", "stripeCustomerId": "cus_webhook_nosecret",
+        "stripeSubscriptionId": None, "state": "past_due",
+    }))
+    try:
+        body = json.dumps({
+            "type": "invoice.paid",
+            "data": {"object": {"customer": "cus_webhook_nosecret", "id": "in_test"}},
+        }).encode()
+
+        r = req(client, "POST", "/api/license/stripe/webhook", content=body,
+                         headers={"Stripe-Signature": "t=1,v1=doesnotmatter", "Content-Type": "application/json"})
+        assert r.status_code == 503, r.text[:200]
+
+        lic = loop.run_until_complete(db.tenant_licenses.find_one({"tenantId": "TEN-WEBHOOK-NOSECRET"}, {"_id": 0}))
+        assert lic["state"] == "past_due", "an unsigned event must never change license state, even with no secret configured"
+    finally:
+        loop.run_until_complete(db.tenant_licenses.delete_one({"tenantId": "TEN-WEBHOOK-NOSECRET"}))

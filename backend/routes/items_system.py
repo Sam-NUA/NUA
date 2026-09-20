@@ -3,8 +3,8 @@ from database import db
 from datetime import datetime, timezone
 import uuid
 import logging
-from deps import require_owner, require_owner_or_manager, require_permission, optional_user
-from middleware.actor_context import tenant_scope_filter
+from deps import require_owner, require_owner_or_manager, require_permission, optional_user, get_user
+from middleware.actor_context import tenant_scope_filter, tenant_owns_strict
 
 logger = logging.getLogger(__name__)
 
@@ -13,17 +13,31 @@ router = APIRouter()
 # ============ CATEGORIES ============
 @router.get("/categories")
 async def get_categories(user=Depends(optional_user)):
-    cats = await db.categories.find(tenant_scope_filter(user.get("businessId") if user else None), {"_id": 0}).to_list(200)
-    if not cats:
+    business_id = user.get("businessId") if user else None
+    cats = await db.categories.find(tenant_scope_filter(business_id), {"_id": 0}).to_list(200)
+    if not cats and business_id:
+        # Only auto-seed when there's a real, authenticated business to own
+        # the new rows. Previously this seeded 5 fixed-id, no-businessId
+        # categories for ANY caller whose scoped query came back empty —
+        # including a genuinely anonymous one — so the first caller ever to
+        # hit this (any business, or a guest) created shared rows that
+        # every other business's tenant_scope_filter query would also
+        # match, and that update_category's fail-open tenant_owns() would
+        # let ANY business rename out from under every other business
+        # sharing it. An anonymous caller with no business now just gets
+        # an empty list instead of ever creating untagged data; each
+        # business gets its own copy, scoped and id-namespaced to it.
         defaults = [
-            {"id": "cat-beverages", "name": "Beverages", "sortOrder": 0, "active": True, "icon": "Coffee", "color": "#8b5cf6"},
-            {"id": "cat-food", "name": "Food", "sortOrder": 1, "active": True, "icon": "UtensilsCrossed", "color": "#f97316"},
-            {"id": "cat-bakery", "name": "Bakery", "sortOrder": 2, "active": True, "icon": "Croissant", "color": "#ec4899"},
-            {"id": "cat-alcohol", "name": "Alcohol", "sortOrder": 3, "active": True, "icon": "Wine", "color": "#ef4444"},
-            {"id": "cat-desserts", "name": "Desserts", "sortOrder": 4, "active": True, "icon": "Cake", "color": "#f59e0b"},
+            {"id": f"cat-beverages-{business_id}", "name": "Beverages", "sortOrder": 0, "active": True, "icon": "Coffee", "color": "#8b5cf6"},
+            {"id": f"cat-food-{business_id}", "name": "Food", "sortOrder": 1, "active": True, "icon": "UtensilsCrossed", "color": "#f97316"},
+            {"id": f"cat-bakery-{business_id}", "name": "Bakery", "sortOrder": 2, "active": True, "icon": "Croissant", "color": "#ec4899"},
+            {"id": f"cat-alcohol-{business_id}", "name": "Alcohol", "sortOrder": 3, "active": True, "icon": "Wine", "color": "#ef4444"},
+            {"id": f"cat-desserts-{business_id}", "name": "Desserts", "sortOrder": 4, "active": True, "icon": "Cake", "color": "#f59e0b"},
         ]
         for d in defaults:
+            d["businessId"] = business_id
             await db.categories.insert_one(d)
+            d.pop("_id", None)
         return defaults
     return cats
 
@@ -66,7 +80,16 @@ async def _would_create_cycle(cat_id: str, new_parent_id: str, field: str = "par
 
 
 @router.put("/categories/{cat_id}")
-async def update_category(cat_id: str, data: dict, _: dict = Depends(require_owner_or_manager)):
+async def update_category(cat_id: str, data: dict, user: dict = Depends(require_owner_or_manager)):
+    # tenant_owns_strict, not tenant_owns: get_categories' auto-seed now
+    # stamps a real, per-business businessId on every category it creates
+    # (release-closure pass — see that function's own docstring), so the
+    # only way to reach an untagged category here is pre-fix legacy data.
+    # Quarantined (refused, not auto-owned) until the migration resolves
+    # it, rather than editable by whichever business asks first.
+    existing = await db.categories.find_one({"$and": [{"id": cat_id}, tenant_scope_filter(user.get("businessId"))]}, {"_id": 0, "businessId": 1})
+    if not existing or not tenant_owns_strict(existing.get("businessId"), user.get("businessId")):
+        raise HTTPException(status_code=404, detail="Not found")
     allowed = {"name", "sortOrder", "active", "icon", "color", "prepTime", "channels", "parentId", "reportsUnderId"}
     update = {k: v for k, v in data.items() if k in allowed}
     if "prepTime" in update: update["prepTime"] = int(update["prepTime"] or 0)
@@ -80,7 +103,7 @@ async def update_category(cat_id: str, data: dict, _: dict = Depends(require_own
             raise HTTPException(status_code=400, detail="A category can't report under itself")
         if await _would_create_cycle(cat_id, update["reportsUnderId"], "reportsUnderId"):
             raise HTTPException(status_code=400, detail="That would create a reporting loop")
-    result = await db.categories.find_one_and_update({"id": cat_id}, {"$set": update}, return_document=True)
+    result = await db.categories.find_one_and_update({"$and": [{"id": cat_id}, tenant_scope_filter(user.get("businessId"))]}, {"$set": update}, return_document=True)
     if not result:
         raise HTTPException(status_code=404, detail="Not found")
     result.pop("_id", None)
@@ -88,25 +111,41 @@ async def update_category(cat_id: str, data: dict, _: dict = Depends(require_own
 
 
 @router.post("/categories/{source_id}/merge/{target_id}")
-async def merge_categories(source_id: str, target_id: str, _: dict = Depends(require_owner_or_manager)):
+async def merge_categories(source_id: str, target_id: str, user: dict = Depends(require_owner_or_manager)):
     """Drag-and-drop merge: every product in `source` moves to `target`
     (matched by categoryId, falling back to the legacy name string for rows
     that predate categoryId), any sub-categories or reporting-rollups that
-    pointed at `source` are re-pointed to `target`, then `source` is deleted."""
+    pointed at `source` are re-pointed to `target`, then `source` is deleted.
+
+    Found during the Trust Release final readiness audit: this endpoint had
+    no tenant check at all, and its products.update_many had no businessId
+    filter — any owner/manager could re-categorize (and, via the delete
+    below, silently disappear) every OTHER business's products sharing the
+    same category name, not just their own."""
     if source_id == target_id:
         raise HTTPException(status_code=400, detail="Can't merge a category into itself")
-    source = await db.categories.find_one({"id": source_id}, {"_id": 0})
-    target = await db.categories.find_one({"id": target_id}, {"_id": 0})
-    if not source or not target:
+    # tenant_owns_strict — same reasoning as update_category's own comment:
+    # get_categories' auto-seed now stamps a real businessId, so an
+    # untagged category here can only be pre-fix legacy data.
+    business_id = user.get("businessId")
+    source = await db.categories.find_one({"$and": [{"id": source_id}, tenant_scope_filter(business_id)]}, {"_id": 0})
+    target = await db.categories.find_one({"$and": [{"id": target_id}, tenant_scope_filter(business_id)]}, {"_id": 0})
+    if (not source or not tenant_owns_strict(source.get("businessId"), business_id)
+            or not target or not tenant_owns_strict(target.get("businessId"), business_id)):
         raise HTTPException(status_code=404, detail="Category not found")
 
     result = await db.products.update_many(
-        {"$or": [{"categoryId": source_id}, {"categoryId": {"$in": [None, ""]}, "category": source["name"]}]},
+        {"$and": [tenant_scope_filter(business_id), {"$or": [
+            {"categoryId": source_id},
+            {"categoryId": {"$in": [None, ""]}, "category": source["name"]},
+        ]}]},
         {"$set": {"categoryId": target_id, "category": target["name"]}},
     )
-    await db.categories.update_many({"parentId": source_id}, {"$set": {"parentId": target_id}})
-    await db.categories.update_many({"reportsUnderId": source_id}, {"$set": {"reportsUnderId": target_id}})
-    await db.categories.delete_one({"id": source_id})
+    await db.categories.update_many(
+        {"$and": [tenant_scope_filter(business_id), {"parentId": source_id}]}, {"$set": {"parentId": target_id}})
+    await db.categories.update_many(
+        {"$and": [tenant_scope_filter(business_id), {"reportsUnderId": source_id}]}, {"$set": {"reportsUnderId": target_id}})
+    await db.categories.delete_one({"$and": [{"id": source_id}, tenant_scope_filter(business_id)]})
     return {
         "message": f"Merged '{source['name']}' into '{target['name']}'",
         "productsMoved": result.modified_count,
@@ -118,7 +157,7 @@ async def build_reporting_map() -> dict:
     """name -> the name its sales should be attributed to in revenue reports,
     following reportsUnderId chains. Cycle-safe; falls back to the category's
     own name if the chain is broken or missing."""
-    cats = await db.categories.find({}, {"_id": 0}).to_list(500)
+    cats = await db.categories.find(tenant_scope_filter(), {"_id": 0}).to_list(500)
     by_id = {c["id"]: c for c in cats}
 
     def resolve(cat: dict, seen: set) -> str:
@@ -135,19 +174,20 @@ async def build_reporting_map() -> dict:
 
 
 @router.post("/categories/cleanup-legacy")
-async def cleanup_legacy_categories(_: dict = Depends(require_owner)):
+async def cleanup_legacy_categories(user: dict = Depends(require_owner)):
     """Owner one-click: removes ANY category that has zero products attached
     AND is not in the canonical seed-catalog set (Coffee/Burgers/Mains/
     Cakes & Slices/Pasta). Safe — products are unaffected."""
     canonical = {c["name"] for c in SEED_CATEGORIES}
-    all_cats = await db.categories.find({}, {"_id": 0}).to_list(200)
+    scope = tenant_scope_filter(user.get("businessId"))
+    all_cats = await db.categories.find(scope, {"_id": 0}).to_list(200)
     candidates = [cat for cat in all_cats if cat["name"] not in canonical]
     # One aggregation for all candidate categories' product counts, instead
     # of one count_documents() per category.
     counts_by_category = {}
     if candidates:
         agg = await db.products.aggregate([
-            {"$match": {"category": {"$in": [c["name"] for c in candidates]}}},
+            {"$match": {"category": {"$in": [c["name"] for c in candidates]}, **scope}},
             {"$group": {"_id": "$category", "count": {"$sum": 1}}},
         ]).to_list(len(candidates))
         counts_by_category = {row["_id"]: row["count"] for row in agg}
@@ -155,15 +195,19 @@ async def cleanup_legacy_categories(_: dict = Depends(require_owner)):
     for cat in candidates:
         product_count = counts_by_category.get(cat["name"], 0)
         if product_count == 0:
-            await db.categories.delete_one({"id": cat["id"]})
+            await db.categories.delete_one({"id": cat["id"], **scope})
             removed.append(cat["name"])
         else:
             kept.append({"name": cat["name"], "productCount": product_count})
     return {"removed": removed, "keptWithProducts": kept}
 
 @router.delete("/categories/{cat_id}")
-async def delete_category(cat_id: str, _: dict = Depends(require_owner)):
-    await db.categories.delete_one({"id": cat_id})
+async def delete_category(cat_id: str, user: dict = Depends(require_owner)):
+    # tenant_owns_strict — same reasoning as update_category's own comment.
+    existing = await db.categories.find_one({"$and": [{"id": cat_id}, tenant_scope_filter(user.get("businessId"))]}, {"_id": 0, "businessId": 1})
+    if not existing or not tenant_owns_strict(existing.get("businessId"), user.get("businessId")):
+        raise HTTPException(status_code=404, detail="Not found")
+    await db.categories.delete_one({"$and": [{"id": cat_id}, tenant_scope_filter(user.get("businessId"))]})
     return {"message": "Category deleted"}
 
 
@@ -304,9 +348,10 @@ SEED_MODIFIERS = [
 
 
 @router.post("/seed/catalog")
-async def seed_catalog(_: dict = Depends(require_owner)):
+async def seed_catalog(user: dict = Depends(require_owner)):
     """Owner-only: seed 5 categories, 60 products, 10 modifiers. Idempotent —
-    skips items that already exist by name+category.
+    skips items that already exist by name+category, scoped to the caller's
+    own business.
 
     Each item uses an atomic upsert (update_one(..., upsert=True)) rather
     than a find_one-then-insert_one pair. The old check-then-insert had a
@@ -318,17 +363,27 @@ async def seed_catalog(_: dict = Depends(require_owner)):
     a second concurrent call for the same item is guaranteed to either lose
     the race entirely (matches the just-inserted document, updates it) or
     win it outright — never both insert.
+
+    The upsert filter and $setOnInsert previously matched/created by NAME
+    ALONE, with no businessId anywhere — so the first business ever to
+    seed created shared, untagged rows, and every OTHER business's later
+    seed call matched (and silently reused) that same first business's
+    rows instead of creating its own: multi-tenant seeding was completely
+    broken, not just imprecise. Now every match filter and every inserted
+    document is scoped to the caller's own businessId.
     """
+    business_id = user.get("businessId")
     # Categories
     cat_added = 0
     for c in SEED_CATEGORIES:
         result = await db.categories.update_one(
-            {"name": c["name"]},
+            {"name": c["name"], "businessId": business_id},
             {
                 "$set": {"icon": c["icon"], "color": c["color"],
                          "prepTime": c["prepTime"], "channels": c["channels"]},
-                "$setOnInsert": {k: v for k, v in c.items()
+                "$setOnInsert": {**{k: v for k, v in c.items()
                                   if k not in ("icon", "color", "prepTime", "channels", "name")},
+                                  "businessId": business_id},
             },
             upsert=True,
         )
@@ -346,9 +401,10 @@ async def seed_catalog(_: dict = Depends(require_owner)):
             "gstRate": 10.0, "modifiers": [], "locations": ["Main"],
             "onlineChannels": [], "seoDescription": "", "description": "",
             "createdAt": datetime.now(timezone.utc).isoformat(),
+            "businessId": business_id,
         }
         result = await db.products.update_one(
-            {"name": p["name"], "category": p["category"]},
+            {"name": p["name"], "category": p["category"], "businessId": business_id},
             {"$setOnInsert": product},
             upsert=True,
         )
@@ -361,10 +417,11 @@ async def seed_catalog(_: dict = Depends(require_owner)):
             "id": f"mod-{str(uuid.uuid4())[:8]}",
             "printWithItem": True,
             "createdAt": datetime.now(timezone.utc).isoformat(),
+            "businessId": business_id,
             **{k: v for k, v in m.items() if k != "name"},
         }
         result = await db.modifiers.update_one(
-            {"name": m["name"]},
+            {"name": m["name"], "businessId": business_id},
             {"$setOnInsert": mod},
             upsert=True,
         )
@@ -378,14 +435,15 @@ async def seed_catalog(_: dict = Depends(require_owner)):
 
 # ============ MODIFIERS (Universal) ============
 @router.get("/modifiers")
-async def get_modifiers():
-    mods = await db.modifiers.find({}, {"_id": 0}).to_list(500)
+async def get_modifiers(user: dict = Depends(get_user)):
+    mods = await db.modifiers.find(tenant_scope_filter(user.get("businessId")), {"_id": 0}).to_list(500)
     return mods
 
 @router.post("/modifiers")
-async def create_modifier(data: dict, _: dict = Depends(require_owner_or_manager)):
+async def create_modifier(data: dict, user: dict = Depends(require_owner_or_manager)):
     mod = {
         "id": f"mod-{str(uuid.uuid4())[:8]}",
+        "businessId": user.get("businessId"),
         "name": data.get("name", ""),
         "type": data.get("type", "list"),
         "mandatory": data.get("mandatory", False),
@@ -407,33 +465,44 @@ async def create_modifier(data: dict, _: dict = Depends(require_owner_or_manager
     return mod
 
 @router.put("/modifiers/{mod_id}")
-async def update_modifier(mod_id: str, data: dict, _: dict = Depends(require_owner_or_manager)):
+async def update_modifier(mod_id: str, data: dict, user: dict = Depends(require_owner_or_manager)):
+    # tenant_owns_strict — seed_catalog()'s upserts now match/create scoped
+    # to the caller's own businessId (release-closure pass), so an untagged
+    # modifier here can only be pre-fix legacy data.
+    existing = await db.modifiers.find_one({"$and": [{"id": mod_id}, tenant_scope_filter(user.get("businessId"))]}, {"_id": 0, "businessId": 1})
+    if not existing or not tenant_owns_strict(existing.get("businessId"), user.get("businessId")):
+        raise HTTPException(status_code=404, detail="Not found")
     allowed = {"name", "type", "mandatory", "multiSelect", "maxSelections", "options",
                "assignedCategories", "printWithItem",
                "channels", "availableFrom", "availableTo", "activeDays"}
     update = {k: v for k, v in data.items() if k in allowed}
     update["updatedAt"] = datetime.now(timezone.utc).isoformat()
-    result = await db.modifiers.find_one_and_update({"id": mod_id}, {"$set": update}, return_document=True)
+    result = await db.modifiers.find_one_and_update({"$and": [{"id": mod_id}, tenant_scope_filter(user.get("businessId"))]}, {"$set": update}, return_document=True)
     if not result:
         raise HTTPException(status_code=404, detail="Not found")
     result.pop("_id", None)
     return result
 
 @router.delete("/modifiers/{mod_id}")
-async def delete_modifier(mod_id: str, _: dict = Depends(require_owner_or_manager)):
-    await db.modifiers.delete_one({"id": mod_id})
+async def delete_modifier(mod_id: str, user: dict = Depends(require_owner_or_manager)):
+    # tenant_owns_strict — same reasoning as update_modifier's own comment.
+    existing = await db.modifiers.find_one({"$and": [{"id": mod_id}, tenant_scope_filter(user.get("businessId"))]}, {"_id": 0, "businessId": 1})
+    if not existing or not tenant_owns_strict(existing.get("businessId"), user.get("businessId")):
+        raise HTTPException(status_code=404, detail="Not found")
+    await db.modifiers.delete_one({"$and": [{"id": mod_id}, tenant_scope_filter(user.get("businessId"))]})
     return {"message": "Modifier deleted"}
 
 # ============ DISCOUNTS & OFFERS ============
 @router.get("/discounts")
-async def get_discounts():
-    discounts = await db.discounts.find({}, {"_id": 0}).to_list(200)
+async def get_discounts(user: dict = Depends(get_user)):
+    discounts = await db.discounts.find(tenant_scope_filter(user.get("businessId")), {"_id": 0}).to_list(200)
     return discounts
 
 @router.post("/discounts")
-async def create_discount(data: dict, _: dict = Depends(require_owner)):
+async def create_discount(data: dict, user: dict = Depends(require_owner)):
     disc = {
         "id": f"DISC-{str(uuid.uuid4())[:8].upper()}",
+        "businessId": user.get("businessId"),
         "name": data.get("name", ""),
         "type": data.get("type", "percentage"),  # percentage, fixed, bundle, bogo, half_price
         "value": data.get("value", 0),  # % or $ amount
@@ -447,18 +516,24 @@ async def create_discount(data: dict, _: dict = Depends(require_owner)):
     return disc
 
 @router.put("/discounts/{disc_id}")
-async def update_discount(disc_id: str, data: dict, _: dict = Depends(require_owner)):
+async def update_discount(disc_id: str, data: dict, user: dict = Depends(require_owner)):
+    existing = await db.discounts.find_one({"$and": [{"id": disc_id}, tenant_scope_filter(user.get("businessId"))]}, {"_id": 0, "businessId": 1})
+    if not existing or not tenant_owns_strict(existing.get("businessId"), user.get("businessId")):
+        raise HTTPException(status_code=404, detail="Not found")
     allowed = {"name", "type", "value", "conditions", "active", "startDate", "endDate"}
     update = {k: v for k, v in data.items() if k in allowed}
-    result = await db.discounts.find_one_and_update({"id": disc_id}, {"$set": update}, return_document=True)
+    result = await db.discounts.find_one_and_update({"$and": [{"id": disc_id}, tenant_scope_filter(user.get("businessId"))]}, {"$set": update}, return_document=True)
     if not result:
         raise HTTPException(status_code=404, detail="Not found")
     result.pop("_id", None)
     return result
 
 @router.delete("/discounts/{disc_id}")
-async def delete_discount(disc_id: str, _: dict = Depends(require_owner)):
-    await db.discounts.delete_one({"id": disc_id})
+async def delete_discount(disc_id: str, user: dict = Depends(require_owner)):
+    existing = await db.discounts.find_one({"$and": [{"id": disc_id}, tenant_scope_filter(user.get("businessId"))]}, {"_id": 0, "businessId": 1})
+    if not existing or not tenant_owns_strict(existing.get("businessId"), user.get("businessId")):
+        raise HTTPException(status_code=404, detail="Not found")
+    await db.discounts.delete_one({"$and": [{"id": disc_id}, tenant_scope_filter(user.get("businessId"))]})
     return {"message": "Discount deleted"}
 
 # ============ COMP / VOID ============
@@ -470,6 +545,7 @@ async def create_comp_void(data: dict, user: dict = Depends(require_permission("
     actually governs this, same as everywhere else it's used."""
     record = {
         "id": f"CV-{str(uuid.uuid4())[:8].upper()}",
+        "businessId": user.get("businessId"),
         "type": data.get("type", "comp"),  # comp or void
         "transactionId": data.get("transactionId"),
         "items": data.get("items", []),
@@ -501,15 +577,17 @@ async def create_comp_void(data: dict, user: dict = Depends(require_permission("
     return record
 
 @router.get("/comp-void")
-async def get_comp_voids(_: dict = Depends(require_owner_or_manager)):
-    records = await db.comp_voids.find({}, {"_id": 0}).sort("processedAt", -1).to_list(500)
+async def get_comp_voids(user: dict = Depends(require_owner_or_manager)):
+    records = await db.comp_voids.find(
+        tenant_scope_filter(user.get("businessId")), {"_id": 0}).sort("processedAt", -1).to_list(500)
     return records
 
 # ============ PAYMENT LINKS ============
 @router.post("/payment-links")
-async def create_payment_link(data: dict, _: dict = Depends(require_owner_or_manager)):
+async def create_payment_link(data: dict, user: dict = Depends(require_owner_or_manager)):
     link = {
         "id": f"PLINK-{str(uuid.uuid4())[:8].upper()}",
+        "businessId": user.get("businessId"),
         "productId": data.get("productId"),
         "productName": data.get("productName", ""),
         "price": data.get("price", 0),
@@ -522,11 +600,14 @@ async def create_payment_link(data: dict, _: dict = Depends(require_owner_or_man
     return link
 
 @router.get("/payment-links")
-async def get_payment_links():
-    links = await db.payment_links.find({}, {"_id": 0}).to_list(500)
+async def get_payment_links(user: dict = Depends(get_user)):
+    links = await db.payment_links.find(tenant_scope_filter(user.get("businessId")), {"_id": 0}).to_list(500)
     return links
 
 @router.delete("/payment-links/{link_id}")
-async def delete_payment_link(link_id: str, _: dict = Depends(require_owner_or_manager)):
-    await db.payment_links.delete_one({"id": link_id})
+async def delete_payment_link(link_id: str, user: dict = Depends(require_owner_or_manager)):
+    existing = await db.payment_links.find_one({"$and": [{"id": link_id}, tenant_scope_filter(user.get("businessId"))]}, {"_id": 0, "businessId": 1})
+    if not existing or not tenant_owns_strict(existing.get("businessId"), user.get("businessId")):
+        raise HTTPException(status_code=404, detail="Not found")
+    await db.payment_links.delete_one({"$and": [{"id": link_id}, tenant_scope_filter(user.get("businessId"))]})
     return {"message": "Payment link deleted"}

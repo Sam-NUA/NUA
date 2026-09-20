@@ -9,7 +9,7 @@ from models.table import Table, TableCreate
 from models.eftpos import EFTPOSConfig, EFTPOSConfigCreate, EFTPOSTransaction, EFTPOSTransactionRequest
 from models.staff import StaffShift
 from utils.mongo_safe import safe_find_list
-from middleware.actor_context import tenant_scope_filter
+from middleware.actor_context import tenant_scope_filter, tenant_owns_strict
 from utils.dates import date_range_filter
 import logging
 import uuid
@@ -115,16 +115,35 @@ async def create_user(user: UserCreate):
 
 # ============ OFFLINE SYNC API ============
 @router.post("/offline/sync")
-async def sync_offline_data(data: dict):
+async def sync_offline_data(data: dict, user: dict = Depends(get_user)):
+    """Previously had no auth dependency at all and upserted caller-supplied
+    transaction/product documents by id with no tenant check whatsoever —
+    any authenticated staff member of any business could overwrite (with
+    entirely caller-controlled fields) another business's transaction or
+    product just by knowing/guessing its id. Now requires auth, refuses
+    (skips, doesn't error the whole batch) any id that already belongs to
+    a different business, and stamps the caller's own businessId on every
+    upserted document."""
+    business_id = user.get("businessId")
     synced = {"transactions": 0, "products": 0, "customers": 0}
     if "transactions" in data:
         for txn in data["transactions"]:
-            await db.transactions.update_one({"id": txn["id"]}, {"$set": txn}, upsert=True)
-            synced["transactions"] += 1
+            existing = await db.transactions.find_one({"id": txn["id"]}, {"businessId": 1, "_ownershipQuarantined": 1})
+            if existing and (existing.get("_ownershipQuarantined") or not tenant_owns_strict(existing.get("businessId"), business_id)):
+                continue
+            txn = {k: v for k, v in txn.items() if k not in ("_id", "_ownershipQuarantined")}
+            txn["businessId"] = business_id
+            result = await db.transactions.update_one({"$and": [{"_id": existing["_id"]} if existing else {"id": txn["id"]}, tenant_scope_filter(business_id)]}, {"$set": txn}, upsert=existing is None)
+            synced["transactions"] += int(bool(result.matched_count or result.upserted_id))
     if "products" in data:
         for prod in data["products"]:
-            await db.products.update_one({"id": prod["id"]}, {"$set": prod}, upsert=True)
-            synced["products"] += 1
+            existing = await db.products.find_one({"id": prod["id"]}, {"businessId": 1, "_ownershipQuarantined": 1})
+            if existing and (existing.get("_ownershipQuarantined") or not tenant_owns_strict(existing.get("businessId"), business_id)):
+                continue
+            prod = {k: v for k, v in prod.items() if k not in ("_id", "_ownershipQuarantined")}
+            prod["businessId"] = business_id
+            result = await db.products.update_one({"$and": [{"_id": existing["_id"]} if existing else {"id": prod["id"]}, tenant_scope_filter(business_id)]}, {"$set": prod}, upsert=existing is None)
+            synced["products"] += int(bool(result.matched_count or result.upserted_id))
     return {"message": "Sync complete", "synced": synced}
 
 # ============ TABLES API ============
@@ -190,47 +209,51 @@ async def staff_clock_out(shift_id: str, break_minutes: int = 0):
 # terminals exist and actually taking a payment stay open to any signed-in
 # staff member, since that's the ordinary checkout path.
 @router.get("/eftpos/terminals", response_model=List[EFTPOSConfig])
-async def get_eftpos_terminals(_: dict = Depends(get_user)):
-    terminals = await db.eftpos_terminals.find().to_list(1000)
+async def get_eftpos_terminals(user: dict = Depends(get_user)):
+    terminals = await db.eftpos_terminals.find(tenant_scope_filter(user["businessId"])).to_list(1000)
+    if user.get("role") not in ("owner", "manager"):
+        for t in terminals:
+            t["apiKey"] = None
+            t["apiSecret"] = None
     return [EFTPOSConfig(**t) for t in terminals]
 
 @router.post("/eftpos/terminals", response_model=EFTPOSConfig)
-async def create_eftpos_terminal(terminal: EFTPOSConfigCreate, _: dict = Depends(require_owner_or_manager)):
+async def create_eftpos_terminal(terminal: EFTPOSConfigCreate, user: dict = Depends(require_owner_or_manager)):
     terminal_obj = EFTPOSConfig(**terminal.dict())
-    await db.eftpos_terminals.insert_one(terminal_obj.dict())
+    await db.eftpos_terminals.insert_one({**terminal_obj.dict(), "businessId": user["businessId"]})
     return terminal_obj
 
 @router.put("/eftpos/terminals/{terminal_id}", response_model=EFTPOSConfig)
-async def update_eftpos_terminal(terminal_id: str, terminal: EFTPOSConfigCreate, _: dict = Depends(require_owner_or_manager)):
+async def update_eftpos_terminal(terminal_id: str, terminal: EFTPOSConfigCreate, user: dict = Depends(require_owner_or_manager)):
     update_data = terminal.dict()
     result = await db.eftpos_terminals.find_one_and_update(
-        {"id": terminal_id}, {"$set": update_data}, return_document=True
+        {"id": terminal_id, **tenant_scope_filter(user["businessId"])}, {"$set": update_data}, return_document=True
     )
     if not result:
         raise HTTPException(status_code=404, detail="Terminal not found")
     return EFTPOSConfig(**result)
 
 @router.delete("/eftpos/terminals/{terminal_id}")
-async def delete_eftpos_terminal(terminal_id: str, _: dict = Depends(require_owner_or_manager)):
-    result = await db.eftpos_terminals.delete_one({"id": terminal_id})
+async def delete_eftpos_terminal(terminal_id: str, user: dict = Depends(require_owner_or_manager)):
+    result = await db.eftpos_terminals.delete_one({"id": terminal_id, **tenant_scope_filter(user["businessId"])})
     if result.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Terminal not found")
     return {"message": "Terminal deleted successfully"}
 
-async def _log_eftpos_test(terminal_id: str, success: bool, message: str) -> None:
+async def _log_eftpos_test(terminal_id: str, success: bool, message: str, business_id: str) -> None:
     """A failed test just flipped `status` with no record of when or how
     many times — Test Connection had no history, only a current snapshot.
     """
     await db.eftpos_test_log.insert_one({
-        "id": str(uuid.uuid4()), "terminalId": terminal_id,
+        "id": str(uuid.uuid4()), "terminalId": terminal_id, "businessId": business_id,
         "success": success, "message": message,
         "testedAt": datetime.utcnow(),
     })
 
 
 @router.post("/eftpos/terminals/{terminal_id}/test")
-async def test_eftpos_connection(terminal_id: str, _: dict = Depends(require_owner_or_manager)):
-    terminal = await db.eftpos_terminals.find_one({"id": terminal_id})
+async def test_eftpos_connection(terminal_id: str, user: dict = Depends(require_owner_or_manager)):
+    terminal = await db.eftpos_terminals.find_one({"id": terminal_id, **tenant_scope_filter(user["businessId"])})
     if not terminal:
         raise HTTPException(status_code=404, detail="Terminal not found")
     try:
@@ -239,27 +262,27 @@ async def test_eftpos_connection(terminal_id: str, _: dict = Depends(require_own
         connected = await provider.connect()
         if connected:
             await provider.disconnect()
-            await db.eftpos_terminals.update_one({"id": terminal_id}, {"$set": {"status": "active", "lastPing": datetime.utcnow()}})
-            await _log_eftpos_test(terminal_id, True, "Connection successful")
+            await db.eftpos_terminals.update_one({"id": terminal_id, **tenant_scope_filter(user["businessId"])}, {"$set": {"status": "active", "lastPing": datetime.utcnow()}})
+            await _log_eftpos_test(terminal_id, True, "Connection successful", user["businessId"])
             return {"success": True, "message": "Connection successful"}
         else:
-            await db.eftpos_terminals.update_one({"id": terminal_id}, {"$set": {"status": "error"}})
-            await _log_eftpos_test(terminal_id, False, "Connection failed")
+            await db.eftpos_terminals.update_one({"id": terminal_id, **tenant_scope_filter(user["businessId"])}, {"$set": {"status": "error"}})
+            await _log_eftpos_test(terminal_id, False, "Connection failed", user["businessId"])
             return {"success": False, "message": "Connection failed"}
     except Exception as e:
-        await _log_eftpos_test(terminal_id, False, str(e)[:200])
+        await _log_eftpos_test(terminal_id, False, str(e)[:200], user["businessId"])
         return {"success": False, "message": str(e)}
 
 
 @router.get("/eftpos/terminals/{terminal_id}/test-history")
-async def get_eftpos_test_history(terminal_id: str, limit: int = 50, _: dict = Depends(require_owner_or_manager)):
-    rows = await db.eftpos_test_log.find({"terminalId": terminal_id}, {"_id": 0}) \
+async def get_eftpos_test_history(terminal_id: str, limit: int = 50, user: dict = Depends(require_owner_or_manager)):
+    rows = await db.eftpos_test_log.find({"terminalId": terminal_id, **tenant_scope_filter(user["businessId"])}, {"_id": 0}) \
         .sort("testedAt", -1).limit(limit).to_list(limit)
     return rows
 
 @router.post("/eftpos/transaction", response_model=EFTPOSTransaction)
-async def process_eftpos_transaction(request: EFTPOSTransactionRequest, _: dict = Depends(get_user)):
-    terminal = await db.eftpos_terminals.find_one({"id": request.terminalId})
+async def process_eftpos_transaction(request: EFTPOSTransactionRequest, user: dict = Depends(get_user)):
+    terminal = await db.eftpos_terminals.find_one({"id": request.terminalId, **tenant_scope_filter(user["businessId"])})
     if not terminal:
         raise HTTPException(status_code=404, detail="Terminal not found")
     try:
@@ -277,7 +300,7 @@ async def process_eftpos_transaction(request: EFTPOSTransactionRequest, _: dict 
             responseCode=result.get("responseCode", "99"), responseText=result.get("responseText", "Unknown"),
             approved=result.get("approved", False)
         )
-        await db.eftpos_transactions.insert_one(eftpos_txn.dict())
+        await db.eftpos_transactions.insert_one({**eftpos_txn.dict(), "businessId": user["businessId"]})
         return eftpos_txn
     except Exception as e:
         logger.error(f"EFTPOS transaction error: {e}")
@@ -287,7 +310,7 @@ async def process_eftpos_transaction(request: EFTPOSTransactionRequest, _: dict 
             cashout=request.cashout, reference=request.reference, posTransactionId=request.posTransactionId,
             responseCode="99", responseText=str(e), approved=False
         )
-        await db.eftpos_transactions.insert_one(eftpos_txn.dict())
+        await db.eftpos_transactions.insert_one({**eftpos_txn.dict(), "businessId": user["businessId"]})
         return eftpos_txn
 
 @router.get("/eftpos/transactions", response_model=List[EFTPOSTransaction])
@@ -306,8 +329,8 @@ async def get_eftpos_transactions(start_date: Optional[str] = None, end_date: Op
     return [EFTPOSTransaction(**t) for t in transactions]
 
 @router.post("/eftpos/terminals/{terminal_id}/settlement")
-async def perform_settlement(terminal_id: str, _: dict = Depends(require_owner_or_manager)):
-    terminal = await db.eftpos_terminals.find_one({"id": terminal_id})
+async def perform_settlement(terminal_id: str, user: dict = Depends(require_owner_or_manager)):
+    terminal = await db.eftpos_terminals.find_one({"id": terminal_id, **tenant_scope_filter(user["businessId"])})
     if not terminal:
         raise HTTPException(status_code=404, detail="Terminal not found")
     try:

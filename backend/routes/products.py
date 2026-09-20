@@ -9,7 +9,7 @@ import uuid
 from database import db
 from deps import get_user, optional_user, require_owner_or_manager
 from models.product import Product, ProductCreate, ProductUpdate
-from middleware.actor_context import tenant_scope_filter, tenant_owns
+from middleware.actor_context import tenant_scope_filter, tenant_owns_strict
 from pydantic import BaseModel
 
 router = APIRouter()
@@ -33,12 +33,14 @@ GUEST_HIDDEN_PRODUCT_FIELDS = ("cost", "stock", "sku")
 
 @router.get("/products", response_model=List[Product])
 async def get_products(category: Optional[str] = None, search: Optional[str] = None,
-                       include_deleted: bool = False, user=Depends(optional_user)):
+                       include_deleted: bool = False, business: Optional[str] = None, user=Depends(optional_user)):
     query = {}
     and_clauses = []
     if not include_deleted:
         and_clauses.append({"$or": [{"deletedAt": None}, {"deletedAt": {"$exists": False}}]})
-    tenant_filter = tenant_scope_filter(user.get("businessId") if user else None)
+    from routes.online_orders import resolve_or_require_business_id
+    business_id = user["businessId"] if user else await resolve_or_require_business_id(business)
+    tenant_filter = tenant_scope_filter(business_id)
     if tenant_filter:
         and_clauses.append(tenant_filter)
     if and_clauses:
@@ -65,11 +67,13 @@ async def get_products(category: Optional[str] = None, search: Optional[str] = N
     return [Product(**p) for p in products]
 
 @router.get("/products/{product_id}/variants", response_model=List[Product])
-async def get_product_variants(product_id: str, user=Depends(optional_user)):
+async def get_product_variants(product_id: str, business: Optional[str] = None, user=Depends(optional_user)):
     """Every sellable row under a variant-grouping product (e.g. a T-shirt's
     Small/Red, Small/Blue, Medium/Red... rows) — the parent itself is never
     sold, only listed here so POS/edit UI can render its variant matrix."""
-    tenant_filter = tenant_scope_filter(user.get("businessId") if user else None)
+    from routes.online_orders import resolve_or_require_business_id
+    business_id = user["businessId"] if user else await resolve_or_require_business_id(business)
+    tenant_filter = tenant_scope_filter(business_id)
     query = {"parentId": product_id, "$or": [{"deletedAt": None}, {"deletedAt": {"$exists": False}}]}
     if tenant_filter:
         query = {"$and": [query, tenant_filter]}
@@ -88,8 +92,8 @@ async def create_product(product: ProductCreate, _: dict = Depends(require_owner
 @router.put("/products/{product_id}", response_model=Product)
 async def update_product(product_id: str, product_update: ProductUpdate, user: dict = Depends(require_owner_or_manager)):
     from services.entity_service import stamped_update
-    existing = await db.products.find_one({"id": product_id}, {"_id": 0, "businessId": 1})
-    if not existing or not tenant_owns(existing.get("businessId"), user.get("businessId")):
+    existing = await db.products.find_one({"$and": [{"id": product_id}, tenant_scope_filter(user.get("businessId"))]}, {"_id": 0, "businessId": 1})
+    if not existing or not tenant_owns_strict(existing.get("businessId"), user.get("businessId")):
         raise HTTPException(status_code=404, detail="Product not found")
     update_data = {k: v for k, v in product_update.dict().items() if v is not None}
     result = await stamped_update("products", product_id, update_data, entity_type="product")
@@ -100,8 +104,8 @@ async def update_product(product_id: str, product_update: ProductUpdate, user: d
 @router.delete("/products/{product_id}")
 async def delete_product(product_id: str, user: dict = Depends(require_owner_or_manager)):
     from services.entity_service import soft_delete
-    existing = await db.products.find_one({"id": product_id}, {"_id": 0, "businessId": 1})
-    if not existing or not tenant_owns(existing.get("businessId"), user.get("businessId")):
+    existing = await db.products.find_one({"$and": [{"id": product_id}, tenant_scope_filter(user.get("businessId"))]}, {"_id": 0, "businessId": 1})
+    if not existing or not tenant_owns_strict(existing.get("businessId"), user.get("businessId")):
         raise HTTPException(status_code=404, detail="Product not found")
     result = await soft_delete("products", product_id, entity_type="product")
     if not result:
@@ -113,8 +117,8 @@ async def adjust_stock(product_id: str, data: dict, user: dict = Depends(require
     adjustment = data.get("adjustment", 0)
     reason = data.get("reason", "Manual adjustment")
     location = data.get("location")  # optional — see below
-    product = await db.products.find_one({"id": product_id})
-    if not product or not tenant_owns(product.get("businessId"), user.get("businessId")):
+    product = await db.products.find_one({"$and": [{"id": product_id}, tenant_scope_filter(user.get("businessId"))]})
+    if not product or not tenant_owns_strict(product.get("businessId"), user.get("businessId")):
         raise HTTPException(status_code=404, detail="Product not found")
 
     if location:
@@ -128,7 +132,7 @@ async def adjust_stock(product_id: str, data: dict, user: dict = Depends(require
         new_location_stock = current + adjustment
         if new_location_stock < 0:
             raise HTTPException(status_code=400, detail="Stock cannot go below zero")
-        await db.products.update_one({"id": product_id}, {"$set": {f"stockByLocation.{location}": new_location_stock}})
+        await db.products.update_one({"$and": [{"id": product_id}, tenant_scope_filter(user.get("businessId"))]}, {"$set": {f"stockByLocation.{location}": new_location_stock}})
         await db.stock_adjustments.insert_one({
             "productId": product_id, "productName": product.get("name", ""), "location": location,
             "previousStock": current, "adjustment": adjustment,
@@ -140,7 +144,7 @@ async def adjust_stock(product_id: str, data: dict, user: dict = Depends(require
     new_stock = product.get("stock", 0) + adjustment
     if new_stock < 0:
         raise HTTPException(status_code=400, detail="Stock cannot go below zero")
-    await db.products.update_one({"id": product_id}, {"$set": {"stock": new_stock}})
+    await db.products.update_one({"$and": [{"id": product_id}, tenant_scope_filter(user.get("businessId"))]}, {"$set": {"stock": new_stock}})
     await db.stock_adjustments.insert_one({
         "productId": product_id, "productName": product.get("name", ""),
         "previousStock": product.get("stock", 0), "adjustment": adjustment,
@@ -210,8 +214,8 @@ async def auto_translate_product(product_id: str, user: dict = Depends(require_o
     go instead of one product at a time, see bulk_auto_translate_products
     below.
     """
-    product = await db.products.find_one({"id": product_id}, {"_id": 0})
-    if not product or not tenant_owns(product.get("businessId"), user.get("businessId")):
+    product = await db.products.find_one({"$and": [{"id": product_id}, tenant_scope_filter(user.get("businessId"))]}, {"_id": 0})
+    if not product or not tenant_owns_strict(product.get("businessId"), user.get("businessId")):
         raise HTTPException(status_code=404, detail="Product not found")
 
     api_key = os.environ.get("EMERGENT_LLM_KEY")

@@ -15,6 +15,7 @@ const OnboardingWizard = lazy(() => import('./pages/OnboardingWizard'));
 const ResetPassword = lazy(() => import('./pages/ResetPassword'));
 const Today = lazy(() => import('./pages/Today'));
 import CommandBar from './components/CommandBar';
+import VoiceCommandButton from './components/VoiceCommandButton';
 const Dashboard = lazy(() => import('./pages/Dashboard'));
 const POSTerminal = lazy(() => import('./pages/POSTerminal'));
 const StaffApp = lazy(() => import('./pages/StaffApp'));
@@ -170,6 +171,7 @@ function StaffLayout({ children }) {
       <AshChat />
       <NotificationBell />
       <CommandBar />
+      <VoiceCommandButton />
     </div>
   );
 }

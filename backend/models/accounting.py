@@ -21,6 +21,7 @@ AccountType = Literal["asset", "liability", "equity", "revenue", "expense"]
 
 class Account(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    businessId: Optional[str] = None
     code: str                    # e.g. "1000", "4000"
     name: str                    # "Cash at Bank"
     type: AccountType
@@ -49,6 +50,7 @@ class JournalLine(BaseModel):
 
 class JournalEntry(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    businessId: Optional[str] = None
     journalNumber: Optional[str] = None
     date: str                                # ISO date (YYYY-MM-DD)
     memo: Optional[str] = None
@@ -69,6 +71,7 @@ class JournalEntry(BaseModel):
 # ─── Accounts Payable ────────────────────────────────────────────────────
 class Bill(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    businessId: Optional[str] = None
     supplierId: str
     supplierName: Optional[str] = None
     billNumber: Optional[str] = None
@@ -87,6 +90,7 @@ class Bill(BaseModel):
 # ─── Accounts Receivable ─────────────────────────────────────────────────
 class Invoice(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    businessId: Optional[str] = None
     customerId: str
     customerName: Optional[str] = None
     invoiceNumber: Optional[str] = None
@@ -105,6 +109,7 @@ class Invoice(BaseModel):
 # ─── Customer deposits (bookings, catering, function deposits) ───────────
 class CustomerDeposit(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    businessId: Optional[str] = None
     customerId: str
     customerName: Optional[str] = None
     bookingId: Optional[str] = None
@@ -125,6 +130,7 @@ class BudgetLine(BaseModel):
 
 class Budget(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    businessId: Optional[str] = None
     fyStart: str                     # e.g. "2026-07-01"
     fyEnd: str                       # e.g. "2027-06-30"
     name: str = "FY Budget"
@@ -135,6 +141,7 @@ class Budget(BaseModel):
 # ─── Bank Reconciliation ─────────────────────────────────────────────────
 class BankStatementLine(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    businessId: Optional[str] = None
     accountCode: str                 # bank account code (e.g. 1000)
     statementDate: str
     description: str

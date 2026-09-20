@@ -9,12 +9,32 @@ and we assert the connector parses/normalizes/persists them correctly. The
 connector code itself is unchanged between this and a real network call —
 only the transport is swapped.
 """
+import asyncio
 import json
 
 import httpx
 import pytest
 
 from tests.inprocess.conftest import req
+
+
+def _run(coro):
+    return asyncio.get_event_loop().run_until_complete(coro)
+
+
+def _make_business(client, owner_headers, *, biz_id, email):
+    from database import db
+    _run(db.businesses.insert_one({
+        "id": biz_id, "slug": biz_id, "name": f"Biz {biz_id}", "status": "active",
+    }))
+    client.post("/api/auth/register", headers=owner_headers, json={
+        "name": "Square Test Owner", "email": email, "password": "SquareTenantTest2026!",
+    })
+    _run(db.auth_users.update_one({"email": email}, {"$set": {"role": "owner", "businessId": biz_id}}))
+    r = client.post("/api/auth/login", json={"email": email, "password": "SquareTenantTest2026!"})
+    assert r.status_code == 200, f"login failed: {r.text[:200]}"
+    client.cookies.clear()
+    return {"Authorization": f"Bearer {r.json()['token']}"}
 
 
 _RealAsyncClient = httpx.AsyncClient
@@ -293,6 +313,58 @@ def test_sync_customers_creates_nua_customer(client, owner_headers, monkeypatch)
     alex = next((c for c in customers if c["email"] == "alex.rivera@example.com"), None)
     assert alex is not None
     assert alex["name"] == "Alex Rivera"
+
+    from database import db
+    stored = _run(db.customers.find_one({"email": "alex.rivera@example.com"}, {"_id": 0}))
+    assert stored["businessId"], (
+        "a customer imported via Square sync must be stamped with the syncing business's id, "
+        "not left untagged"
+    )
+
+
+def test_sync_customers_for_two_businesses_with_the_same_square_id_do_not_collide(client, owner_headers, monkeypatch):
+    """_upsert_customer's lookup used to match by externalRefs.square ALONE
+    — Square customer ids are global, not scoped per merchant account this
+    app connects, so two different NUA businesses syncing (coincidentally
+    or via shared sandbox data) the same Square customer id could silently
+    take over each other's imported row."""
+    def _handler_for(name):
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/v2/locations":
+                return httpx.Response(200, json={"locations": [{"id": "L1", "name": "Cafe"}]})
+            if request.url.path == "/v2/customers/search":
+                return httpx.Response(200, json={"customers": [
+                    {"id": "SQ_CUST_SHARED", "given_name": name, "family_name": "Test",
+                     "email_address": f"{name.lower()}@example.com", "phone_number": "0400000099"},
+                ]})
+            raise AssertionError(f"unexpected call to {request.url.path}")
+        return handler
+
+    import services.connect.connectors.square as square_mod
+    from database import db
+
+    other = _make_business(client, owner_headers, biz_id="square-sync-other-biz",
+                            email="square-sync-other-owner@nua.com")
+
+    monkeypatch.setattr(square_mod.httpx, "AsyncClient", _mock_client_factory(_handler_for("OwnerBiz")))
+    req(client, "POST", "/api/integrations/square/connect", headers=owner_headers,
+        json={"accessToken": "tok-a", "locationId": "L1"})
+    req(client, "POST", "/api/integrations/square/sync", headers=owner_headers, params={"sync_type": "customers"})
+
+    monkeypatch.setattr(square_mod.httpx, "AsyncClient", _mock_client_factory(_handler_for("OtherBiz")))
+    req(client, "POST", "/api/integrations/square/connect", headers=other,
+        json={"accessToken": "tok-b", "locationId": "L1"})
+    req(client, "POST", "/api/integrations/square/sync", headers=other, params={"sync_type": "customers"})
+
+    rows = _run(db.customers.find({"externalRefs.square": "SQ_CUST_SHARED"}, {"_id": 0}).to_list(10))
+    assert len(rows) == 2, (
+        f"two businesses syncing the same external Square customer id must each get their own row, "
+        f"not share/overwrite one — got {len(rows)}"
+    )
+    biz_ids = {r["businessId"] for r in rows}
+    assert biz_ids == {"default", "square-sync-other-biz"}
+    names = {r["name"] for r in rows}
+    assert names == {"OwnerBiz Test", "OtherBiz Test"}, "each business's own sync must not overwrite the other's name"
 
 
 # ----------------------------------------------------------------- webhook

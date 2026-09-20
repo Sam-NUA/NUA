@@ -11,17 +11,19 @@ from services.customer_identity import (
     addon_enabled, create_or_match, ensure_guest_profile, ensure_loyalty_account,
     get_subscription, _now,
 )
+from middleware.actor_context import tenant_scope_filter
 
 router = APIRouter()
 
 
 @router.get("/identity/entitlements")
-async def entitlements(_: dict = Depends(get_user)):
-    return await get_subscription()
+async def entitlements(user: dict = Depends(get_user)):
+    return await get_subscription(user.get("businessId"))
 
 
 @router.put("/identity/entitlements")
-async def set_entitlements(data: dict, _: dict = Depends(require_owner)):
+async def set_entitlements(data: dict, user: dict = Depends(require_owner)):
+    from services.tenant_settings import set_setting
     flags = data.get("feature_flags") or {}
     # customer_identity is not a switch — silently keep it on no matter
     # what a client sends.
@@ -30,33 +32,49 @@ async def set_entitlements(data: dict, _: dict = Depends(require_owner)):
         "addons_enabled": data.get("addons_enabled") or [],
         "feature_flags": flags,
     }
-    await db.settings.update_one(
-        {"key": "venue_subscription"},
-        {"$set": {"key": "venue_subscription", "value": value}},
-        upsert=True,
-    )
+    await set_setting("venue_subscription", value, user.get("businessId"))
     return value
 
 
+def _venue_scope_filter(business_id: Optional[str]) -> dict:
+    """create_or_match already had a venue_id concept — just never wired to
+    anything real, so every caller left it at the default "main" and every
+    business's identity_customers ended up sharing one venue. This matches
+    tenant_scope_filter's own backward-compat shape (match this business,
+    or the untagged/legacy state) but keyed on venue_id instead of
+    businessId, and treats "main" as that legacy/untagged sentinel — the
+    value every pre-existing record actually has — rather than a real venue."""
+    if not business_id:
+        return {}
+    return {"$or": [{"venue_id": business_id}, {"venue_id": {"$exists": False}}, {"venue_id": "main"}]}
+
+
+def _venue_owns(doc_venue_id: Optional[str], business_id: Optional[str]) -> bool:
+    if not business_id or not doc_venue_id or doc_venue_id == "main":
+        return True
+    return doc_venue_id == business_id
+
+
 @router.get("/identity/customers")
-async def search_identity(search: Optional[str] = None, _: dict = Depends(get_user)):
-    query = {}
+async def search_identity(search: Optional[str] = None, user: dict = Depends(get_user)):
+    query = _venue_scope_filter(user.get("businessId"))
     if search:
-        query["$or"] = [
+        text_match = {"$or": [
             {"name": {"$regex": search, "$options": "i"}},
             {"email": {"$regex": search, "$options": "i"}},
             {"phone": {"$regex": search, "$options": "i"}},
-        ]
+        ]}
+        query = {"$and": [query, text_match]} if query else text_match
     return await db.identity_customers.find(query, {"_id": 0}).sort("last_seen_at", -1).to_list(500)
 
 
 @router.get("/identity/customers/{customer_id}")
-async def get_identity(customer_id: str, _: dict = Depends(get_user)):
+async def get_identity(customer_id: str, user: dict = Depends(get_user)):
     """The identity record plus whichever add-ons' enrichment is enabled.
     Reads degrade gracefully: a disabled add-on's data simply isn't included —
     never a hard dependency between add-ons."""
     base = await db.identity_customers.find_one({"id": customer_id}, {"_id": 0})
-    if not base:
+    if not base or not _venue_owns(base.get("venue_id"), user.get("businessId")):
         raise HTTPException(status_code=404, detail="Customer not found")
     out = {"customer": base}
     if await addon_enabled("bookings_guests.enabled"):
@@ -69,7 +87,7 @@ async def get_identity(customer_id: str, _: dict = Depends(get_user)):
 
 
 @router.post("/identity/segments/preview")
-async def segment_preview(definition: dict, _: dict = Depends(get_user)):
+async def segment_preview(definition: dict, user: dict = Depends(get_user)):
     """Marketing segments read Customer, and optionally LoyaltyAccount /
     GuestProfile fields IF those add-ons are enabled — but must degrade to
     Customer-only filtering when they're not (rule 3 of the identity spec)."""
@@ -78,7 +96,7 @@ async def segment_preview(definition: dict, _: dict = Depends(get_user)):
 
     min_visits = int(definition.get("min_visits", 0) or 0)
     source = definition.get("source")
-    query = {}
+    query = _venue_scope_filter(user.get("businessId"))
     if min_visits > 0:
         query["visit_count"] = {"$gte": min_visits}
     if source:
@@ -127,19 +145,20 @@ async def segment_preview(definition: dict, _: dict = Depends(get_user)):
 
 
 @router.post("/identity/migrate-legacy-crm")
-async def migrate_legacy_crm(_: dict = Depends(require_owner)):
+async def migrate_legacy_crm(user: dict = Depends(require_owner)):
     """Split pilot data from the old combined Loyalty & CRM customers
     collection: notes/tags/visit-history enrichment goes to GuestProfile
     (bookings-guests), points/tier go to LoyaltyAccount (loyalty) — both
     keyed to one new base Customer identity. Idempotent: rows already
     migrated (matched by phone/email) are enriched, not duplicated."""
-    legacy = await db.customers.find({}, {"_id": 0}).to_list(10000)
+    biz = user.get("businessId")
+    legacy = await db.customers.find(tenant_scope_filter(biz), {"_id": 0}).to_list(10000)
     migrated = 0
     skipped = 0
     for c in legacy:
         identity = await create_or_match(
             phone=c.get("phone"), email=c.get("email"), name=c.get("name"),
-            source="pos_checkout",
+            source="pos_checkout", venue_id=biz or "main",
         )
         if identity is None:
             skipped += 1
@@ -178,7 +197,7 @@ async def migrate_legacy_crm(_: dict = Depends(require_owner)):
         )
 
         # Keep the legacy row linked so old code paths still resolve.
-        await db.customers.update_one({"id": c["id"]}, {"$set": {"identityCustomerId": cid}})
+        await db.customers.update_one({**tenant_scope_filter(user.get("businessId")), "id": c["id"]}, {"$set": {"identityCustomerId": cid}})
         migrated += 1
 
     return {"migrated": migrated, "skipped_no_contact": skipped, "at": _now()}

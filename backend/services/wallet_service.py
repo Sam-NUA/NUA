@@ -12,6 +12,7 @@ import calendar
 import uuid
 
 from database import db
+from middleware.actor_context import tenant_scope_filter
 
 DEFAULT_OFFERS = {
     "birthdayEnabled": True,
@@ -19,11 +20,16 @@ DEFAULT_OFFERS = {
 }
 
 
-async def get_offer_settings() -> dict:
-    s = await db.settings.find_one({"key": "wallet_offers"}, {"_id": 0})
+async def get_offer_settings(business_id: Optional[str] = None) -> dict:
+    """Defaults business_id from the request's actor context (same pattern
+    as notification_service.send()) so existing callers don't need
+    editing — this used to be one config shared by every business on the
+    deployment; see services/tenant_settings.py."""
+    from services.tenant_settings import get_setting
+    value = await get_setting("wallet_offers", business_id)
     cfg = dict(DEFAULT_OFFERS)
-    if s and isinstance(s.get("value"), dict):
-        cfg.update(s["value"])
+    if isinstance(value, dict):
+        cfg.update(value)
     return cfg
 
 
@@ -87,7 +93,7 @@ async def expire_stale_vouchers(customer_id: str):
 
 
 async def get_wallet(customer_id: str) -> Optional[dict]:
-    customer = await db.customers.find_one({"id": customer_id}, {"_id": 0})
+    customer = await db.customers.find_one({**tenant_scope_filter(), "id": customer_id}, {"_id": 0})
     if not customer:
         return None
     # Lazy occasion issuance + cleanup, then read
@@ -133,29 +139,47 @@ async def redeem_wallet_voucher(voucher_id: str, txn_id: str, requested_amount: 
     actually checks. A voucher left in status "used" was invisible to that
     check and could be redeemed a second time through /vouchers/redeem.
     """
-    v = await db.vouchers.find_one({"id": voucher_id}, {"_id": 0})
-    if not v or v.get("status") not in ("active", "partial"):
-        return 0.0
+    # Compare-and-swap retry loop, same idiom as routes/commerce_v29.py's
+    # redeem_voucher — this function is live (routes/transactions.py calls
+    # it for every POS-checkout wallet-voucher discount), and the old
+    # single-shot filter pinned only `status`, not `residualValue`: two
+    # concurrent checkouts both applying the same partial-redeemable
+    # voucher could both read the same residual, both compute a new
+    # residual from it, and both write — the exact lost-update/overdraw
+    # race already fixed in commerce_v29.py, just reachable from this
+    # sibling entry point too.
+    for _attempt in range(8):
+        v = await db.vouchers.find_one({"id": voucher_id}, {"_id": 0})
+        if not v or v.get("status") not in ("active", "partial"):
+            return 0.0
 
-    if v.get("valueType") == "percentage":
-        applied = max(0.0, float(requested_amount))
-    else:
-        cap = float(v.get("residualValue")) if v.get("partialRedeemable") else float(v.get("value", 0) or 0)
-        applied = max(0.0, min(float(requested_amount), max(cap, 0.0)))
-    if applied <= 0:
-        return 0.0
+        if v.get("valueType") == "percentage":
+            applied = max(0.0, float(requested_amount))
+        else:
+            cap = float(v.get("residualValue")) if v.get("partialRedeemable") else float(v.get("value", 0) or 0)
+            applied = max(0.0, min(float(requested_amount), max(cap, 0.0)))
+        if applied <= 0:
+            return 0.0
 
-    update = {"usedAt": datetime.now(timezone.utc).isoformat(), "transactionId": txn_id}
-    if v.get("partialRedeemable"):
-        prev_residual = float(v.get("residualValue") if v.get("residualValue") is not None else v.get("value", 0))
-        new_residual = round(max(0.0, prev_residual - applied), 2)
-        update["residualValue"] = new_residual
-        update["status"] = "partial" if new_residual > 0 else "redeemed"
-    else:
-        update["status"] = "redeemed"
+        update = {"usedAt": datetime.now(timezone.utc).isoformat(), "transactionId": txn_id}
+        if v.get("partialRedeemable"):
+            prev_residual = float(v.get("residualValue") if v.get("residualValue") is not None else v.get("value", 0))
+            new_residual = round(max(0.0, prev_residual - applied), 2)
+            update["residualValue"] = new_residual
+            update["status"] = "partial" if new_residual > 0 else "redeemed"
+        else:
+            update["status"] = "redeemed"
 
-    res = await db.vouchers.find_one_and_update(
-        {"id": voucher_id, "status": v["status"]},
-        {"$set": update, "$inc": {"redemptionCount": 1}},
-    )
-    return round(applied, 2) if res is not None else 0.0
+        cas_filter = {
+            "id": voucher_id, "status": v["status"],
+            "residualValue": v.get("residualValue"),
+            "redemptionCount": v.get("redemptionCount", 0),
+        }
+        res = await db.vouchers.find_one_and_update(
+            cas_filter, {"$set": update, "$inc": {"redemptionCount": 1}},
+        )
+        if res is not None:
+            return round(applied, 2)
+        # Lost the race — someone else redeemed/updated this voucher
+        # between our read and write. Retry against fresh state.
+    return 0.0

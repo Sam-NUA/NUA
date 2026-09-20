@@ -49,11 +49,33 @@ def test_percentage_voucher_discount_is_capped_by_max_discount():
 
 
 def test_public_check_applies_the_max_discount_cap(client):
-    _insert_voucher("ZZZPUBCAP", None, value_type="percentage", value=15.0, max_discount=20.0)
-    r = req(client, "POST", "/api/vouchers/public-check", json={
+    _insert_voucher("ZZZPUBCAP", "default", value_type="percentage", value=15.0, max_discount=20.0)
+    r = req(client, "POST", "/api/vouchers/public-check?business=default", json={
         "code": "ZZZPUBCAP", "cart": [{"price": 500.0, "quantity": 1}],
     })
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["valid"] is True
     assert body["discount"] == 20.0
+
+
+def test_revoke_voucher_rejects_a_voucher_belonging_to_another_business(client, owner_headers):
+    """POST /vouchers/{id}/revoke had no tenant check at all — any
+    owner/manager could revoke (permanently disable) any OTHER business's
+    voucher just by knowing its id. Found during the Trust Release final
+    readiness audit."""
+    _insert_voucher("ZZZREVOKEOTHER", "BIZ-VOUCHER-REVOKE-OTHER")
+    r = req(client, "POST", "/api/vouchers/V-ZZZREVOKEOTHER/revoke", headers=owner_headers, json={})
+    assert r.status_code == 404, r.text
+
+    from database import db
+    import asyncio
+    v = asyncio.get_event_loop().run_until_complete(
+        db.vouchers.find_one({"id": "V-ZZZREVOKEOTHER"}, {"_id": 0, "status": 1}))
+    assert v["status"] == "active", "a rejected cross-tenant revoke must not change the voucher's status"
+
+
+def test_revoke_voucher_succeeds_for_your_own_business(client, owner_headers):
+    _insert_voucher("ZZZREVOKEOWN", "default")
+    r = req(client, "POST", "/api/vouchers/V-ZZZREVOKEOWN/revoke", headers=owner_headers, json={})
+    assert r.status_code == 200, r.text

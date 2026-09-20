@@ -16,7 +16,7 @@ from datetime import datetime, timedelta
 
 from database import db
 from deps import get_user, require_owner_or_manager
-from middleware.actor_context import tenant_scope_filter, tenant_owns
+from middleware.actor_context import tenant_scope_filter, tenant_owns_strict
 from models.service_catalog import Service, ServiceCreate, ServiceUpdate
 from models.appointment import Appointment, AppointmentCreate, AppointmentUpdate
 from models.client_intake import IntakeNote, IntakeNoteCreate
@@ -47,23 +47,23 @@ async def create_service(data: ServiceCreate, user: dict = Depends(require_owner
 
 @router.put("/services/{service_id}", response_model=Service)
 async def update_service(service_id: str, data: ServiceUpdate, user: dict = Depends(require_owner_or_manager)):
-    existing = await db.services.find_one({"id": service_id}, {"_id": 0, "businessId": 1})
-    if not existing or not tenant_owns(existing.get("businessId"), user.get("businessId")):
+    existing = await db.services.find_one({"$and": [{"id": service_id}, tenant_scope_filter(user.get("businessId"))]}, {"_id": 0, "businessId": 1})
+    if not existing or not tenant_owns_strict(existing.get("businessId"), user.get("businessId")):
         raise HTTPException(status_code=404, detail="Service not found")
     update_data = {k: v for k, v in data.dict().items() if v is not None}
     update_data["updatedAt"] = datetime.utcnow().isoformat()
     result = await db.services.find_one_and_update(
-        {"id": service_id}, {"$set": update_data}, return_document=True,
+        {"$and": [{"id": service_id}, tenant_scope_filter(user.get("businessId"))]}, {"$set": update_data}, return_document=True,
     )
     return Service(**{k: v for k, v in result.items() if k != "_id"})
 
 
 @router.delete("/services/{service_id}")
 async def delete_service(service_id: str, user: dict = Depends(require_owner_or_manager)):
-    existing = await db.services.find_one({"id": service_id}, {"_id": 0, "businessId": 1})
-    if not existing or not tenant_owns(existing.get("businessId"), user.get("businessId")):
+    existing = await db.services.find_one({"$and": [{"id": service_id}, tenant_scope_filter(user.get("businessId"))]}, {"_id": 0, "businessId": 1})
+    if not existing or not tenant_owns_strict(existing.get("businessId"), user.get("businessId")):
         raise HTTPException(status_code=404, detail="Service not found")
-    await db.services.update_one({"id": service_id}, {"$set": {"active": False}})
+    await db.services.update_one({"$and": [{"id": service_id}, tenant_scope_filter(user.get("businessId"))]}, {"$set": {"active": False}})
     return {"message": "Service deactivated", "id": service_id}
 
 
@@ -75,12 +75,14 @@ def _window(date: str, time: str, duration_minutes: int) -> tuple[str, str]:
     return start.isoformat(), end.isoformat()
 
 
-async def _staff_is_free(staff_id: str, start: str, end: str, exclude_id: Optional[str] = None) -> bool:
+async def _staff_is_free(staff_id: str, start: str, end: str,
+                         business_id: str, exclude_id: Optional[str] = None) -> bool:
     query = {
         "staffId": staff_id,
         "status": {"$in": list(ACTIVE_STATUSES)},
         "_start": {"$lt": end},
         "_end": {"$gt": start},
+        **tenant_scope_filter(business_id),
     }
     if exclude_id:
         query["id"] = {"$ne": exclude_id}
@@ -115,7 +117,8 @@ async def get_availability(staffId: str, serviceId: str, date: str, user=Depends
     what it checks: real conflicts against this staff member's existing
     appointments, not just a static grid.
     """
-    service = await db.services.find_one({"id": serviceId}, {"_id": 0})
+    scope = tenant_scope_filter(user.get("businessId"))
+    service = await db.services.find_one({"id": serviceId, **scope}, {"_id": 0})
     if not service:
         raise HTTPException(status_code=404, detail="Service not found")
     duration = service.get("durationMinutes", 30)
@@ -125,6 +128,7 @@ async def get_availability(staffId: str, serviceId: str, date: str, user=Depends
 
     existing = await db.appointments.find({
         "staffId": staffId, "date": date, "status": {"$in": list(ACTIVE_STATUSES)},
+        **scope,
     }, {"_id": 0, "_start": 1, "_end": 1}).to_list(200)
     busy = [(e["_start"], e["_end"]) for e in existing if e.get("_start") and e.get("_end")]
 
@@ -142,15 +146,16 @@ async def get_availability(staffId: str, serviceId: str, date: str, user=Depends
 
 @router.post("/appointments", response_model=Appointment)
 async def create_appointment(data: AppointmentCreate, user: dict = Depends(get_user)):
-    service = await db.services.find_one({"id": data.serviceId}, {"_id": 0})
+    scope = tenant_scope_filter(user.get("businessId"))
+    service = await db.services.find_one({"id": data.serviceId, **scope}, {"_id": 0})
     if not service:
         raise HTTPException(status_code=404, detail="Service not found")
-    staff = await db.auth_users.find_one({"id": data.staffId}, {"_id": 0, "name": 1})
+    staff = await db.auth_users.find_one({"id": data.staffId, **scope}, {"_id": 0, "name": 1})
     if not staff:
         raise HTTPException(status_code=404, detail="Staff member not found")
 
     start, end = _window(data.date, data.time, service.get("durationMinutes", 30))
-    if not await _staff_is_free(data.staffId, start, end):
+    if not await _staff_is_free(data.staffId, start, end, user.get("businessId")):
         raise HTTPException(status_code=409, detail=f"{staff.get('name')} already has an appointment then")
 
     appt = Appointment(
@@ -172,8 +177,8 @@ async def create_appointment(data: AppointmentCreate, user: dict = Depends(get_u
 
 @router.put("/appointments/{appointment_id}", response_model=Appointment)
 async def update_appointment(appointment_id: str, data: AppointmentUpdate, user: dict = Depends(get_user)):
-    existing = await db.appointments.find_one({"id": appointment_id}, {"_id": 0})
-    if not existing or not tenant_owns(existing.get("businessId"), user.get("businessId")):
+    existing = await db.appointments.find_one({"$and": [{"id": appointment_id}, tenant_scope_filter(user.get("businessId"))]}, {"_id": 0})
+    if not existing or not tenant_owns_strict(existing.get("businessId"), user.get("businessId")):
         raise HTTPException(status_code=404, detail="Appointment not found")
 
     update_data = {k: v for k, v in data.dict().items() if v is not None}
@@ -181,7 +186,8 @@ async def update_appointment(appointment_id: str, data: AppointmentUpdate, user:
 
     duration = existing.get("durationMinutes", 30)
     if "serviceId" in update_data:
-        service = await db.services.find_one({"id": update_data["serviceId"]}, {"_id": 0})
+        service = await db.services.find_one(
+            {"id": update_data["serviceId"], **tenant_scope_filter(user.get("businessId"))}, {"_id": 0})
         if not service:
             raise HTTPException(status_code=404, detail="Service not found")
         duration = service.get("durationMinutes", 30)
@@ -189,7 +195,10 @@ async def update_appointment(appointment_id: str, data: AppointmentUpdate, user:
         update_data["durationMinutes"] = duration
         update_data["price"] = service.get("price", 0.0)
     if "staffId" in update_data:
-        staff = await db.auth_users.find_one({"id": update_data["staffId"]}, {"_id": 0, "name": 1})
+        staff = await db.auth_users.find_one(
+            {"id": update_data["staffId"], **tenant_scope_filter(user.get("businessId"))},
+            {"_id": 0, "name": 1},
+        )
         if not staff:
             raise HTTPException(status_code=404, detail="Staff member not found")
         update_data["staffName"] = staff.get("name", "")
@@ -199,24 +208,26 @@ async def update_appointment(appointment_id: str, data: AppointmentUpdate, user:
         new_time = update_data.get("time", existing.get("time"))
         new_staff = update_data.get("staffId", existing.get("staffId"))
         start, end = _window(new_date, new_time, duration)
-        if not await _staff_is_free(new_staff, start, end, exclude_id=appointment_id):
+        if not await _staff_is_free(
+            new_staff, start, end, user.get("businessId"), exclude_id=appointment_id
+        ):
             raise HTTPException(status_code=409, detail="That staff member already has an appointment then")
         update_data["_start"], update_data["_end"] = start, end
 
     update_data["updatedAt"] = datetime.utcnow().isoformat()
     result = await db.appointments.find_one_and_update(
-        {"id": appointment_id}, {"$set": update_data}, return_document=True,
+        {"$and": [{"id": appointment_id}, tenant_scope_filter(user.get("businessId"))]}, {"$set": update_data}, return_document=True,
     )
     return Appointment(**{k: v for k, v in result.items() if not k.startswith("_") and k != "_id"})
 
 
 async def _set_status(appointment_id: str, status: str, user: dict) -> Appointment:
-    existing = await db.appointments.find_one({"id": appointment_id}, {"_id": 0})
-    if not existing or not tenant_owns(existing.get("businessId"), user.get("businessId")):
+    existing = await db.appointments.find_one({"$and": [{"id": appointment_id}, tenant_scope_filter(user.get("businessId"))]}, {"_id": 0})
+    if not existing or not tenant_owns_strict(existing.get("businessId"), user.get("businessId")):
         raise HTTPException(status_code=404, detail="Appointment not found")
     now_iso = datetime.utcnow().isoformat()
     result = await db.appointments.find_one_and_update(
-        {"id": appointment_id}, {"$set": {"status": status, "updatedAt": now_iso}}, return_document=True,
+        {"$and": [{"id": appointment_id}, tenant_scope_filter(user.get("businessId"))]}, {"$set": {"status": status, "updatedAt": now_iso}}, return_document=True,
     )
     return Appointment(**{k: v for k, v in result.items() if not k.startswith("_") and k != "_id"})
 
@@ -237,17 +248,17 @@ async def no_show_appointment(appointment_id: str, fee: float = 0, user: dict = 
     doesn't charge a card itself (no payment integration here), it records
     what the no-show cost and tallies it against the client's history, the
     way a front-desk ledger would."""
-    existing = await db.appointments.find_one({"id": appointment_id}, {"_id": 0})
-    if not existing or not tenant_owns(existing.get("businessId"), user.get("businessId")):
+    existing = await db.appointments.find_one({"$and": [{"id": appointment_id}, tenant_scope_filter(user.get("businessId"))]}, {"_id": 0})
+    if not existing or not tenant_owns_strict(existing.get("businessId"), user.get("businessId")):
         raise HTTPException(status_code=404, detail="Appointment not found")
     now_iso = datetime.utcnow().isoformat()
     result = await db.appointments.find_one_and_update(
-        {"id": appointment_id},
+        {"$and": [{"id": appointment_id}, tenant_scope_filter(user.get("businessId"))]},
         {"$set": {"status": "no_show", "noShowFee": fee, "updatedAt": now_iso}},
         return_document=True,
     )
     if existing.get("customerId"):
-        await db.customers.update_one({"id": existing["customerId"]}, {"$inc": {"noShowCount": 1}})
+        await db.customers.update_one({**tenant_scope_filter(user.get("businessId")), "id": existing["customerId"]}, {"$inc": {"noShowCount": 1}})
     return Appointment(**{k: v for k, v in result.items() if not k.startswith("_") and k != "_id"})
 
 

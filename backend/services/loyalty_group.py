@@ -37,16 +37,12 @@ async def sibling_business_ids(business_id: Optional[str]) -> List[str]:
 
 
 async def find_group_records(phone: str, anchor_business_id: Optional[str]) -> List[Dict[str, Any]]:
-    """Every customers document with this phone number, at a business in
-    the same ownership group as anchor_business_id. Untagged legacy records
-    (no businessId) are included too, same fail-open posture tenant_scope_filter
-    uses elsewhere — a not-yet-backfilled record shouldn't just vanish."""
-    if not phone:
+    """Verified records in the anchor's ownership group; unknown owners fail closed."""
+    if not phone or not anchor_business_id:
         return []
     sib_ids = await sibling_business_ids(anchor_business_id)
-    q: Dict[str, Any] = {"phone": phone}
-    if sib_ids:
-        q["$or"] = [{"businessId": {"$in": sib_ids}}, {"businessId": None}, {"businessId": {"$exists": False}}]
+    q: Dict[str, Any] = {"phone": phone, "businessId": {"$in": sib_ids},
+                         "_ownershipQuarantined": {"$ne": True}}
     return await db.customers.find(q, {"_id": 0}).to_list(50)
 
 
@@ -64,7 +60,15 @@ async def passport_view(phone: str, anchor_business_id: Optional[str]) -> Dict[s
     )
     biz_names = {b["id"]: b["name"] for b in biz_rows}
 
-    tiers = await db.loyalty_tiers.find({}, {"_id": 0}).sort("minPoints", 1).to_list(20)
+    # Tier definitions are business-scoped (see routes/loyalty.py) — an
+    # unscoped read here would compute the group's displayed tier name
+    # from whichever business's tier documents the query happened to hit
+    # first, not the anchor business's own. Scoped to the anchor
+    # specifically (not the whole sibling group): a multi-location owner
+    # could in principle set different tier ladders per venue, and the
+    # guest is looking this up from one specific venue's context.
+    from middleware.actor_context import tenant_scope_filter
+    tiers = await db.loyalty_tiers.find(tenant_scope_filter(anchor_business_id), {"_id": 0}).sort("minPoints", 1).to_list(20)
     group_points = sum(int(r.get("points") or 0) for r in records)
     group_spent = round(sum(float(r.get("totalSpent") or 0) for r in records), 2)
     group_visits = sum(int(r.get("visits") or 0) for r in records)

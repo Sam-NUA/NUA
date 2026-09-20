@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { Card, CardContent } from '../../components/ui/card';
 import { Button } from '../../components/ui/button';
-import { v25API } from '../../services/api';
+import { v25API, productsAPI } from '../../services/api';
 import { useTheme } from '../../contexts/ThemeContext';
 import { useToast } from '../../hooks/use-toast';
 import { Smartphone } from 'lucide-react';
@@ -15,6 +15,7 @@ function productName(p, lang) {
 }
 
 export default function KioskMode() {
+  const business = new URLSearchParams(window.location.search).get("business") || undefined;
   const { theme } = useTheme(); const { toast } = useToast();
   const { lang, setLang, t, dir, languages } = useLanguage('nua_kiosk_lang');
   const [products, setProducts] = useState([]);
@@ -34,9 +35,9 @@ export default function KioskMode() {
     // this fix, which hid them outright) so a guest who taps one gets an
     // AI-suggested alternative instead of the item just not existing —
     // still can't add it to the cart directly, same protection as before.
-    fetch(`${process.env.REACT_APP_BACKEND_URL}/api/products`).then(r => r.json())
-      .then(list => setProducts(list || []))
-      .catch(() => {});
+    productsAPI.getAll({ business })
+      .then(r => setProducts(Array.isArray(r.data) ? r.data : []))
+      .catch(() => toast({ title: "Could not load this venue’s menu", variant: "destructive" }));
   }, []);
   useEffect(() => { coursingAPI.getConfig().then(r => setCoursing(r.data)).catch(() => setCoursing(null)); }, []);
 
@@ -45,7 +46,7 @@ export default function KioskMode() {
   const dineIn = !!session?.tableId;
   const showCourses = !!coursing?.enabled && dineIn;
 
-  const start = async () => { const r = await v25API.kioskStart({ guests: 2 }); setSession(r.data); setCart([]); };
+  const start = async () => { const r = await v25API.kioskStart({ guests: 2, business }); setSession(r.data); setCart([]); };
 
   const add = (p) => {
     if (p.eightySixed) { showSubstitutes(p); return; }

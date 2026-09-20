@@ -54,7 +54,7 @@ def to_base(qty: float, from_unit: str, base_unit: str) -> float:
 # =============================================================================
 @router.get("/ingredients")
 async def list_ingredients(_: dict = Depends(get_user)):
-    rows = await db.ingredients.find({}, {"_id": 0}).sort("name", 1).to_list(500)
+    rows = await db.ingredients.find(tenant_scope_filter(), {"_id": 0}).sort("name", 1).to_list(500)
     return rows
 
 
@@ -76,35 +76,39 @@ async def create_ingredient(data: dict, user: dict = Depends(require_owner_or_ma
         "reorderLevel": float(data.get("reorderLevel", 0)),  # alert below this
         "reorderQty": float(data.get("reorderQty", 0)),      # auto-PO quantity
         "createdAt": _iso(_now()), "createdBy": user["id"],
+        "businessId": user.get("businessId"),
     }
     await db.ingredients.insert_one(ing); ing.pop("_id", None)
     return ing
 
 
 @router.put("/ingredients/{ing_id}")
-async def update_ingredient(ing_id: str, data: dict, _: dict = Depends(require_owner_or_manager)):
+async def update_ingredient(ing_id: str, data: dict, user: dict = Depends(require_owner_or_manager)):
     allowed = {"name", "category", "baseUnit", "stock", "unitCost", "supplierName",
                "gstInclusive", "reorderLevel", "reorderQty"}
     upd = {k: v for k, v in data.items() if k in allowed}
     upd["updatedAt"] = _iso(_now())
-    r = await db.ingredients.update_one({"id": ing_id}, {"$set": upd})
+    r = await db.ingredients.update_one(
+        {"id": ing_id, **tenant_scope_filter(user.get("businessId"))}, {"$set": upd})
     if r.matched_count == 0: raise HTTPException(status_code=404, detail="Not found")
     return {"updated": True}
 
 
 @router.delete("/ingredients/{ing_id}")
-async def delete_ingredient(ing_id: str, _: dict = Depends(require_owner)):
-    in_recipe = await db.recipes.count_documents({"lines.ingredientId": ing_id})
+async def delete_ingredient(ing_id: str, user: dict = Depends(require_owner)):
+    scope = tenant_scope_filter(user.get("businessId"))
+    in_recipe = await db.recipes.count_documents({"lines.ingredientId": ing_id, **scope})
     if in_recipe > 0:
         raise HTTPException(status_code=400, detail=f"Used in {in_recipe} recipe(s) — remove first")
-    await db.ingredients.delete_one({"id": ing_id})
+    await db.ingredients.delete_one({"id": ing_id, **scope})
     return {"deleted": True}
 
 
 @router.get("/ingredients/low-stock")
 async def low_stock(_: dict = Depends(get_user)):
     rows = await db.ingredients.find(
-        {"$expr": {"$lte": ["$stock", "$reorderLevel"]}, "reorderLevel": {"$gt": 0}},
+        {"$expr": {"$lte": ["$stock", "$reorderLevel"]}, "reorderLevel": {"$gt": 0},
+         **tenant_scope_filter()},
         {"_id": 0},
     ).to_list(200)
     return rows
@@ -115,13 +119,13 @@ async def low_stock(_: dict = Depends(get_user)):
 # =============================================================================
 @router.get("/recipes")
 async def list_recipes(_: dict = Depends(get_user)):
-    rows = await db.recipes.find({}, {"_id": 0}).to_list(2000)
+    rows = await db.recipes.find(tenant_scope_filter(), {"_id": 0}).to_list(2000)
     return rows
 
 
 @router.get("/recipes/product/{product_id}")
 async def get_recipe(product_id: str, _: dict = Depends(get_user)):
-    r = await db.recipes.find_one({"productId": product_id}, {"_id": 0})
+    r = await db.recipes.find_one({"productId": product_id, **tenant_scope_filter()}, {"_id": 0})
     return r or {"productId": product_id, "lines": []}
 
 
@@ -133,7 +137,8 @@ async def upsert_recipe(product_id: str, data: dict, user: dict = Depends(requir
     for raw in data.get("lines") or []:
         iid = raw.get("ingredientId")
         if not iid: continue
-        ing = ing_cache.get(iid) or await db.ingredients.find_one({"id": iid}, {"_id": 0})
+        ing = ing_cache.get(iid) or await db.ingredients.find_one(
+            {"id": iid, **tenant_scope_filter(user.get("businessId"))}, {"_id": 0})
         if not ing: raise HTTPException(status_code=400, detail=f"Ingredient {iid} not found")
         ing_cache[iid] = ing
         unit = raw.get("unit", ing["baseUnit"])
@@ -153,12 +158,15 @@ async def upsert_recipe(product_id: str, data: dict, user: dict = Depends(requir
     recipe = {
         "productId": product_id, "lines": lines, "computedCost": cost,
         "updatedAt": _iso(_now()), "updatedBy": user["id"],
+        "businessId": user.get("businessId"),
     }
     await db.recipes.update_one(
-        {"productId": product_id}, {"$set": recipe}, upsert=True)
+        {"productId": product_id, **tenant_scope_filter(user.get("businessId"))},
+        {"$set": recipe}, upsert=True)
     # Push the cost back onto the product so margin chips stay accurate.
     await db.products.update_one(
-        {"id": product_id}, {"$set": {"cost": cost, "updatedAt": _iso(_now())}})
+        {"id": product_id, **tenant_scope_filter(user.get("businessId"))},
+        {"$set": {"cost": cost, "updatedAt": _iso(_now())}})
     recipe.pop("_id", None)
     return recipe
 
@@ -167,13 +175,14 @@ async def deduct_recipe_stock(product_id: str, quantity_sold: int) -> dict:
     """Called from transactions.create on each item. Reduces ingredient stock
     and records a ledger entry. Idempotency comes from the caller passing the
     transaction id as `ref`."""
-    recipe = await db.recipes.find_one({"productId": product_id}, {"_id": 0})
+    scope = tenant_scope_filter()
+    recipe = await db.recipes.find_one({"productId": product_id, **scope}, {"_id": 0})
     if not recipe or not recipe.get("lines"): return {"skipped": True, "reason": "no_recipe"}
     deducted = []
     for line in recipe["lines"]:
         deduct = line["qtyBase"] * int(quantity_sold)
         await db.ingredients.update_one(
-            {"id": line["ingredientId"]}, {"$inc": {"stock": -deduct}})
+            {"id": line["ingredientId"], **scope}, {"$inc": {"stock": -deduct}})
         deducted.append({"ingredientId": line["ingredientId"], "qtyBase": deduct})
     return {"productId": product_id, "deducted": deducted}
 
@@ -192,7 +201,8 @@ async def create_stock_take(data: dict, user: dict = Depends(require_owner_or_ma
     rows = data.get("counts") or []   # [{ingredientId, countedBase}]
     variances = []
     for row in rows:
-        ing = await db.ingredients.find_one({"id": row["ingredientId"]}, {"_id": 0})
+        ing = await db.ingredients.find_one(
+            {"id": row["ingredientId"], **tenant_scope_filter(user.get("businessId"))}, {"_id": 0})
         if not ing: continue
         before = float(ing.get("stock", 0))
         after = float(row.get("countedBase", 0))
@@ -202,11 +212,14 @@ async def create_stock_take(data: dict, user: dict = Depends(require_owner_or_ma
             "expected": before, "counted": after, "variance": var,
             "varianceValue": round(var * float(ing.get("unitCost", 0)), 2),
         })
-        await db.ingredients.update_one({"id": ing["id"]}, {"$set": {"stock": after}})
+        await db.ingredients.update_one(
+            {"id": ing["id"], **tenant_scope_filter(user.get("businessId"))},
+            {"$set": {"stock": after}})
     doc = {
         "id": _uid("STK"), "performedAt": _iso(_now()), "performedBy": user["id"],
         "notes": data.get("notes", ""), "variances": variances,
         "totalShrinkageValue": round(sum(v["varianceValue"] for v in variances if v["variance"] < 0), 2),
+        "businessId": user.get("businessId"),
     }
     await db.stock_takes.insert_one(doc); doc.pop("_id", None)
     return doc
@@ -214,7 +227,7 @@ async def create_stock_take(data: dict, user: dict = Depends(require_owner_or_ma
 
 @router.get("/stock-takes")
 async def list_stock_takes(_: dict = Depends(get_user)):
-    rows = await db.stock_takes.find({}, {"_id": 0}).sort("performedAt", -1).to_list(50)
+    rows = await db.stock_takes.find(tenant_scope_filter(), {"_id": 0}).sort("performedAt", -1).to_list(50)
     return rows
 
 
@@ -226,12 +239,13 @@ async def assign_invoice_to_stock(invoice_id: str, data: dict, user: dict = Depe
     """Owner reviews a parsed invoice and tells us which lines map to which
     ingredient + which unit. We convert to base, increment stock, and update
     unitCost as a weighted moving average. Posts a stock_movements row per line."""
-    inv = await db.invoices.find_one({"id": invoice_id}, {"_id": 0})
+    scope = tenant_scope_filter(user.get("businessId"))
+    inv = await db.invoices.find_one({"id": invoice_id, **scope}, {"_id": 0})
     if not inv: raise HTTPException(status_code=404, detail="Invoice not found")
     assigns = data.get("assignments") or []
     movements, errors = [], []
     for a in assigns:
-        ing = await db.ingredients.find_one({"id": a.get("ingredientId")}, {"_id": 0})
+        ing = await db.ingredients.find_one({"id": a.get("ingredientId"), **scope}, {"_id": 0})
         if not ing:
             errors.append({"ingredientId": a.get("ingredientId"), "reason": "not_found"})
             continue
@@ -249,7 +263,7 @@ async def assign_invoice_to_stock(invoice_id: str, data: dict, user: dict = Depe
             if (prev_stock + qty_base) > 0 else (line_total / qty_base if qty_base > 0 else prev_cost)
         )
         await db.ingredients.update_one(
-            {"id": ing["id"]},
+            {"id": ing["id"], **scope},
             {"$set": {"stock": prev_stock + qty_base, "unitCost": round(new_unit_cost, 4),
                       "updatedAt": _iso(_now())}})
         mv = {
@@ -258,17 +272,18 @@ async def assign_invoice_to_stock(invoice_id: str, data: dict, user: dict = Depe
             "qty": a["qty"], "unit": a["unit"], "qtyBase": qty_base, "baseUnit": ing["baseUnit"],
             "lineTotal": line_total, "newUnitCost": round(new_unit_cost, 4),
             "createdAt": _iso(_now()), "createdBy": user["id"],
+            "businessId": user.get("businessId"),
         }
         await db.stock_movements.insert_one(mv); mv.pop("_id", None)
         movements.append(mv)
     await db.invoices.update_one(
-        {"id": invoice_id},
+        {"id": invoice_id, **scope},
         {"$set": {"stockAssignedAt": _iso(_now()), "stockAssignedBy": user["id"],
                   "stockMovements": [m["id"] for m in movements]}})
     # Cascade: re-roll the cost of every product whose recipe uses the touched ingredients.
     touched_ings = {m["ingredientId"] for m in movements}
     affected_recipes = await db.recipes.find(
-        {"lines.ingredientId": {"$in": list(touched_ings)}}, {"_id": 0}).to_list(500)
+        {"lines.ingredientId": {"$in": list(touched_ings)}, **scope}, {"_id": 0}).to_list(500)
     # Receiving stock can move an ingredient's cost enough to erode a
     # product's margin — surfaced here so the owner can react on the same
     # screen instead of noticing weeks later on a margin report, and can
@@ -280,11 +295,12 @@ async def assign_invoice_to_stock(invoice_id: str, data: dict, user: dict = Depe
         ing_lookup = {}
         for l in lines:
             ing_lookup[l["ingredientId"]] = ing_lookup.get(l["ingredientId"]) or (
-                await db.ingredients.find_one({"id": l["ingredientId"]}, {"_id": 0}))
+                await db.ingredients.find_one({"id": l["ingredientId"], **scope}, {"_id": 0}))
         new_cost = round(
             sum((ing_lookup[l["ingredientId"]] or {}).get("unitCost", 0) * l["qtyBase"]
                 for l in lines), 4)
-        await db.recipes.update_one({"productId": rec["productId"]}, {"$set": {"computedCost": new_cost}})
+        await db.recipes.update_one(
+            {"productId": rec["productId"], **scope}, {"$set": {"computedCost": new_cost}})
         product_update = {"cost": new_cost}
         override = price_updates.get(rec["productId"])
         if override is not None:
@@ -292,8 +308,9 @@ async def assign_invoice_to_stock(invoice_id: str, data: dict, user: dict = Depe
                 product_update["price"] = round(float(override), 2)
             except (TypeError, ValueError):
                 pass
-        await db.products.update_one({"id": rec["productId"]}, {"$set": product_update})
-        product = await db.products.find_one({"id": rec["productId"]}, {"_id": 0, "name": 1, "price": 1})
+        await db.products.update_one({"id": rec["productId"], **scope}, {"$set": product_update})
+        product = await db.products.find_one(
+            {"id": rec["productId"], **scope}, {"_id": 0, "name": 1, "price": 1})
         price = float(product_update.get("price", (product or {}).get("price", 0)) or 0)
         margin_pct = round(((price - new_cost) / price) * 100, 1) if price > 0 else None
         price_review.append({
@@ -399,10 +416,11 @@ async def bas_report(fy: Optional[int] = None, quarter: Optional[str] = None,
     net_gst = round(one_a_gst_on_sales - one_b_gst_credits, 2)
 
     # Theoretical vs actual COGS variance
-    ingredients = await db.ingredients.find({}, {"_id": 0, "stock": 1, "unitCost": 1}).to_list(500)
+    ingredients = await db.ingredients.find(tenant_scope_filter(), {"_id": 0, "stock": 1, "unitCost": 1}).to_list(500)
     on_hand_value = round(sum(float(i.get("stock", 0)) * float(i.get("unitCost", 0)) for i in ingredients), 2)
     movements_in = await db.stock_movements.find(
-        {"createdAt": {"$gte": start_iso, "$lt": end_iso}, "type": "receive"},
+        {"createdAt": {"$gte": start_iso, "$lt": end_iso}, "type": "receive",
+         **tenant_scope_filter(user.get("businessId"))},
         {"_id": 0, "lineTotal": 1}).to_list(50000)
     stock_received = round(sum(float(m.get("lineTotal", 0)) for m in movements_in), 2)
 

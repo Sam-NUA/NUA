@@ -19,6 +19,8 @@ test('owner can log in and land on an authenticated screen', async ({ page }) =>
 
 test('a bad password is rejected with a visible error, not a silent failure', async ({ page }) => {
   await page.goto('/login');
+  // Same PIN-is-the-default-mode reasoning as helpers.js's loginAsOwner.
+  await page.getByTestId('mode-email').click();
   await page.getByTestId('login-email').fill('owner@nua.com');
   await page.getByTestId('login-password').fill('definitely-wrong');
   await page.getByTestId('login-submit').click();

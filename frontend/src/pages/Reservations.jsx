@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   CalendarDays, Clock, Users, Plus, Search, Filter, ChevronLeft, ChevronRight,
-  Phone, Mail, Edit2, Trash2, Check, X, UserCheck, AlertTriangle, MapPin, Ban, RotateCcw
+  Phone, Mail, Edit2, Trash2, Check, X, UserCheck, AlertTriangle, MapPin, Ban, RotateCcw, CreditCard
 } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card';
 import { Button } from '../components/ui/button';
@@ -252,8 +252,26 @@ export default function Reservations() {
   };
 
   const handleNoShow = async (id) => {
-    try { await reservationsAPI.noShow(id, 0); toast.warning('Marked as no-show'); fetchData(); }
-    catch (e) { toast.error('Failed'); }
+    try {
+      const { data } = await reservationsAPI.noShow(id, 0);
+      toast.warning(data.depositForfeited
+        ? `Marked as no-show — $${data.forfeitedAmount.toFixed(2)} deposit forfeited`
+        : 'Marked as no-show');
+      fetchData();
+    } catch (e) { toast.error('Failed'); }
+  };
+
+  const handleRequestDeposit = async (id) => {
+    try {
+      const { data } = await reservationsAPI.requestDeposit(id, window.location.origin);
+      if (!data.configured) {
+        toast.error('Stripe is not configured for this venue — collect the deposit another way');
+        return;
+      }
+      await navigator.clipboard.writeText(data.url).catch(() => {});
+      toast.success('Deposit payment link copied — send it to the guest');
+      fetchData();
+    } catch (e) { toast.error(e?.response?.data?.detail || 'Failed to create deposit link'); }
   };
 
   const handleCancel = async (id) => {
@@ -498,6 +516,13 @@ export default function Reservations() {
                           <div className="flex items-center gap-1 justify-end">
                             {r.status === 'confirmed' && (
                               <>
+                                {r.depositRequired > 0 && !r.depositPaid && (
+                                  <Button variant="ghost" size="sm" onClick={() => handleRequestDeposit(r.id)}
+                                    className="text-amber-600 hover:bg-amber-50 h-8 px-2" data-testid={`request-deposit-btn-${r.id}`}
+                                    title={`Request $${r.depositRequired} deposit`}>
+                                    <CreditCard size={14} />
+                                  </Button>
+                                )}
                                 <Button variant="ghost" size="sm" onClick={() => handleSeat(r.id)} data-testid={`seat-btn-${r.id}`}
                                   className="text-green-600 hover:text-green-700 hover:bg-green-50 h-8 px-2">
                                   <UserCheck size={14} className="mr-1" /> Seat

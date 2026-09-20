@@ -13,6 +13,7 @@ from typing import Any, Dict, List
 from datetime import datetime, timezone
 from database import db
 from services.entity_service import stamped_insert
+from middleware.actor_context import tenant_scope_filter, get_actor_context, _actor_ctx
 import uuid
 
 
@@ -172,7 +173,7 @@ PRODUCTS: List[Dict[str, Any]] = [
 
 
 async def _upsert_category(cat: Dict[str, Any]) -> Dict[str, Any]:
-    existing = await db.categories.find_one({"name": cat["name"]}, {"_id": 0})
+    existing = await db.categories.find_one({"name": cat["name"], **tenant_scope_filter()}, {"_id": 0})
     if existing:
         # Repair: back-fill fields the initial seeder omitted so this category
         # renders correctly on the POS + Categories admin page.
@@ -210,7 +211,7 @@ async def _upsert_category(cat: Dict[str, Any]) -> Dict[str, Any]:
 
 async def _upsert_product(name: str, category: Dict[str, Any], price: float,
                             measured: Dict[str, Any] | None = None) -> Dict[str, Any]:
-    existing = await db.products.find_one({"name": name}, {"_id": 0})
+    existing = await db.products.find_one({"name": name, **tenant_scope_filter()}, {"_id": 0})
     if existing:
         # Repair: back-fill fields required by the Product Pydantic model so
         # GET /products doesn't 500 on legacy alcohol rows.
@@ -292,6 +293,7 @@ async def _repair_orphan_products() -> Dict[str, int]:
     a document is missing `category`, `cost`, `sku`, or `image`."""
     fixed = 0
     orphans = await db.products.find({
+        **tenant_scope_filter(),
         "$or": [
             {"category": {"$exists": False}}, {"category": None}, {"category": ""},
             {"cost": {"$exists": False}}, {"cost": None},
@@ -320,6 +322,7 @@ async def _repair_orphan_categories() -> Dict[str, int]:
     on the Categories admin page and appears on the POS. Non-destructive."""
     fixed = 0
     orphans = await db.categories.find({
+        **tenant_scope_filter(),
         "$or": [
             {"active": {"$exists": False}},
             {"sortOrder": {"$exists": False}},
@@ -341,12 +344,23 @@ async def _repair_orphan_categories() -> Dict[str, int]:
     return {"orphansFixed": fixed}
 
 
-async def seed_alcohol_catalog() -> Dict[str, Any]:
+async def seed_alcohol_catalog(business_id: str | None = None) -> Dict[str, Any]:
+    business_id = business_id or get_actor_context().get("businessId")
+    if not business_id:
+        raise ValueError("Explicit business required for catalog seeding")
+    token = _actor_ctx.set({**get_actor_context(), "businessId": business_id})
+    try:
+        return await _seed_alcohol_catalog()
+    finally:
+        _actor_ctx.reset(token)
+
+
+async def _seed_alcohol_catalog() -> Dict[str, Any]:
     """Idempotent. Reports how many rows were newly created."""
     stats = {"categoriesInserted": 0, "productsInserted": 0, "stockUnitsInserted": 0}
     cat_map: Dict[str, Dict[str, Any]] = {}
     for cat in CATEGORIES:
-        before = await db.categories.find_one({"name": cat["name"]}, {"_id": 0})
+        before = await db.categories.find_one({"name": cat["name"], **tenant_scope_filter()}, {"_id": 0})
         got = await _upsert_category(cat)
         cat_map[cat["name"]] = got
         if not before:
@@ -356,7 +370,7 @@ async def seed_alcohol_catalog() -> Dict[str, Any]:
         cat = cat_map.get(p["cat"])
         if not cat:
             continue
-        existing = await db.products.find_one({"name": p["name"]}, {"_id": 0})
+        existing = await db.products.find_one({"name": p["name"], **tenant_scope_filter()}, {"_id": 0})
         await _upsert_product(p["name"], cat, p["price"], p.get("measured"))
         if not existing:
             stats["productsInserted"] += 1

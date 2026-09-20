@@ -30,13 +30,13 @@ def _insert_untagged_legacy_event():
     return event["id"]
 
 
-def test_untagged_legacy_audit_event_still_appears_in_the_events_list(client, owner_headers):
+def test_untagged_legacy_audit_event_is_hidden_until_ownership_is_resolved(client, owner_headers):
     event_id = _insert_untagged_legacy_event()
     tenant = dict(owner_headers, **{"X-Tenant-Id": "default"})
 
     events = req(client, "GET", "/api/audit/events", headers=tenant,
                  params={"entity_type": "product", "entity_id": "legacy-product-1"}).json()
-    assert any(e["id"] == event_id for e in events), "untagged legacy event was hidden from /audit/events"
+    assert not any(e["id"] == event_id for e in events)
 
 
 def test_untagged_legacy_audit_event_still_counts_in_the_summary(client, owner_headers):

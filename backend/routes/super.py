@@ -24,6 +24,7 @@ from datetime import datetime, date, timezone
 from pydantic import BaseModel
 from database import db
 from deps import get_user
+from middleware.actor_context import tenant_scope_filter, tenant_owns_strict
 import uuid
 
 router = APIRouter()
@@ -160,6 +161,7 @@ async def commit_weekly_run(body: WeeklyRunIn, user: dict = Depends(get_user)):
         "committedBy": user.get("email"),
         "committedAt": datetime.now(timezone.utc).isoformat(),
         "status": "unpaid",       # UI can mark paid once STP/Clearing House confirms
+        "businessId": user.get("businessId"),
     }
     await db.super_weekly_runs.insert_one(doc)
     doc.pop("_id", None)
@@ -168,10 +170,10 @@ async def commit_weekly_run(body: WeeklyRunIn, user: dict = Depends(get_user)):
 
 @router.get("/super/weekly-runs")
 async def list_weekly_runs(startDate: Optional[str] = None, endDate: Optional[str] = None,
-                           _: dict = Depends(get_user)):
+                           user: dict = Depends(get_user)):
     """List committed weekly runs. Filter by pay-date range so BAS can pull
     'runs where payDate ∈ [Q_start, Q_end]'."""
-    query = {}
+    query = tenant_scope_filter(user.get("businessId"))
     if startDate:
         query["payDate"] = {"$gte": startDate}
     if endDate:
@@ -185,6 +187,9 @@ async def mark_paid(run_id: str, data: dict, user: dict = Depends(get_user)):
     """Owner marks a committed run as paid to the clearing house / super fund."""
     if user["role"] != "owner":
         raise HTTPException(403, "Owner only")
+    guard = await db.super_weekly_runs.find_one({"$and": [{"id": run_id}, tenant_scope_filter(user.get("businessId"))]}, {"_id": 0, "id": 1, "businessId": 1})
+    if guard is None or not tenant_owns_strict(guard.get("businessId"), user.get("businessId")):
+        raise HTTPException(404, "Super run not found")
     allowed = {"status", "paidAt", "clearingHouseRef", "note"}
     update = {k: v for k, v in data.items() if k in allowed}
     if not update:
@@ -192,21 +197,21 @@ async def mark_paid(run_id: str, data: dict, user: dict = Depends(get_user)):
     if "status" in update and update["status"] not in ("unpaid", "paid", "reversed"):
         raise HTTPException(400, "status must be unpaid | paid | reversed")
     update["updatedAt"] = datetime.now(timezone.utc).isoformat()
-    r = await db.super_weekly_runs.update_one({"id": run_id}, {"$set": update})
+    r = await db.super_weekly_runs.update_one({"$and": [{"id": run_id}, tenant_scope_filter(user.get("businessId"))]}, {"$set": update})
     if r.matched_count == 0:
         raise HTTPException(404, "Super run not found")
-    return await db.super_weekly_runs.find_one({"id": run_id}, {"_id": 0})
+    return await db.super_weekly_runs.find_one({"$and": [{"id": run_id}, tenant_scope_filter(user.get("businessId"))]}, {"_id": 0})
 
 
 @router.get("/super/bas-line")
-async def bas_line(quarterStart: str, quarterEnd: str, _: dict = Depends(get_user)):
+async def bas_line(quarterStart: str, quarterEnd: str, user: dict = Depends(get_user)):
     """The 'Superannuation payable' line item that BAS/GST reports pull in.
 
     Returns the total SG accrued in the quarter plus a paid/unpaid breakdown
     so the owner can see how much still needs to hit the clearing house before
     the ATO cut-off (28 days after quarter end)."""
     rows = await db.super_weekly_runs.find(
-        {"payDate": {"$gte": quarterStart, "$lte": quarterEnd}},
+        {"payDate": {"$gte": quarterStart, "$lte": quarterEnd}, **tenant_scope_filter(user.get("businessId"))},
         {"_id": 0},
     ).to_list(500)
 
@@ -237,7 +242,7 @@ def _due_by(quarter_end_iso: str) -> str:
 
 
 @router.get("/super/summary")
-async def yearly_summary(fy: Optional[str] = None, _: dict = Depends(get_user)):
+async def yearly_summary(fy: Optional[str] = None, user: dict = Depends(get_user)):
     """Quarterly rollup for a financial year (default = current AU FY).
 
     FY string format: '2025-2026' (July → June). Returns 4 quarter buckets
@@ -263,7 +268,8 @@ async def yearly_summary(fy: Optional[str] = None, _: dict = Depends(get_user)):
 
     all_runs = await db.super_weekly_runs.find(
         {"payDate": {"$gte": fy_start.isoformat(),
-                     "$lte": date(start_y + 1, 6, 30).isoformat()}},
+                     "$lte": date(start_y + 1, 6, 30).isoformat()},
+         **tenant_scope_filter(user.get("businessId"))},
         {"_id": 0},
     ).to_list(2000)
 

@@ -6,10 +6,9 @@ object directly in scope.
 
 Design notes
 ────────────
-• Never crashes if no context is set → helpers just skip stamping.
+• Missing business context never authorizes tenant-owned data access.
 • Never overwrites an explicit `createdBy` passed by the caller.
-• Auth is not required to enter the middleware — public routes still get
-  device/IP/tenant, just no actor.
+• Public requests get device/IP context; a venue is resolved by their endpoint.
 """
 from __future__ import annotations
 from contextvars import ContextVar
@@ -32,41 +31,26 @@ def set_actor_context(ctx: Dict[str, Any]) -> None:
 
 
 def tenant_scope_filter(business_id: Optional[str] = None) -> Dict[str, Any]:
-    """A Mongo filter clause that scopes a query to one business, WITHOUT
-    ever hiding data that predates tenant stamping.
+    """Only verified tenant records are visible; unowned/quarantined rows are not.
 
-    Pass the caller's businessId explicitly (from `user.get("businessId")`)
-    when you have it in scope, or omit it to read from the actor context.
-    Matches documents tagged for this business, plus any document that has
-    no businessId at all (missing field or null) — the untagged case is the
-    normal state for every document written before the tenant-stamping fix,
-    and for collections `routes/multi_tenant.py`'s `/business/backfill-tenant`
-    hasn't been pointed at yet. Once a business's data is fully backfilled
-    there's nothing left to match the untagged branch, so this quietly
-    becomes a strict filter with no further code change needed.
-
-    Returns {} (no-op — matches everything) when no businessId is known at
-    all, e.g. an old token issued before businessId was embedded in it. An
-    empty filter is the safe default: never hide data because the *signal*
-    for whose data it is happens to be missing.
+    Background tasks must pass their tenant explicitly. Missing context produces
+    an impossible predicate, never an unrestricted query.
     """
-    biz = business_id or get_actor_context().get("businessId")
-    if not biz:
-        return {}
-    return {"$or": [{"businessId": biz}, {"businessId": None}, {"businessId": {"$exists": False}}]}
+    biz = business_id if business_id is not None else get_actor_context().get("businessId")
+    if not isinstance(biz, str) or not biz.strip():
+        return {"$expr": {"$eq": [1, 0]}}
+    return {"businessId": biz, "_ownershipQuarantined": {"$ne": True}}
 
 
 def tenant_owns(doc_business_id: Optional[str], business_id: Optional[str] = None) -> bool:
-    """Single-resource counterpart to tenant_scope_filter() — for a GET-by-id
-    route that fetches one document (a customer's wallet, their loyalty
-    ledger) rather than a list. Same safe defaults: an unknown caller
-    businessId or an untagged document both mean "allow", so this only ever
-    starts rejecting once both sides of the comparison are real values that
-    actually disagree."""
-    biz = business_id or get_actor_context().get("businessId")
-    if not biz or not doc_business_id:
-        return True
-    return doc_business_id == biz
+    """Compatibility alias with the same fail-closed ownership contract."""
+    return tenant_owns_strict(doc_business_id, business_id)
+
+
+def tenant_owns_strict(doc_business_id: Optional[str], business_id: Optional[str] = None) -> bool:
+    """Require a nonempty tenant and exact ownership, for reads and writes."""
+    biz = business_id if business_id is not None else get_actor_context().get("businessId")
+    return bool(isinstance(biz, str) and biz.strip() and doc_business_id == biz)
 
 
 class ActorContextMiddleware(BaseHTTPMiddleware):
@@ -81,10 +65,8 @@ class ActorContextMiddleware(BaseHTTPMiddleware):
         # Extract device + IP + tenant from headers
         device = request.headers.get("user-agent") or None
         client = request.client.host if request.client else None
-        # X-Forwarded-For (Kubernetes ingress) takes precedence
-        xff = request.headers.get("x-forwarded-for")
-        ip = xff.split(",")[0].strip() if xff else client
-        header_business_id = request.headers.get("x-tenant-id") or request.headers.get("x-business-id")
+        # Uvicorn applies configured proxy trust; never re-trust raw forwarding headers.
+        ip = client
         location_id = request.headers.get("x-location-id")
 
         # Attempt to decode JWT quickly without triggering auth failures.
@@ -93,24 +75,29 @@ class ActorContextMiddleware(BaseHTTPMiddleware):
         role = None
         jwt_business_id = None
         auth = request.headers.get("authorization") or ""
+        if request.cookies.get("access_token"):
+            auth = "Bearer " + request.cookies["access_token"]
         if auth.lower().startswith("bearer "):
             token = auth.split(" ", 1)[1]
             try:
                 import jwt
                 import os
-                secret = os.environ.get("JWT_SECRET") or "nua-fallback-please-set-jwt-secret"
-                data = jwt.decode(token, secret, algorithms=["HS256"], options={"verify_exp": False})
-                email = data.get("email") or data.get("sub")
-                role = data.get("role")
-                jwt_business_id = data.get("businessId")
+                secret = os.environ["JWT_SECRET"]
+                data = jwt.decode(token, secret, algorithms=["HS256"], options={"verify_exp": True})
+                if data.get("type") == "access":
+                    from database import db
+                    user = await db.auth_users.find_one({"id": data.get("sub"), "status": "active"})
+                    if user:
+                        email = user.get("email")
+                        role = user.get("role")
+                        jwt_business_id = user.get("businessId")
             except Exception:
                 pass  # Auth will handle its own error on the route
 
-        # X-Tenant-Id/X-Business-Id headers (used by partner/integration
-        # callers that aren't a logged-in staff member) win when present;
-        # otherwise fall back to the businessId already embedded in the
-        # staff member's own access token.
-        business_id = header_business_id or jwt_business_id
+        # Public callers cannot assert tenant membership through headers.
+        # Guest routes resolve a venue explicitly; protected dependencies refresh
+        # this context from the current user record before database operations.
+        business_id = jwt_business_id
 
         ctx = {
             "email": email,

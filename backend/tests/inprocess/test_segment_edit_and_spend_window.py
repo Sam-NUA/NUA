@@ -70,9 +70,21 @@ def test_spend_in_last_n_days_only_counts_transactions_inside_the_window(client,
         "items": [{"productId": "no-such-product", "productName": "Cheap item", "quantity": 1, "price": 5}],
         "paymentMethod": "cash", "location": "Main", "cashier": "Test Cashier", "customerId": low_id})
 
-    r = req(client, "POST", "/api/marketing/segments/preview", headers=tenant,
-            json={"rules": {"spendInLastDays": 90, "minSpendInWindow": 500}})
-    assert r.status_code == 200, r.text[:200]
-    emails = {c["email"] for c in r.json()["sample"]}
+    # /segments/preview's "sample" field is capped to 20 rows, and this
+    # suite's shared test DB accumulates customers across the whole session
+    # — by now there are comfortably more than 20 "default"-business
+    # customers, so the two just-created here can fall outside the visible
+    # sample even though they correctly match the query. Save the segment
+    # and read its full (uncapped) customer list instead, the same way
+    # test_full_segment_customer_list_goes_beyond_the_20_row_preview above
+    # already does for exactly this reason.
+    saved = req(client, "POST", "/api/marketing/segments", headers=tenant,
+                json={"name": "Spend Window Test", "rules": {"spendInLastDays": 90, "minSpendInWindow": 500}})
+    assert saved.status_code == 200, saved.text[:200]
+    segment_id = saved.json()["id"]
+
+    full = req(client, "GET", f"/api/marketing/segments/{segment_id}/customers", headers=tenant)
+    assert full.status_code == 200, full.text[:200]
+    emails = {c["email"] for c in full.json()["customers"]}
     assert "recentbig@nua.com" in emails
     assert "recentsmall@nua.com" not in emails

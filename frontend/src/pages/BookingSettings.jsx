@@ -6,7 +6,7 @@ import { Input } from '../components/ui/input';
 import { Badge } from '../components/ui/badge';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/ui/tabs';
 import { useTheme } from '../contexts/ThemeContext';
-import { reservationFeaturesAPI } from '../services/api';
+import { reservationFeaturesAPI, reservationsAPI } from '../services/api';
 import { toast } from 'sonner';
 
 const WEEKDAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
@@ -25,12 +25,21 @@ export default function BookingSettings() {
   const [rules, setRules] = useState(null);
   const [schedule, setSchedule] = useState([]);
   const [experiences, setExperiences] = useState([]);
+  const [cancellationPolicy, setCancellationPolicy] = useState(null);
 
   useEffect(() => {
     reservationFeaturesAPI.getBookingRules().then(r => setRules(r.data)).catch(() => {});
     reservationFeaturesAPI.getBookingSchedule().then(r => setSchedule(r.data)).catch(() => {});
     reservationFeaturesAPI.getExperiences().then(r => setExperiences(r.data)).catch(() => {});
+    reservationsAPI.getCancellationPolicy().then(r => setCancellationPolicy(r.data)).catch(() => {});
   }, []);
+
+  const saveCancellationPolicy = async () => {
+    try {
+      await reservationsAPI.updateCancellationPolicy({ cutoffHours: cancellationPolicy.cutoffHours });
+      toast.success('Cancellation policy saved');
+    } catch { toast.error('Failed'); }
+  };
 
   const saveRules = async () => {
     // Basic tier sanity check before it ever hits the server — overlapping
@@ -94,6 +103,7 @@ export default function BookingSettings() {
           <TabsTrigger value="capacity">Capacity</TabsTrigger>
           <TabsTrigger value="tiers">Booking Size Tiers</TabsTrigger>
           <TabsTrigger value="schedule">Schedule</TabsTrigger>
+          <TabsTrigger value="cancellation">Cancellation Policy</TabsTrigger>
         </TabsList>
 
         {/* RULES */}
@@ -263,6 +273,29 @@ export default function BookingSettings() {
             ))}
             <Button style={{ backgroundColor: theme.primary }} onClick={saveSchedule} data-testid="save-schedule-btn"><Save size={16} className="mr-1" /> Save Schedule</Button>
           </CardContent></Card>
+        </TabsContent>
+
+        {/* CANCELLATION POLICY */}
+        <TabsContent value="cancellation" className="mt-4">
+          {cancellationPolicy && (
+            <Card><CardHeader><CardTitle className="text-sm flex items-center gap-2"><ShieldAlert size={16} /> Cancellation Policy</CardTitle></CardHeader>
+            <CardContent className="space-y-4">
+              <p className="text-sm text-gray-500">
+                A booking cancelled at least this many hours before its own time gets any collected deposit
+                refunded in full. Cancel later than that and the deposit is kept as a cancellation fee instead —
+                the same real money capture as a no-show, just triggered by a late cancellation.
+              </p>
+              <div className="max-w-xs">
+                <label className="text-sm font-medium mb-1 block">Free Cancellation Cutoff (hours before booking)</label>
+                <Input type="number" min={0} step="0.5" value={cancellationPolicy.cutoffHours}
+                  onChange={e => setCancellationPolicy({ ...cancellationPolicy, cutoffHours: parseFloat(e.target.value) || 0 })}
+                  data-testid="cancellation-cutoff-hours" />
+              </div>
+              <Button style={{ backgroundColor: theme.primary }} onClick={saveCancellationPolicy} data-testid="save-cancellation-policy-btn">
+                <Save size={16} className="mr-1" /> Save Policy
+              </Button>
+            </CardContent></Card>
+          )}
         </TabsContent>
       </Tabs>
     </div>

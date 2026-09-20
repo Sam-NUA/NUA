@@ -1,25 +1,39 @@
 from fastapi import APIRouter, Request, Depends
+from typing import Optional
 from deps import get_user, require_owner, require_owner_or_manager
 from database import db
 from datetime import datetime, timezone
+from middleware.actor_context import tenant_scope_filter
 from services.punctuality import shift_punctuality
 import uuid, os
 
 router = APIRouter()
 
 # ============ STAFF LEADERBOARD ============
-async def compute_staff_performance() -> list[dict]:
+async def compute_staff_performance(business_id: Optional[str] = None) -> list[dict]:
     """Unranked per-staff performance rows — the same composite score the
     leaderboard shows, factored out so other features (e.g. auto-rostering)
-    can weigh staff by performance without duplicating this math."""
-    staff = await db.auth_users.find({"status": "active", "role": {"$ne": "owner"}}, {"_id": 0, "password_hash": 0}).to_list(100)
-    txns = await db.transactions.find({}, {"_id": 0}).to_list(50000)
-    timecards = await db.timecards.find({"clockOut": {"$ne": None}}, {"_id": 0}).to_list(50000)
-    tips = await db.tips.find({}, {"_id": 0}).to_list(10000)
+    can weigh staff by performance without duplicating this math.
+
+    Scoped by business_id: transactions carry their own businessId so those
+    are filtered directly; timecards/tips/roster_shifts don't (pre-existing
+    schema gap — same as payroll.py), so those are filtered transitively
+    through this business's own staff list instead. Without this, one
+    business's leaderboard/tip-pool/roster math was silently computed across
+    every tenant's staff and sales combined."""
+    staff = await db.auth_users.find(
+        {"status": "active", "role": {"$ne": "owner"}, **tenant_scope_filter(business_id)},
+        {"_id": 0, "password_hash": 0}).to_list(100)
+    staff_ids = {s["id"] for s in staff}
+    txns = await db.transactions.find({**tenant_scope_filter(business_id)}, {"_id": 0}).to_list(50000)
+    timecards = await db.timecards.find(
+        {"clockOut": {"$ne": None}, "staffId": {"$in": list(staff_ids)}}, {"_id": 0}).to_list(50000)
+    tips = await db.tips.find({"staffId": {"$in": list(staff_ids)}}, {"_id": 0}).to_list(10000)
     # Every rostered shift ever, keyed by (staffId, date) — used to check
     # each completed timecard against the shift it was actually rostered
     # for, the same pairing preshift_briefing() uses.
-    roster_shifts = await db.roster_shifts.find({}, {"_id": 0}).to_list(20000)
+    roster_shifts = await db.roster_shifts.find(
+        {"staffId": {"$in": list(staff_ids)}}, {"_id": 0}).to_list(20000)
     roster_by_staff_date = {(sh.get("staffId"), sh.get("date")): sh for sh in roster_shifts}
 
     leaderboard = []
@@ -73,8 +87,8 @@ async def compute_staff_performance() -> list[dict]:
 
 
 @router.get("/staff/leaderboard")
-async def get_staff_leaderboard(_: dict = Depends(get_user)):
-    leaderboard = await compute_staff_performance()
+async def get_staff_leaderboard(user: dict = Depends(get_user)):
+    leaderboard = await compute_staff_performance(user.get("businessId"))
     leaderboard.sort(key=lambda x: x["performanceScore"], reverse=True)
     for i, s in enumerate(leaderboard):
         s["rank"] = i + 1
@@ -84,18 +98,29 @@ async def get_staff_leaderboard(_: dict = Depends(get_user)):
 
 # ============ SMART TIP DISTRIBUTION (Hours + Performance) ============
 @router.post("/tips/smart-distribute")
-async def smart_distribute_tips(_: dict = Depends(require_owner)):
+async def smart_distribute_tips(user: dict = Depends(require_owner)):
     """Distribute pooled tips based on hours worked and performance score"""
+    biz = user.get("businessId")
 
-    tips = await db.tips.find({"pooled": True, "distributed": {"$ne": True}}, {"_id": 0}).to_list(10000)
+    # Get staff first — tips/timecards are filtered transitively through
+    # this business's own staff (see compute_staff_performance's note on
+    # why), so a business can't accidentally pool and distribute money
+    # figured from another tenant's tips/sales.
+    staff = await db.auth_users.find(
+        {"status": "active", "role": {"$ne": "owner"}, **tenant_scope_filter(biz)},
+        {"_id": 0, "password_hash": 0}).to_list(100)
+    staff_ids = {s["id"] for s in staff}
+
+    tips = await db.tips.find(
+        {"pooled": True, "distributed": {"$ne": True}, "staffId": {"$in": list(staff_ids)}},
+        {"_id": 0}).to_list(10000)
     pool_total = sum(t.get("amount", 0) for t in tips)
     if pool_total <= 0:
         return {"message": "No pooled tips to distribute", "distributed": 0}
 
-    # Get staff performance data
-    staff = await db.auth_users.find({"status": "active", "role": {"$ne": "owner"}}, {"_id": 0, "password_hash": 0}).to_list(100)
-    timecards = await db.timecards.find({"clockOut": {"$ne": None}}, {"_id": 0}).to_list(50000)
-    txns = await db.transactions.find({}, {"_id": 0}).to_list(50000)
+    timecards = await db.timecards.find(
+        {"clockOut": {"$ne": None}, "staffId": {"$in": list(staff_ids)}}, {"_id": 0}).to_list(50000)
+    txns = await db.transactions.find({**tenant_scope_filter(biz)}, {"_id": 0}).to_list(50000)
 
     staff_weights = []
     total_weight = 0
@@ -141,10 +166,10 @@ async def smart_distribute_tips(_: dict = Depends(require_owner)):
 
 # ============ QUARTERLY REVIEW (Top/Worst Items + AI Alternatives) ============
 @router.get("/reports/quarterly-review")
-async def quarterly_review(_: dict = Depends(require_owner_or_manager)):
-
-    txns = await db.transactions.find({}, {"_id": 0}).to_list(50000)
-    products = await db.products.find({}, {"_id": 0}).to_list(10000)
+async def quarterly_review(user: dict = Depends(require_owner_or_manager)):
+    scope = tenant_scope_filter(user.get("businessId"))
+    txns = await db.transactions.find(scope, {"_id": 0}).to_list(50000)
+    products = await db.products.find(scope, {"_id": 0}).to_list(10000)
 
     # Calculate item performance
     item_stats = {}
@@ -219,17 +244,25 @@ from services.print_routing import DEFAULT_PRINT_ROUTING
 
 
 @router.get("/print-routing/config")
-async def get_print_routing():
+async def get_print_routing(user: dict = Depends(get_user)):
     """Returns the current print-routing config. Auto-heals legacy shapes
     (e.g. an old dict-shaped `routes` field from a pre-v27 save) so the SPA
-    can always call `config.routes.map(...)` without crashing."""
+    can always call `config.routes.map(...)` without crashing.
+
+    Previously had no auth dependency at all — any caller with no
+    credential could read a business's print-routing config (which
+    printer each category routes to). Also previously a single global
+    document shared by every business on the deployment; see
+    services/tenant_settings.py.
+    """
     import copy
+    from services.tenant_settings import get_setting
     defaults = copy.deepcopy(DEFAULT_PRINT_ROUTING)
-    s = await db.settings.find_one({"key": "print_routing"}, {"_id": 0})
-    if not s or not s.get("value"):
+    value = await get_setting("print_routing", user.get("businessId"))
+    if not value:
         return defaults
 
-    cfg = s["value"] if isinstance(s.get("value"), dict) else {}
+    cfg = value if isinstance(value, dict) else {}
     # Coerce legacy `routes` shapes into a list.
     routes = cfg.get("routes")
     if isinstance(routes, dict):
@@ -248,7 +281,7 @@ async def get_print_routing():
 
 
 @router.post("/print-routing/config")
-async def save_print_routing(data: dict, _: dict = Depends(require_owner_or_manager)):
+async def save_print_routing(data: dict, user: dict = Depends(require_owner_or_manager)):
     """Persist print-routing config. Validates `routes` is an array of
     `{category, printer, priority}` objects — rejects legacy dict shapes so
     the SPA never crashes on a subsequent read."""
@@ -271,8 +304,8 @@ async def save_print_routing(data: dict, _: dict = Depends(require_owner_or_mana
         "defaultPrinter": data.get("defaultPrinter") or "Kitchen Printer",
         "defaultPriority": int(data.get("defaultPriority") or 2),
     }
-    await db.settings.update_one({"key": "print_routing"},
-                                  {"$set": {"key": "print_routing", "value": payload}}, upsert=True)
+    from services.tenant_settings import set_setting
+    await set_setting("print_routing", payload, user.get("businessId"))
     return {"message": "Print routing saved", "config": payload}
 
 @router.post("/print-routing/send")

@@ -1,7 +1,9 @@
 from fastapi import APIRouter, HTTPException, Depends
-from deps import get_user, require_owner, require_owner_or_manager
+from deps import get_user, require_owner, require_owner_or_manager, optional_user
 from database import db
+from middleware.actor_context import tenant_scope_filter, tenant_owns_strict
 from datetime import datetime, timezone, timedelta
+from typing import Optional
 import uuid
 import json
 
@@ -12,14 +14,15 @@ router = APIRouter()
 
 # ============ BUSINESS SETTINGS ============
 @router.get("/business/settings")
-async def get_business_settings(_: dict = Depends(get_user)):
-    biz = await db.business_settings.find_one({"key": "main"}, {"_id": 0})
+async def get_business_settings(user: dict = Depends(get_user)):
+    from services.tenant_settings import get_scoped_singleton
+    biz = await get_scoped_singleton(db.business_settings, {"key": "main"}, user.get("businessId"))
     return biz or {"name": "NUA", "abn": "", "address": "", "phone": "", "email": "", "taxId": ""}
 
 @router.post("/business/settings")
-async def save_business_settings(data: dict, _: dict = Depends(require_owner_or_manager)):
-    data["key"] = "main"
-    await db.business_settings.update_one({"key": "main"}, {"$set": data}, upsert=True)
+async def save_business_settings(data: dict, user: dict = Depends(require_owner_or_manager)):
+    from services.tenant_settings import set_scoped_singleton
+    await set_scoped_singleton(db.business_settings, {"key": "main"}, data, user.get("businessId"))
     return {"message": "Business settings saved"}
 
 
@@ -28,18 +31,25 @@ async def save_business_settings(data: dict, _: dict = Depends(require_owner_or_
 # an instant local preview as you drag/type; "Save" is what makes it apply
 # everywhere else too.
 @router.get("/business/theme")
-async def get_business_theme():
-    doc = await db.settings.find_one({"key": "business_theme"}, {"_id": 0})
-    return doc.get("value") if doc else None
+async def get_business_theme(user: Optional[dict] = Depends(optional_user)):
+    """Deliberately optional_user, not required auth: ThemeProvider mounts
+    this call at the app root, above both staff routes and every guest-
+    facing page (booking portal, waitlist tracking, loyalty rewards) — a
+    guest visiting one of those must keep getting a theme back, not a 401.
+    A guest carries no business signal (same deferred gap as public.py/
+    table_ordering.py), so falls back to the shared legacy theme exactly
+    as before this fix; an authenticated staff member now gets their own
+    business's theme once one has been saved."""
+    from services.tenant_settings import get_setting
+    return await get_setting("business_theme", (user or {}).get("businessId"))
 
 
 @router.post("/business/theme")
-async def save_business_theme(data: dict, _: dict = Depends(require_owner_or_manager)):
+async def save_business_theme(data: dict, user: dict = Depends(require_owner_or_manager)):
+    from services.tenant_settings import set_setting
     allowed = {"primary", "secondary", "accent", "background", "text", "sidebar"}
     theme = {k: v for k, v in data.items() if k in allowed and isinstance(v, str)}
-    await db.settings.update_one(
-        {"key": "business_theme"}, {"$set": {"key": "business_theme", "value": theme}}, upsert=True
-    )
+    await set_setting("business_theme", theme, user.get("businessId"))
     return theme
 
 
@@ -58,17 +68,18 @@ POS_LAYOUT_DEFAULTS = {
 
 
 @router.get("/pos/layout")
-async def get_pos_layout(_: dict = Depends(get_user)):
+async def get_pos_layout(user: dict = Depends(get_user)):
     """Any signed-in staff member can read this — the POS terminal itself
     needs it to render, same as the theme."""
-    doc = await db.settings.find_one({"key": "pos_layout"}, {"_id": 0})
-    saved = doc.get("value") if doc else {}
-    return {**POS_LAYOUT_DEFAULTS, **(saved or {}),
-            "quickActions": {**POS_LAYOUT_DEFAULTS["quickActions"], **((saved or {}).get("quickActions") or {})}}
+    from services.tenant_settings import get_setting
+    saved = await get_setting("pos_layout", user.get("businessId")) or {}
+    return {**POS_LAYOUT_DEFAULTS, **saved,
+            "quickActions": {**POS_LAYOUT_DEFAULTS["quickActions"], **(saved.get("quickActions") or {})}}
 
 
 @router.post("/pos/layout")
-async def save_pos_layout(data: dict, _: dict = Depends(require_owner_or_manager)):
+async def save_pos_layout(data: dict, user: dict = Depends(require_owner_or_manager)):
+    from services.tenant_settings import set_setting
     cart_position = data.get("cartPosition")
     if cart_position not in ("left", "right"):
         cart_position = POS_LAYOUT_DEFAULTS["cartPosition"]
@@ -79,15 +90,13 @@ async def save_pos_layout(data: dict, _: dict = Depends(require_owner_or_manager
     quick_actions = {"hold": bool(quick_in.get("hold", True)), "tabs": bool(quick_in.get("tabs", True))}
 
     layout = {"cartPosition": cart_position, "tileSize": tile_size, "quickActions": quick_actions}
-    await db.settings.update_one(
-        {"key": "pos_layout"}, {"$set": {"key": "pos_layout", "value": layout}}, upsert=True
-    )
+    await set_setting("pos_layout", layout, user.get("businessId"))
     return layout
 
 
 # ============ TIP MANAGEMENT (Toast-style) ============
 @router.post("/tips/add")
-async def add_tip(data: dict):
+async def add_tip(data: dict, user: dict = Depends(get_user)):
     tip = {
         "id": f"TIP-{str(uuid.uuid4())[:8].upper()}",
         "transactionId": data.get("transactionId", ""),
@@ -97,19 +106,22 @@ async def add_tip(data: dict):
         "method": data.get("method", "card"),  # card, cash, digital
         "pooled": data.get("pooled", False),
         "createdAt": datetime.now(timezone.utc).isoformat(),
+        "businessId": user.get("businessId"),
     }
     await db.tips.insert_one(tip)
     tip.pop("_id", None)
     return tip
 
 @router.get("/tips")
-async def get_tips(_: dict = Depends(require_owner_or_manager)):
-    tips = await db.tips.find({}, {"_id": 0}).sort("createdAt", -1).to_list(5000)
+async def get_tips(user: dict = Depends(require_owner_or_manager)):
+    q = tenant_scope_filter(user.get("businessId"))
+    tips = await db.tips.find(q, {"_id": 0}).sort("createdAt", -1).to_list(5000)
     return tips
 
 @router.get("/tips/summary")
-async def get_tips_summary(_: dict = Depends(require_owner_or_manager)):
-    tips = await db.tips.find({}, {"_id": 0}).to_list(10000)
+async def get_tips_summary(user: dict = Depends(require_owner_or_manager)):
+    q = tenant_scope_filter(user.get("businessId"))
+    tips = await db.tips.find(q, {"_id": 0}).to_list(10000)
     total = sum(t.get("amount", 0) for t in tips)
     by_staff = {}
     for t in tips:
@@ -127,11 +139,13 @@ async def get_tips_summary(_: dict = Depends(require_owner_or_manager)):
     }
 
 @router.post("/tips/pool-distribute")
-async def distribute_tip_pool(_: dict = Depends(require_owner)):
+async def distribute_tip_pool(user: dict = Depends(require_owner)):
     """Distribute pooled tips equally among eligible staff"""
-    pooled = await db.tips.find({"pooled": True, "distributed": {"$ne": True}}, {"_id": 0}).to_list(10000)
+    biz_scope = tenant_scope_filter(user.get("businessId"))
+    pooled = await db.tips.find({"pooled": True, "distributed": {"$ne": True}, **biz_scope}, {"_id": 0}).to_list(10000)
     pool_total = sum(t.get("amount", 0) for t in pooled)
-    staff = await db.auth_users.find({"role": {"$in": ["cashier", "manager"]}, "status": "active"}, {"_id": 0}).to_list(100)
+    staff = await db.auth_users.find(
+        {"role": {"$in": ["cashier", "manager"]}, "status": "active", **biz_scope}, {"_id": 0}).to_list(100)
     if not staff or pool_total == 0:
         return {"distributed": 0, "perPerson": 0}
     per_person = round(pool_total / len(staff), 2)
@@ -141,23 +155,22 @@ async def distribute_tip_pool(_: dict = Depends(require_owner)):
 
 # ============ TRAINING MODE (Clover-style) ============
 @router.get("/settings/training-mode")
-async def get_training_mode():
-    setting = await db.settings.find_one({"key": "training_mode"}, {"_id": 0})
-    return {"enabled": setting.get("value", False) if setting else False}
+async def get_training_mode(user: dict = Depends(get_user)):
+    from services.tenant_settings import get_setting
+    value = await get_setting("training_mode", user.get("businessId"))
+    return {"enabled": bool(value)}
 
 @router.post("/settings/training-mode")
-async def toggle_training_mode(data: dict, _: dict = Depends(require_owner_or_manager)):
+async def toggle_training_mode(data: dict, user: dict = Depends(require_owner_or_manager)):
+    from services.tenant_settings import set_setting
     enabled = data.get("enabled", False)
-    await db.settings.update_one(
-        {"key": "training_mode"},
-        {"$set": {"key": "training_mode", "value": enabled, "updatedAt": datetime.now(timezone.utc).isoformat()}},
-        upsert=True
-    )
+    await set_setting("training_mode", enabled, user.get("businessId"))
     return {"enabled": enabled, "message": f"Training mode {'enabled' if enabled else 'disabled'}"}
 
 # ============ END-OF-DAY REPORTS (Square-style, Comprehensive) ============
 @router.get("/reports/end-of-day")
-async def get_end_of_day_report( period: str = "today", start_date: str = None, end_date: str = None, _: dict = Depends(require_owner_or_manager)):
+async def get_end_of_day_report( period: str = "today", start_date: str = None, end_date: str = None, user: dict = Depends(require_owner_or_manager)):
+    biz_scope = tenant_scope_filter(user.get("businessId"))
 
     now = datetime.now(timezone.utc)
     if period == "today":
@@ -199,7 +212,7 @@ async def get_end_of_day_report( period: str = "today", start_date: str = None, 
                 return None
         return None
 
-    all_txns = await db.transactions.find({}, {"_id": 0}).to_list(50000)
+    all_txns = await db.transactions.find(biz_scope, {"_id": 0}).to_list(50000)
     txns = []
     for t in all_txns:
         parsed = _parse_ts(t.get("timestamp"))
@@ -248,16 +261,16 @@ async def get_end_of_day_report( period: str = "today", start_date: str = None, 
     top_items = sorted(product_sales.values(), key=lambda x: x["revenue"], reverse=True)[:15]
 
     # Refunds & tips
-    refunds = await db.refunds.find({}, {"_id": 0}).to_list(1000)
+    refunds = await db.refunds.find(biz_scope, {"_id": 0}).to_list(1000)
     total_refunds = sum(r.get("amount", 0) for r in refunds)
-    tips = await db.tips.find({}, {"_id": 0}).to_list(10000)
+    tips = await db.tips.find(biz_scope, {"_id": 0}).to_list(10000)
     total_tips = sum(t.get("amount", 0) for t in tips)
     total_gst = sum(t.get("gst", 0) for t in txns)
 
     # Customer analytics
     customer_ids = [t.get("customerId") for t in txns if t.get("customerId")]
     unique_customers = len(set(customer_ids))
-    customers = await db.customers.find({}, {"_id": 0}).to_list(10000)
+    customers = await db.customers.find(biz_scope, {"_id": 0}).to_list(10000)
     cust_map = {c.get("id"): c for c in customers}
     new_customers = 0
     returning_customers = 0
@@ -340,8 +353,9 @@ PREDRAFTED_TEMPLATES = [
 ]
 
 
-async def _business_name() -> str:
-    biz = await db.business_settings.find_one({"key": "main"}, {"_id": 0})
+async def _business_name(business_id: Optional[str] = None) -> str:
+    from services.tenant_settings import get_scoped_singleton
+    biz = await get_scoped_singleton(db.business_settings, {"key": "main"}, business_id)
     return (biz or {}).get("name") or "us"
 
 
@@ -351,8 +365,8 @@ def _fill_template(text: str, *, business_name: str, tier: str = "") -> str:
 
 
 @router.get("/marketing/campaigns/templates")
-async def get_campaign_templates(_: dict = Depends(require_owner_or_manager)):
-    business_name = await _business_name()
+async def get_campaign_templates(user: dict = Depends(require_owner_or_manager)):
+    business_name = await _business_name(user.get("businessId"))
     return [
         {**t, "subject": _fill_template(t["subject"], business_name=business_name, tier=t.get("targetTier", "")),
          "body": _fill_template(t["body"], business_name=business_name, tier=t.get("targetTier", ""))}
@@ -361,12 +375,12 @@ async def get_campaign_templates(_: dict = Depends(require_owner_or_manager)):
 
 
 @router.post("/marketing/campaigns/draft")
-async def draft_campaign(data: dict, _: dict = Depends(require_owner_or_manager)):
+async def draft_campaign(data: dict, user: dict = Depends(require_owner_or_manager)):
     """AI-predrafted email: start from a template and/or a plain-English brief
     ('promote our new summer menu to Gold members') and return a ready-to-edit
     {name, subject, body}. Falls back to the raw template / a plain heuristic
     draft when no LLM key is configured."""
-    business_name = await _business_name()
+    business_name = await _business_name(user.get("businessId"))
     brief = (data.get("brief") or "").strip()
     target_tier = data.get("targetTier") or ""
     template = next((t for t in PREDRAFTED_TEMPLATES if t["key"] == data.get("templateKey")), None)
@@ -479,8 +493,18 @@ async def _customer_ids_spending_in_window(days: int, min_spend: float) -> set:
     return {r["_id"] for r in rows}
 
 
-async def _resolve_segment_customers(rules: dict, *, limit: int = 10000) -> list:
+async def _resolve_segment_customers(rules: dict, *, limit: int = 10000,
+                                      business_id: str = None) -> list:
     query = _build_segment_query(rules)
+    # _build_segment_query can itself set a top-level "$or" (the
+    # inactiveForDays rule) — a plain dict.update() with
+    # tenant_scope_filter()'s own "$or" would silently clobber that rule's
+    # condition instead of ANDing with it, which would make "hasn't visited
+    # in N days" match everyone in the business instead of just the
+    # inactive ones. $and keeps both conditions intact.
+    scope = tenant_scope_filter(business_id)
+    if scope:
+        query = {"$and": [query, scope]} if query else scope
     window_days = rules.get("spendInLastDays")
     window_min = rules.get("minSpendInWindow")
     if window_days not in (None, "") and window_min not in (None, "", 0):
@@ -490,9 +514,9 @@ async def _resolve_segment_customers(rules: dict, *, limit: int = 10000) -> list
 
 
 @router.post("/marketing/segments/preview")
-async def preview_segment(data: dict, _: dict = Depends(require_owner_or_manager)):
+async def preview_segment(data: dict, user: dict = Depends(require_owner_or_manager)):
     rules = data.get("rules") or {}
-    customers = await _resolve_segment_customers(rules)
+    customers = await _resolve_segment_customers(rules, business_id=user.get("businessId"))
     sample = [{"id": c["id"], "name": c.get("name"), "email": c.get("email"),
                "totalSpent": c.get("totalSpent", 0), "visits": c.get("visits", 0),
                "membershipTier": c.get("membershipTier")} for c in customers[:20]]
@@ -500,18 +524,20 @@ async def preview_segment(data: dict, _: dict = Depends(require_owner_or_manager
 
 
 @router.get("/marketing/segments")
-async def list_segments(_: dict = Depends(require_owner_or_manager)):
-    return await db.customer_segments.find({}, {"_id": 0}).sort("createdAt", -1).to_list(200)
+async def list_segments(user: dict = Depends(require_owner_or_manager)):
+    q = tenant_scope_filter(user.get("businessId"))
+    return await db.customer_segments.find(q, {"_id": 0}).sort("createdAt", -1).to_list(200)
 
 
 @router.get("/marketing/segments/{segment_id}/customers")
-async def get_segment_customers(segment_id: str, limit: int = 500, _: dict = Depends(require_owner_or_manager)):
+async def get_segment_customers(segment_id: str, limit: int = 500, user: dict = Depends(require_owner_or_manager)):
     """The full matching list, not just preview's 20-row sample — for an
     owner who wants to actually see (or export) who's in a segment."""
-    segment = await db.customer_segments.find_one({"id": segment_id}, {"_id": 0})
-    if not segment:
+    segment = await db.customer_segments.find_one({"$and": [{"id": segment_id}, tenant_scope_filter(user.get("businessId"))]}, {"_id": 0})
+    if not segment or not tenant_owns_strict(segment.get("businessId"), user.get("businessId")):
         raise HTTPException(status_code=404, detail="Segment not found")
-    customers = await _resolve_segment_customers(segment.get("rules") or {}, limit=min(limit, 5000))
+    customers = await _resolve_segment_customers(segment.get("rules") or {}, limit=min(limit, 5000),
+                                                  business_id=user.get("businessId"))
     return {
         "segment": segment,
         "count": len(customers),
@@ -523,8 +549,8 @@ async def get_segment_customers(segment_id: str, limit: int = 500, _: dict = Dep
 
 @router.put("/marketing/segments/{segment_id}")
 async def update_segment(segment_id: str, data: dict, user: dict = Depends(require_owner_or_manager)):
-    existing = await db.customer_segments.find_one({"id": segment_id}, {"_id": 0})
-    if not existing:
+    existing = await db.customer_segments.find_one({"$and": [{"id": segment_id}, tenant_scope_filter(user.get("businessId"))]}, {"_id": 0})
+    if not existing or not tenant_owns_strict(existing.get("businessId"), user.get("businessId")):
         raise HTTPException(status_code=404, detail="Segment not found")
     name = (data.get("name") or existing["name"]).strip()
     if not name:
@@ -545,6 +571,7 @@ async def create_segment(data: dict, user: dict = Depends(require_owner_or_manag
         "id": f"SEG-{str(uuid.uuid4())[:8].upper()}",
         "name": name, "rules": rules,
         "createdBy": user["id"], "createdAt": datetime.now(timezone.utc).isoformat(),
+        "businessId": user.get("businessId"),
     }
     await db.customer_segments.insert_one(dict(segment))
     segment.pop("_id", None)
@@ -552,8 +579,11 @@ async def create_segment(data: dict, user: dict = Depends(require_owner_or_manag
 
 
 @router.delete("/marketing/segments/{segment_id}")
-async def delete_segment(segment_id: str, _: dict = Depends(require_owner_or_manager)):
-    result = await db.customer_segments.delete_one({"id": segment_id})
+async def delete_segment(segment_id: str, user: dict = Depends(require_owner_or_manager)):
+    existing = await db.customer_segments.find_one({"$and": [{"id": segment_id}, tenant_scope_filter(user.get("businessId"))]}, {"_id": 0})
+    if not existing or not tenant_owns_strict(existing.get("businessId"), user.get("businessId")):
+        raise HTTPException(status_code=404, detail="Segment not found")
+    result = await db.customer_segments.delete_one({"$and": [{"id": segment_id}, tenant_scope_filter(user.get("businessId"))]})
     if result.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Segment not found")
     return {"deleted": True}
@@ -570,8 +600,11 @@ async def _campaign_recipients(campaign: dict) -> list:
     deployment created after that removal, every campaign silently had 0
     real recipients. db.customers is the actual, live guest record.
     """
+    business_id = campaign.get("businessId")
     if campaign.get("segmentId"):
-        segment = await db.customer_segments.find_one({"id": campaign["segmentId"]}, {"_id": 0})
+        segment = await db.customer_segments.find_one({"$and": [{"id": campaign["segmentId"]}, tenant_scope_filter(business_id)]}, {"_id": 0})
+        if segment and not tenant_owns_strict(segment.get("businessId"), business_id):
+            segment = None
         rules = (segment or {}).get("rules") or {}
     elif campaign.get("segmentRules"):
         rules = campaign["segmentRules"]
@@ -579,7 +612,7 @@ async def _campaign_recipients(campaign: dict) -> list:
         rules = {}
     if campaign.get("targetTier"):
         rules = {**rules, "tier": campaign["targetTier"]}
-    return await _resolve_segment_customers(rules)
+    return await _resolve_segment_customers(rules, business_id=business_id)
 
 
 @router.post("/marketing/campaigns")
@@ -601,6 +634,7 @@ async def create_campaign(data: dict, user: dict = Depends(require_owner_or_mana
         "openCount": 0,
         "voucherId": None,
         "voucherCode": None,
+        "businessId": user.get("businessId"),
     }
 
     # Optional: attach one shared voucher code every recipient of this
@@ -630,6 +664,7 @@ async def create_campaign(data: dict, user: dict = Depends(require_owner_or_mana
             "createdAt": _v26_iso(_v26_now()),
             "createdBy": user["id"],
             "campaignId": campaign["id"],
+            "businessId": user.get("businessId"),
         }
         await db.commerce_vouchers.insert_one(dict(voucher_doc))
         campaign["voucherId"] = voucher_doc["id"]
@@ -666,8 +701,9 @@ async def create_campaign(data: dict, user: dict = Depends(require_owner_or_mana
     return campaign
 
 @router.get("/marketing/campaigns")
-async def get_campaigns(_: dict = Depends(require_owner_or_manager)):
-    campaigns = await db.campaigns.find({}, {"_id": 0}).sort("createdAt", -1).to_list(100)
+async def get_campaigns(user: dict = Depends(require_owner_or_manager)):
+    q = tenant_scope_filter(user.get("businessId"))
+    campaigns = await db.campaigns.find(q, {"_id": 0}).sort("createdAt", -1).to_list(100)
     return campaigns
 
 
@@ -703,16 +739,16 @@ async def _send_campaign_emails(campaign: dict) -> dict:
 
 
 @router.post("/marketing/campaigns/{campaign_id}/send")
-async def send_campaign(campaign_id: str, _: dict = Depends(require_owner_or_manager)):
-    campaign = await db.campaigns.find_one({"id": campaign_id}, {"_id": 0})
-    if not campaign:
+async def send_campaign(campaign_id: str, user: dict = Depends(require_owner_or_manager)):
+    campaign = await db.campaigns.find_one({"$and": [{"id": campaign_id}, tenant_scope_filter(user.get("businessId"))]}, {"_id": 0})
+    if not campaign or not tenant_owns_strict(campaign.get("businessId"), user.get("businessId")):
         raise HTTPException(status_code=404, detail="Campaign not found")
     if campaign.get("status") == "recurring":
         raise HTTPException(status_code=400, detail="Recurring campaigns run automatically — use run-now instead")
 
     result = await _send_campaign_emails(campaign)
     await db.campaigns.update_one(
-        {"id": campaign_id},
+        {"$and": [{"id": campaign_id}, tenant_scope_filter(user.get("businessId"))]},
         {"$set": {"status": "sent", "sentAt": datetime.now(timezone.utc).isoformat(),
                    "recipientCount": result["recipientCount"], "deliveredCount": result["deliveredCount"]}}
     )
@@ -736,11 +772,11 @@ async def _run_recurring_campaign(campaign: dict) -> dict:
 
 
 @router.post("/marketing/campaigns/{campaign_id}/run-now")
-async def run_campaign_now(campaign_id: str, _: dict = Depends(require_owner_or_manager)):
+async def run_campaign_now(campaign_id: str, user: dict = Depends(require_owner_or_manager)):
     """Manually fire one recurring campaign immediately, without waiting
     for its schedule — same effect as run-due picking it up, just now."""
-    campaign = await db.campaigns.find_one({"id": campaign_id}, {"_id": 0})
-    if not campaign:
+    campaign = await db.campaigns.find_one({"$and": [{"id": campaign_id}, tenant_scope_filter(user.get("businessId"))]}, {"_id": 0})
+    if not campaign or not tenant_owns_strict(campaign.get("businessId"), user.get("businessId")):
         raise HTTPException(status_code=404, detail="Campaign not found")
     if campaign.get("status") != "recurring":
         raise HTTPException(status_code=400, detail="Only recurring campaigns can be run this way")
@@ -749,14 +785,18 @@ async def run_campaign_now(campaign_id: str, _: dict = Depends(require_owner_or_
 
 
 @router.post("/marketing/campaigns/run-due")
-async def run_due_campaigns(_: dict = Depends(require_owner_or_manager)):
+async def run_due_campaigns(user: dict = Depends(require_owner_or_manager)):
     """Process every recurring campaign whose nextRunAt has passed. No
     background scheduler exists in this codebase (see agent_tick) — this
     is meant to be called periodically the same way, or via the "Run due
-    campaigns" button in Email Marketing."""
+    campaigns" button in Email Marketing. Scoped to the caller's own
+    business — this is triggered by a business's own owner/manager, not a
+    system-wide cron, so it must never fire another business's recurring
+    campaigns (and send their emails) on this business's behalf."""
     now_iso = datetime.now(timezone.utc).isoformat()
     due = await db.campaigns.find(
-        {"status": "recurring", "nextRunAt": {"$lte": now_iso}}, {"_id": 0}
+        {"status": "recurring", "nextRunAt": {"$lte": now_iso}, **tenant_scope_filter(user.get("businessId"))},
+        {"_id": 0}
     ).to_list(200)
     results = []
     for campaign in due:
@@ -766,8 +806,11 @@ async def run_due_campaigns(_: dict = Depends(require_owner_or_manager)):
 
 
 @router.delete("/marketing/campaigns/{campaign_id}")
-async def delete_campaign(campaign_id: str, _: dict = Depends(require_owner_or_manager)):
-    await db.campaigns.delete_one({"id": campaign_id})
+async def delete_campaign(campaign_id: str, user: dict = Depends(require_owner_or_manager)):
+    campaign = await db.campaigns.find_one({"$and": [{"id": campaign_id}, tenant_scope_filter(user.get("businessId"))]}, {"_id": 0})
+    if not campaign or not tenant_owns_strict(campaign.get("businessId"), user.get("businessId")):
+        raise HTTPException(status_code=404, detail="Campaign not found")
+    await db.campaigns.delete_one({"$and": [{"id": campaign_id}, tenant_scope_filter(user.get("businessId"))]})
     return {"message": "Campaign deleted"}
 
 

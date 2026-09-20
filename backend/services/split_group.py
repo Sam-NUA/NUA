@@ -16,8 +16,17 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-async def create_split_group(split_id: str, organizer_phone: str) -> Dict[str, Any]:
-    """Create a group split with organizer."""
+async def create_split_group(split_id: str, organizer_phone: str) -> Optional[Dict[str, Any]]:
+    """Create a group split with organizer.
+
+    Previously created a group document for ANY split_id string with no
+    check it corresponded to a real, open split — a typo'd or entirely
+    made-up split_id would still succeed, leaving an orphaned
+    db.split_groups document with no split to ever attach to. Returns
+    None (the caller 404s) when the split doesn't exist or isn't open."""
+    split = await db.bill_splits.find_one({"id": split_id, "status": "open"}, {"_id": 0, "id": 1})
+    if not split:
+        return None
     group = {
         "id": f"GROUP-{str(uuid.uuid4())[:12].upper()}",
         "splitId": split_id,

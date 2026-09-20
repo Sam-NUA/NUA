@@ -1,0 +1,11 @@
+[flake8]
+# Error-only selection, deliberately not full style enforcement: this codebase
+# has no prior flake8 config and was never written to a consistent style
+# guide, so a full PEP8 pass would surface thousands of pre-existing,
+# unrelated findings and make this gate useless noise on day one. E9 (syntax
+# errors), F63/F7 (misuse of comparisons/syntax that's almost always a bug),
+# and F82 (undefined name) catch genuine defects — the kind that would
+# otherwise only surface at runtime — without demanding a repo-wide
+# reformatting pass as a prerequisite for CI going green.
+select = E9,F63,F7,F82
+exclude = .git,__pycache__,node_modules,.venv,venv

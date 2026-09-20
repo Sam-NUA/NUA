@@ -72,7 +72,17 @@ async def enqueue_approval(*, action_type: str, params: Dict[str, Any],
                            requested_by: str = "system",
                            source: str = "rules_engine",
                            source_ref: Optional[str] = None,
-                           context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+                           context: Optional[Dict[str, Any]] = None,
+                           business_id: Optional[str] = None) -> Dict[str, Any]:
+    # None of the current callers (nua.py's marketing-approval route,
+    # nua_tools.py's agent-tool gate, rules_engine.py's rule-action gate)
+    # pass business_id explicitly — every one of them runs inside a request
+    # that has an actor context, so this defaults to that the same way
+    # notification_service.send() does, rather than requiring each call
+    # site to be updated individually.
+    if business_id is None:
+        from middleware.actor_context import get_actor_context
+        business_id = get_actor_context().get("businessId")
     doc = {
         "id": str(uuid.uuid4()),
         "actionType": action_type,
@@ -87,6 +97,7 @@ async def enqueue_approval(*, action_type: str, params: Dict[str, Any],
         "resolvedBy": None,
         "resolution": None,
         "outcome": None,
+        "businessId": business_id,
     }
     await db.approvals.insert_one(dict(doc))
     await audit_service.log_event(
@@ -146,7 +157,8 @@ async def approve(approval_id: str, *, actor: str, execute_fn: Callable[[Dict[st
     if appr.get("source") == "ash_agent":
         try:
             from services import nua_trust  # lazy: nua_tools -> approval_service, avoid the cycle
-            await nua_trust.record_decision(appr["actionType"], "approved", approval_id)
+            await nua_trust.record_decision(appr["actionType"], "approved", approval_id,
+                                             business_id=appr.get("businessId"))
         except Exception:
             logger.warning(f"[trust] record_decision failed for {approval_id}", exc_info=True)
     return doc
@@ -174,7 +186,8 @@ async def reject(approval_id: str, *, actor: str, reason: Optional[str] = None) 
     if appr.get("source") == "ash_agent":
         try:
             from services import nua_trust
-            await nua_trust.record_decision(appr["actionType"], "rejected", approval_id)
+            await nua_trust.record_decision(appr["actionType"], "rejected", approval_id,
+                                             business_id=appr.get("businessId"))
         except Exception:
             logger.warning(f"[trust] record_decision failed for {approval_id}", exc_info=True)
     return doc

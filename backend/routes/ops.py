@@ -10,6 +10,7 @@ from fastapi.responses import Response
 
 from database import db
 from deps import require_owner, require_owner_or_manager
+from middleware.actor_context import tenant_scope_filter
 from services.observability import check_health, record_client_error, _actor_from_request
 from services import retention
 from services import backup
@@ -53,11 +54,12 @@ async def report_client_error(payload: dict, request: Request):
 
 
 @router.get("/ops/client-errors")
-async def recent_client_errors(limit: int = 50, _: dict = Depends(require_owner_or_manager)):
+async def recent_client_errors(limit: int = 50, user: dict = Depends(require_owner_or_manager)):
     """The last N browser-side errors, newest first — same audience and
     shape as /ops/errors, just the client half of the picture."""
     limit = max(1, min(limit, 200))
-    rows = await db.client_error_log.find({}, {"_id": 0}).sort("at", -1).to_list(limit)
+    q = tenant_scope_filter(user.get("businessId"))
+    rows = await db.client_error_log.find(q, {"_id": 0}).sort("at", -1).to_list(limit)
     for r in rows:
         at = r.get("at")
         r["at"] = at.isoformat() if hasattr(at, "isoformat") else at
@@ -67,7 +69,7 @@ async def recent_client_errors(limit: int = 50, _: dict = Depends(require_owner_
 
 
 @router.get("/ops/errors")
-async def recent_errors(limit: int = 50, _: dict = Depends(require_owner_or_manager)):
+async def recent_errors(limit: int = 50, user: dict = Depends(require_owner_or_manager)):
     """The last N unhandled exceptions, newest first.
 
     This is the thing that used to only exist in whatever terminal happened to
@@ -75,7 +77,8 @@ async def recent_errors(limit: int = 50, _: dict = Depends(require_owner_or_mana
     no shell access, and gone the moment that terminal closed.
     """
     limit = max(1, min(limit, 200))
-    rows = await db.error_log.find({}, {"_id": 0}).sort("at", -1).to_list(limit)
+    q = tenant_scope_filter(user.get("businessId"))
+    rows = await db.error_log.find(q, {"_id": 0}).sort("at", -1).to_list(limit)
     for r in rows:
         at = r.get("at")
         r["at"] = at.isoformat() if hasattr(at, "isoformat") else at
@@ -105,9 +108,14 @@ async def retention_purge(_: dict = Depends(require_owner_or_manager)):
 # overwrite live data. That's a different risk tier from the read-only ops
 # endpoints above.
 @router.get("/ops/backup")
-async def download_backup(_: dict = Depends(require_owner)):
-    """A full backup archive, right now, as a download."""
-    archive = await backup.create_backup()
+async def download_backup(user: dict = Depends(require_owner)):
+    """A full backup archive, right now, as a download.
+
+    Scoped to the caller's own business — without this, any owner could
+    download every business's customers, transactions, and auth_users
+    (password hashes included) on the whole deployment in one archive.
+    """
+    archive = await backup.create_backup(business_id=user.get("businessId"))
     filename = f"nua-backup-{__import__('datetime').datetime.now().strftime('%Y%m%d-%H%M%S')}.tar.gz"
     return Response(content=archive, media_type="application/gzip",
                     headers={"Content-Disposition": f'attachment; filename="{filename}"'})

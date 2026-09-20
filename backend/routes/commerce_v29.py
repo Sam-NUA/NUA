@@ -48,7 +48,7 @@ from datetime import datetime, timezone, timedelta
 from typing import Optional, List, Dict, Any
 from database import db
 from deps import get_user
-from middleware.actor_context import get_actor_context, tenant_scope_filter, tenant_owns
+from middleware.actor_context import get_actor_context, tenant_scope_filter, tenant_owns, tenant_owns_strict
 from models.voucher import Voucher, VoucherCreate, VoucherRedeemRequest, VoucherValidateRequest, VoucherRedemption, VoucherRules
 from models.wallet_ledger import LedgerEntry, LedgerEntryCreate
 import base64
@@ -68,7 +68,7 @@ router = APIRouter()
 # Signing helpers (HMAC-SHA256 with JWT_SECRET, base64url with no padding)
 # ═════════════════════════════════════════════════════════════════════════
 def _secret() -> bytes:
-    return (os.environ.get("JWT_SECRET") or "nua-fallback-please-set-jwt-secret").encode()
+    return os.environ["JWT_SECRET"].encode()
 
 def _sign_payload(payload: dict) -> str:
     body = base64.urlsafe_b64encode(json.dumps(payload, separators=(",", ":")).encode()).rstrip(b"=").decode()
@@ -128,7 +128,15 @@ def _build_voucher_doc(payload: dict, user: Optional[dict], customer_data: dict)
         issuedBy=(user or {}).get("email"),
         freeItemId=payload.get("freeItemId"),
         metadata=payload.get("metadata") or {},
-        businessId=payload.get("businessId") or (user or {}).get("businessId") or get_actor_context().get("businessId"),
+        # The authenticated caller's own businessId always wins — this used
+        # to check payload.get("businessId") FIRST, meaning any client could
+        # put {"businessId": "<another business's id>"} in the POST body and
+        # have the voucher tagged as belonging to a different tenant than
+        # the one they're actually authenticated as. No current caller
+        # (public /vouchers, /vouchers/bulk, or the internal refund/gift-card
+        # issuers) relies on payload.businessId when a user is present, so
+        # it's now only consulted as a last resort with no user in scope.
+        businessId=(user or {}).get("businessId") or get_actor_context().get("businessId") or payload.get("businessId"),
     )
     return v.dict()
 
@@ -136,7 +144,7 @@ def _build_voucher_doc(payload: dict, user: Optional[dict], customer_data: dict)
 async def _lookup_customer_data(customer_id: Optional[str]) -> dict:
     if not customer_id:
         return {}
-    c = await db.customers.find_one({"id": customer_id}, {"_id": 0}) or {}
+    c = await db.customers.find_one({**tenant_scope_filter(), "id": customer_id}, {"_id": 0}) or {}
     return {"customerEmail": c.get("email"), "customerName": c.get("name")}
 
 
@@ -337,7 +345,7 @@ class PublicVoucherCheck(BaseModel):
 
 
 @router.post("/vouchers/public-check")
-async def public_check_voucher(body: PublicVoucherCheck):
+async def public_check_voucher(body: PublicVoucherCheck, business: Optional[str] = None):
     """Unauthenticated counterpart to /vouchers/validate — for guest-facing
     surfaces (online ordering, table QR ordering) that have no staff login
     to attach. Deliberately minimal: no customer/staff auth is required to
@@ -347,7 +355,9 @@ async def public_check_voucher(body: PublicVoucherCheck):
     Doesn't commit anything — same as the staff-facing validate endpoint,
     this is a dry-run check only."""
     try:
-        v = await _resolve_voucher(body.code, None)
+        from routes.online_orders import resolve_or_require_business_id
+        business_id = await resolve_or_require_business_id(business)
+        v = await _resolve_voucher(body.code, None, business_id)
     except HTTPException:
         return {"valid": False, "reason": "Code not found"}
     reason = _validate_voucher_rules(v, cart=body.cart)
@@ -362,82 +372,118 @@ async def public_check_voucher(body: PublicVoucherCheck):
 
 @router.post("/vouchers/redeem")
 async def redeem_voucher(body: VoucherRedeemRequest, user: dict = Depends(get_user)):
-    v = await _resolve_voucher(body.code, body.token, user.get("businessId"))
+    # Two concurrent redemptions of the same voucher (two terminals, or a
+    # shared code redeemed twice near-simultaneously) used to both read the
+    # same voucher snapshot, both compute their own "new" residual/count/
+    # status, and both write with a bare $set — the second write silently
+    # overwrote the first's, so a one-time voucher could be redeemed twice,
+    # or a partial voucher's residual could be applied against a stale
+    # balance. Fixed with a bounded optimistic-concurrency loop: each
+    # attempt re-reads the voucher fresh, computes the update, and commits
+    # it with find_one_and_update's filter pinned to the exact prior
+    # status/residualValue/redemptionCount/updatedAt it read — MongoDB
+    # only applies the write if nothing else changed the document in
+    # between (the same compare-and-swap idiom services/wallet_service.py's
+    # redeem_voucher_line already uses), so a losing concurrent attempt
+    # sees no match and retries against the winner's fresh state instead of
+    # clobbering it.
+    max_attempts = 8
+    updated = None
+    applied = 0.0
+    for _attempt in range(max_attempts):
+        v = await _resolve_voucher(body.code, body.token, user.get("businessId"))
 
-    # Duplicate redemption guard must run BEFORE rule/quota checks so that
-    # accidental double-clicks return a clear 409 rather than "max reached".
-    if body.transactionId and any(r.get("transactionId") == body.transactionId for r in v.get("redemptions", [])):
-        raise HTTPException(409, "Voucher already applied to this transaction")
+        # Duplicate redemption guard must run BEFORE rule/quota checks so that
+        # accidental double-clicks return a clear 409 rather than "max reached".
+        if body.transactionId and any(r.get("transactionId") == body.transactionId for r in v.get("redemptions", [])):
+            raise HTTPException(409, "Voucher already applied to this transaction")
 
-    reason = _validate_voucher_rules(v, cart=body.cart, location_id=body.locationId)
-    if reason:
-        # Partial-redeemable exception: a one_time voucher with residual > 0
-        # should still accept additional partial applications until residual
-        # hits zero. Only skip if the failure is specifically "max reached".
-        if v.get("partialRedeemable") and float(v.get("residualValue", 0)) > 0 and "max redemptions" in reason.lower():
-            pass   # allow — partial redemptions decrement residual, not the counter
-        else:
-            raise HTTPException(400, reason)
+        reason = _validate_voucher_rules(v, cart=body.cart, location_id=body.locationId)
+        if reason:
+            # Partial-redeemable exception: a one_time voucher with residual > 0
+            # should still accept additional partial applications until residual
+            # hits zero. Only skip if the failure is specifically "max reached".
+            if v.get("partialRedeemable") and float(v.get("residualValue", 0)) > 0 and "max redemptions" in reason.lower():
+                pass   # allow — partial redemptions decrement residual, not the counter
+            else:
+                raise HTTPException(400, reason)
 
-    # Determine amount actually applied
-    requested = float(body.amount)
-    if v["valueType"] == "amount":
+        # Determine amount actually applied
+        requested = float(body.amount)
+        if v["valueType"] == "amount":
+            if v.get("partialRedeemable"):
+                applied = min(requested, float(v.get("residualValue", v["value"])))
+            else:
+                applied = min(requested, float(v["value"]))
+        elif v["valueType"] == "percentage":
+            applied = requested  # caller (POS) computes % → $ before calling
+        else:  # free_item / tier_upgrade — face value is informational
+            applied = min(requested, float(v.get("value", 0)))
+
+        if applied <= 0:
+            raise HTTPException(400, "Voucher residual value is $0")
+
+        # Build audit entry
+        rec = VoucherRedemption(
+            amount=round(applied, 2),
+            staffId=user.get("id"),
+            staffName=user.get("name") or user.get("email"),
+            terminalId=body.terminalId,
+            transactionId=body.transactionId,
+            locationId=body.locationId,
+            note=body.note,
+        ).dict()
+
+        new_count = v.get("redemptionCount", 0) + 1
+        new_residual = v.get("residualValue", 0.0)
+        new_status = v["status"]
         if v.get("partialRedeemable"):
-            applied = min(requested, float(v.get("residualValue", v["value"])))
+            # Partial vouchers use residual value as the true "remaining budget"
+            # — max_redemptions is treated as informational, not a hard cap.
+            prev_residual = float(v.get("residualValue") if v.get("residualValue") is not None else v["value"])
+            new_residual = round(max(0.0, prev_residual - applied), 2)
+            new_status = "redeemed" if new_residual <= 0 else "partial"
         else:
-            applied = min(requested, float(v["value"]))
-    elif v["valueType"] == "percentage":
-        applied = requested  # caller (POS) computes % → $ before calling
-    else:  # free_item / tier_upgrade — face value is informational
-        applied = min(requested, float(v.get("value", 0)))
+            if not v.get("maxRedemptions") or new_count >= v["maxRedemptions"]:
+                new_status = "redeemed"
 
-    if applied <= 0:
-        raise HTTPException(400, "Voucher residual value is $0")
-
-    # Build audit entry
-    rec = VoucherRedemption(
-        amount=round(applied, 2),
-        staffId=user.get("id"),
-        staffName=user.get("name") or user.get("email"),
-        terminalId=body.terminalId,
-        transactionId=body.transactionId,
-        locationId=body.locationId,
-        note=body.note,
-    ).dict()
-
-    new_count = v.get("redemptionCount", 0) + 1
-    new_residual = v.get("residualValue", 0.0)
-    new_status = v["status"]
-    if v.get("partialRedeemable"):
-        # Partial vouchers use residual value as the true "remaining budget"
-        # — max_redemptions is treated as informational, not a hard cap.
-        prev_residual = float(v.get("residualValue") if v.get("residualValue") is not None else v["value"])
-        new_residual = round(max(0.0, prev_residual - applied), 2)
-        new_status = "redeemed" if new_residual <= 0 else "partial"
-    else:
-        if not v.get("maxRedemptions") or new_count >= v["maxRedemptions"]:
-            new_status = "redeemed"
-
-    await db.vouchers.update_one(
-        {"id": v["id"]},
-        {
-            "$push": {"redemptions": rec},
-            "$set": {
-                "status": new_status,
-                "residualValue": new_residual,
-                "redemptionCount": new_count,
-                "lastRedeemedAt": _iso(_now()),
+        cas_filter = {
+            "id": v["id"],
+            **tenant_scope_filter(user.get("businessId")),
+            "status": v["status"],
+            "redemptionCount": v.get("redemptionCount", 0),
+            "residualValue": v.get("residualValue", 0.0),
+        }
+        updated = await db.vouchers.find_one_and_update(
+            cas_filter,
+            {
+                "$push": {"redemptions": rec},
+                "$set": {
+                    "status": new_status,
+                    "residualValue": new_residual,
+                    "redemptionCount": new_count,
+                    "lastRedeemedAt": _iso(_now()),
+                },
             },
-        },
-    )
+            return_document=True,
+        )
+        if updated is not None:
+            break
+        # Someone else redeemed (or revoked) this exact voucher between our
+        # read and our write — loop back and retry against fresh state
+        # rather than silently applying a decision based on stale data.
+    else:
+        raise HTTPException(
+            409, "Voucher was redeemed by another request at the same moment — please retry"
+        )
 
     # Ledger write (if voucher was assigned to a customer)
-    if v.get("customerId"):
+    if updated.get("customerId"):
         await _ledger_write(
-            customer_id=v["customerId"], type_="voucher", sign=-1,
-            amount=applied, source_type="voucher_redeem", source_ref=v["id"],
+            customer_id=updated["customerId"], type_="voucher", sign=-1,
+            amount=applied, source_type="voucher_redeem", source_ref=updated["id"],
             metadata={
-                "voucherCode": v["code"],
+                "voucherCode": updated["code"],
                 "transactionId": body.transactionId,
                 "terminalId": body.terminalId,
                 "staffId": user.get("id"),
@@ -445,7 +491,7 @@ async def redeem_voucher(body: VoucherRedeemRequest, user: dict = Depends(get_us
             },
         )
 
-    updated = await db.vouchers.find_one({"id": v["id"]}, {"_id": 0})
+    updated.pop("_id", None)
     return {"ok": True, "amountApplied": round(applied, 2), "voucher": updated}
 
 
@@ -453,10 +499,10 @@ async def redeem_voucher(body: VoucherRedeemRequest, user: dict = Depends(get_us
 async def revoke_voucher(voucher_id: str, body: dict, user: dict = Depends(get_user)):
     if user["role"] not in ("owner", "manager"):
         raise HTTPException(403, "Owner/manager only")
-    v = await db.vouchers.find_one({"id": voucher_id})
-    if not v:
+    v = await db.vouchers.find_one({"$and": [{"id": voucher_id}, tenant_scope_filter(user.get("businessId"))]})
+    if not v or not tenant_owns_strict(v.get("businessId"), user.get("businessId")):
         raise HTTPException(404, "Voucher not found")
-    await db.vouchers.update_one({"id": voucher_id}, {"$set": {
+    await db.vouchers.update_one({"$and": [{"id": voucher_id}, tenant_scope_filter(user.get("businessId"))]}, {"$set": {
         "status": "revoked",
         "revokedAt": _iso(_now()),
         "revokedBy": user.get("email"),
@@ -479,7 +525,11 @@ async def _ledger_write(*, customer_id: str, type_: str, sign: int, amount: floa
         raise HTTPException(400, f"Unknown ledger type: {type_}")
     delta = round(sign * amount, 2)
     # Snapshot new balance for fast timeline reads
-    prev_entries = await db.wallet_ledger.find({"customerId": customer_id, "type": type_}, {"_id": 0, "sign": 1, "amount": 1}).to_list(50000)
+    scope = tenant_scope_filter()
+    prev_entries = await db.wallet_ledger.find(
+        {"customerId": customer_id, "type": type_, **scope},
+        {"_id": 0, "sign": 1, "amount": 1},
+    ).to_list(50000)
     prev_bal = sum(e.get("sign", 1) * e.get("amount", 0) for e in prev_entries)
     entry = LedgerEntry(
         customerId=customer_id, type=type_, sign=sign, amount=abs(amount),
@@ -495,10 +545,11 @@ async def _ledger_write(*, customer_id: str, type_: str, sign: int, amount: floa
 
 @router.get("/wallet/{customer_id}")
 async def get_wallet(customer_id: str, user: dict = Depends(get_user)):
-    c = await db.customers.find_one({"id": customer_id}, {"_id": 0})
+    scope = tenant_scope_filter(user.get("businessId"))
+    c = await db.customers.find_one({**scope, "id": customer_id}, {"_id": 0})
     if not c or not tenant_owns(c.get("businessId"), user.get("businessId")):
         raise HTTPException(404, "Customer not found")
-    entries = await db.wallet_ledger.find({"customerId": customer_id}, {"_id": 0}).sort("createdAt", -1).to_list(2000)
+    entries = await db.wallet_ledger.find({"customerId": customer_id, **scope}, {"_id": 0}).sort("createdAt", -1).to_list(2000)
     balances = {b: 0.0 for b in _BUCKETS}
     for e in entries:
         if e["type"] in balances:
@@ -506,7 +557,7 @@ async def get_wallet(customer_id: str, user: dict = Depends(get_user)):
 
     # Active vouchers assigned to this customer
     vs = await db.vouchers.find(
-        {"customerId": customer_id, "status": {"$in": ["active", "partial"]}},
+        {"customerId": customer_id, "status": {"$in": ["active", "partial"]}, **scope},
         {"_id": 0},
     ).sort("issuedAt", -1).to_list(500)
 
@@ -530,6 +581,8 @@ async def credit_wallet(customer_id: str, body: LedgerEntryCreate, user: dict = 
         raise HTTPException(403, "Owner/manager only")
     if body.customerId != customer_id:
         body.customerId = customer_id
+    if not await db.customers.find_one({"id": customer_id, **tenant_scope_filter(user.get("businessId"))}, {"_id": 1}):
+        raise HTTPException(404, "Customer not found")
     return await _ledger_write(
         customer_id=customer_id, type_=body.type, sign=+1,
         amount=abs(body.amount), source_type=body.sourceType,
@@ -542,8 +595,14 @@ async def credit_wallet(customer_id: str, body: LedgerEntryCreate, user: dict = 
 async def debit_wallet(customer_id: str, body: LedgerEntryCreate, user: dict = Depends(get_user)):
     if user["role"] not in ("owner", "manager"):
         raise HTTPException(403, "Owner/manager only")
+    scope = tenant_scope_filter(user.get("businessId"))
+    if not await db.customers.find_one({"id": customer_id, **scope}, {"_id": 1}):
+        raise HTTPException(404, "Customer not found")
     # Balance check
-    entries = await db.wallet_ledger.find({"customerId": customer_id, "type": body.type}, {"_id": 0, "sign": 1, "amount": 1}).to_list(50000)
+    entries = await db.wallet_ledger.find(
+        {"customerId": customer_id, "type": body.type, **scope},
+        {"_id": 0, "sign": 1, "amount": 1},
+    ).to_list(50000)
     bal = sum(e.get("sign", 1) * e.get("amount", 0) for e in entries)
     if abs(body.amount) > bal + 0.001:
         raise HTTPException(400, f"Insufficient {body.type} balance (have ${bal:.2f})")
@@ -556,10 +615,11 @@ async def debit_wallet(customer_id: str, body: LedgerEntryCreate, user: dict = D
 
 
 @router.get("/wallet/{customer_id}/timeline")
-async def wallet_timeline(customer_id: str, limit: int = 200, _: dict = Depends(get_user)):
+async def wallet_timeline(customer_id: str, limit: int = 200, user: dict = Depends(get_user)):
     """Merged customer journey across bookings, orders, payments, refunds,
     points/voucher movements, and reviews. Sorted DESC by time."""
-    c = await db.customers.find_one({"id": customer_id}, {"_id": 0})
+    scope = tenant_scope_filter(user.get("businessId"))
+    c = await db.customers.find_one({**scope, "id": customer_id}, {"_id": 0})
     if not c:
         raise HTTPException(404, "Customer not found")
     events: List[dict] = []
@@ -570,27 +630,27 @@ async def wallet_timeline(customer_id: str, limit: int = 200, _: dict = Depends(
             except Exception: continue
 
     await _add(
-        db.reservations.find({"customerId": customer_id}, {"_id": 0}).sort("createdAt", -1).limit(200),
+        db.reservations.find({"customerId": customer_id, **scope}, {"_id": 0}).sort("createdAt", -1).limit(200),
         lambda d: {"type": "booking", "at": d.get("createdAt") or d.get("date"), "title": f"Booking · party of {d.get('partySize', 1)}", "meta": d, "icon": "calendar"},
     )
     await _add(
-        db.transactions.find({"customerId": customer_id}, {"_id": 0}).sort("createdAt", -1).limit(500),
+        db.transactions.find({"customerId": customer_id, **scope}, {"_id": 0}).sort("createdAt", -1).limit(500),
         lambda d: {"type": "order", "at": d.get("createdAt"), "title": f"Order · ${d.get('total', 0):.2f}", "meta": d, "icon": "shopping-cart"},
     )
     await _add(
-        db.refunds.find({"customerId": customer_id}, {"_id": 0}).sort("createdAt", -1).limit(200),
+        db.refunds.find({"customerId": customer_id, **scope}, {"_id": 0}).sort("createdAt", -1).limit(200),
         lambda d: {"type": "refund", "at": d.get("createdAt"), "title": f"Refund · ${d.get('amount', 0):.2f}", "meta": d, "icon": "rotate-ccw"},
     )
     await _add(
-        db.wallet_ledger.find({"customerId": customer_id}, {"_id": 0}).sort("createdAt", -1).limit(500),
+        db.wallet_ledger.find({"customerId": customer_id, **scope}, {"_id": 0}).sort("createdAt", -1).limit(500),
         lambda d: {"type": "ledger", "at": d.get("createdAt"), "title": f"{'+' if d.get('sign', 1) > 0 else '−'} {d.get('amount', 0)} {d.get('type')}", "meta": d, "icon": "wallet"},
     )
     await _add(
-        db.vouchers.find({"customerId": customer_id}, {"_id": 0}).sort("issuedAt", -1).limit(200),
+        db.vouchers.find({"customerId": customer_id, **scope}, {"_id": 0}).sort("issuedAt", -1).limit(200),
         lambda d: {"type": "voucher", "at": d.get("issuedAt"), "title": f"Voucher issued · {d.get('code')}", "meta": d, "icon": "gift"},
     )
     await _add(
-        db.feedback.find({"customerId": customer_id}, {"_id": 0}).sort("createdAt", -1).limit(200),
+        db.feedback.find({"customerId": customer_id, **scope}, {"_id": 0}).sort("createdAt", -1).limit(200),
         lambda d: {"type": "review", "at": d.get("createdAt"), "title": f"Feedback · {d.get('rating', '?')}★", "meta": d, "icon": "star"},
     )
 
@@ -634,13 +694,22 @@ async def create_refund(body: dict, user: dict = Depends(get_user)):
     if abs(split_total - amount) > 0.01:
         raise HTTPException(400, f"Splits total ${split_total} does not match refund ${amount}")
 
-    txn = await db.transactions.find_one({"id": tx_id}, {"_id": 0}) if tx_id else None
+    scope = tenant_scope_filter(user.get("businessId"))
+    txn = await db.transactions.find_one({"id": tx_id, **scope}, {"_id": 0}) if tx_id else None
+    if tx_id and not txn:
+        raise HTTPException(404, "Transaction not found")
+    resolved_customer_id = customer_id or (txn or {}).get("customerId")
+    if resolved_customer_id and not await db.customers.find_one(
+        {"id": resolved_customer_id, **scope}, {"_id": 1}
+    ):
+        raise HTTPException(404, "Customer not found")
 
     rid = f"RF-{uuid.uuid4().hex[:8].upper()}"
     refund_doc: dict = {
         "id": rid,
         "transactionId": tx_id,
-        "customerId": customer_id or (txn or {}).get("customerId"),
+        "customerId": resolved_customer_id,
+        "businessId": user.get("businessId"),
         "amount": round(amount, 2),
         "reason": body.get("reason"),
         "note": body.get("note"),
@@ -705,11 +774,14 @@ async def create_refund(body: dict, user: dict = Depends(get_user)):
 
     # Mark original transaction as refunded/partial-refunded
     if tx_id:
-        prev_refunds = await db.refunds.find({"transactionId": tx_id}, {"_id": 0, "amount": 1}).to_list(50)
+        prev_refunds = await db.refunds.find({"transactionId": tx_id, **scope}, {"_id": 0, "amount": 1}).to_list(50)
         refunded_total = sum(r.get("amount", 0) for r in prev_refunds)
         original_total = (txn or {}).get("total", 0) or 0
         new_status = "refunded" if refunded_total >= original_total - 0.01 else "partial_refund"
-        await db.transactions.update_one({"id": tx_id}, {"$set": {"refundStatus": new_status, "refundedAmount": round(refunded_total, 2)}})
+        await db.transactions.update_one(
+            {"id": tx_id, **scope},
+            {"$set": {"refundStatus": new_status, "refundedAmount": round(refunded_total, 2)}},
+        )
 
     return refund_doc
 
@@ -798,9 +870,10 @@ def _fallback_template(goal: str, name: str, vt: str, val: float, days: list,
 # Promotion Analytics
 # ═════════════════════════════════════════════════════════════════════════
 @router.get("/promo-analytics/summary")
-async def promo_analytics(days: int = 30, _: dict = Depends(get_user)):
+async def promo_analytics(days: int = 30, user: dict = Depends(get_user)):
     since = (_now() - timedelta(days=days)).isoformat()
-    vs = await db.vouchers.find({"issuedAt": {"$gte": since}}, {"_id": 0}).to_list(20000)
+    scope = tenant_scope_filter(user.get("businessId"))
+    vs = await db.vouchers.find({"issuedAt": {"$gte": since}, **scope}, {"_id": 0}).to_list(20000)
     issued = len(vs)
     redeemed = sum(1 for v in vs if v.get("redemptionCount", 0) > 0)
     expired = sum(1 for v in vs if v.get("status") == "expired")
@@ -816,7 +889,7 @@ async def promo_analytics(days: int = 30, _: dict = Depends(get_user)):
     totals_by_txn = {}
     if txn_ids:
         rows = await db.transactions.find(
-            {"id": {"$in": txn_ids}}, {"_id": 0, "id": 1, "total": 1}
+            {"id": {"$in": txn_ids}, **scope}, {"_id": 0, "id": 1, "total": 1}
         ).to_list(len(txn_ids))
         totals_by_txn = {row["id"]: row.get("total", 0) for row in rows}
     revenue_generated = sum(
@@ -860,10 +933,14 @@ _MILESTONES = [
 
 @router.get("/loyalty/status/{customer_id}")
 async def loyalty_status(customer_id: str, _: dict = Depends(get_user)):
-    c = await db.customers.find_one({"id": customer_id}, {"_id": 0})
+    c = await db.customers.find_one({**tenant_scope_filter(), "id": customer_id}, {"_id": 0})
     if not c:
         raise HTTPException(404, "Customer not found")
-    txns = await db.transactions.find({"customerId": customer_id, "status": {"$in": ["completed", "paid", "closed"]}}, {"_id": 0}).to_list(5000)
+    scope = tenant_scope_filter()
+    txns = await db.transactions.find({
+        "customerId": customer_id, "status": {"$in": ["completed", "paid", "closed"]},
+        **scope,
+    }, {"_id": 0}).to_list(5000)
     total_visits = len(txns)
     total_spend = sum(t.get("total", 0) for t in txns)
 
@@ -874,7 +951,7 @@ async def loyalty_status(customer_id: str, _: dict = Depends(get_user)):
     # thresholds instead, so the same customer could show as one tier on
     # the wallet panel and a different tier everywhere else in the app.
     points = int(c.get("points") or 0)
-    tiers = await db.loyalty_tiers.find({}, {"_id": 0}).sort("minPoints", 1).to_list(20)
+    tiers = await db.loyalty_tiers.find(scope, {"_id": 0}).sort("minPoints", 1).to_list(20)
     current_tier_doc = tiers[0] if tiers else None
     next_tier_doc = None
     for t in tiers:
@@ -908,7 +985,7 @@ async def loyalty_status(customer_id: str, _: dict = Depends(get_user)):
         prev = datetime.fromisocalendar(y, w, 1) - timedelta(days=1)
         y, w = prev.isocalendar()[:2]
     # Awarded milestones (persisted to db.loyalty_awards; auto-award new ones)
-    awarded_docs = await db.loyalty_awards.find({"customerId": customer_id}, {"_id": 0}).to_list(200)
+    awarded_docs = await db.loyalty_awards.find({"customerId": customer_id, **scope}, {"_id": 0}).to_list(200)
     awarded_keys = {a["key"] for a in awarded_docs}
     newly_awarded = []
     for m in _MILESTONES:
@@ -916,7 +993,8 @@ async def loyalty_status(customer_id: str, _: dict = Depends(get_user)):
             continue
         hit = (m["type"] == "visits" and total_visits >= m["threshold"]) or (m["type"] == "spend" and total_spend >= m["threshold"])
         if hit:
-            doc = {"customerId": customer_id, "key": m["key"], "label": m["label"], "awardedAt": _iso(now)}
+            doc = {"customerId": customer_id, "key": m["key"], "label": m["label"],
+                   "awardedAt": _iso(now), "businessId": c.get("businessId")}
             await db.loyalty_awards.insert_one(dict(doc))
             doc.pop("_id", None)
             newly_awarded.append(doc)
@@ -948,8 +1026,13 @@ async def loyalty_status(customer_id: str, _: dict = Depends(get_user)):
 async def loyalty_award(body: dict, user: dict = Depends(get_user)):
     if user["role"] not in ("owner", "manager"):
         raise HTTPException(403, "Owner/manager only")
+    if not await db.customers.find_one(
+        {"id": body["customerId"], **tenant_scope_filter(user.get("businessId"))}, {"_id": 1}
+    ):
+        raise HTTPException(404, "Customer not found")
     doc = {
         "customerId": body["customerId"],
+        "businessId": user.get("businessId"),
         "key": body["key"],
         "label": body.get("label", body["key"]),
         "awardedAt": _iso(_now()),
@@ -964,11 +1047,15 @@ async def loyalty_award(body: dict, user: dict = Depends(get_user)):
 # AI Personalisation — recommended offers per customer
 # ═════════════════════════════════════════════════════════════════════════
 @router.get("/personalisation/{customer_id}")
-async def personalisation(customer_id: str, _: dict = Depends(get_user)):
-    c = await db.customers.find_one({"id": customer_id}, {"_id": 0})
+async def personalisation(customer_id: str, user: dict = Depends(get_user)):
+    scope = tenant_scope_filter(user.get("businessId"))
+    c = await db.customers.find_one({**scope, "id": customer_id}, {"_id": 0})
     if not c:
         raise HTTPException(404, "Customer not found")
-    txns = await db.transactions.find({"customerId": customer_id, "status": {"$in": ["completed", "paid", "closed"]}}, {"_id": 0}).sort("createdAt", -1).to_list(500)
+    txns = await db.transactions.find(
+        {"customerId": customer_id, "status": {"$in": ["completed", "paid", "closed"]}, **scope},
+        {"_id": 0},
+    ).sort("createdAt", -1).to_list(500)
 
     fav_items: Dict[str, dict] = {}
     hour_counts: Dict[int, int] = {}
@@ -1087,20 +1174,23 @@ async def schedule_gift(body: dict, user: dict = Depends(get_user)):
 async def reload_gift(voucher_id: str, body: dict, user: dict = Depends(get_user)):
     if user["role"] not in ("owner", "manager"):
         raise HTTPException(403, "Owner/manager only")
-    v = await db.vouchers.find_one({"id": voucher_id}, {"_id": 0})
+    scope = tenant_scope_filter(user.get("businessId"))
+    v = await db.vouchers.find_one({"id": voucher_id, **scope}, {"_id": 0})
     if not v or v.get("sourceType") != "gift_card":
         raise HTTPException(404, "Gift card not found")
     amt = float(body.get("amount", 0))
     if amt <= 0:
         raise HTTPException(400, "amount must be > 0")
-    new_value = round(v["value"] + amt, 2)
-    new_residual = round((v.get("residualValue") or 0.0) + amt, 2)
-    await db.vouchers.update_one({"id": voucher_id}, {"$set": {
-        "value": new_value,
-        "residualValue": new_residual,
-        "faceValue": round(v.get("faceValue", 0) + amt, 2),
-        "status": "partial" if new_residual > 0 else v.get("status"),
-    }})
+    updated = await db.vouchers.find_one_and_update(
+        {"id": voucher_id, "sourceType": "gift_card", **scope},
+        {"$inc": {"value": amt, "residualValue": amt, "faceValue": amt},
+         "$set": {"status": "partial"}},
+        return_document=True,
+    )
+    if not updated:
+        raise HTTPException(404, "Gift card not found")
+    new_value = round(updated["value"], 2)
+    new_residual = round(updated.get("residualValue") or 0.0, 2)
     from services.audit_service import log_event
     await log_event(entity_type="gift_card", entity_id=voucher_id, action="updated",
                      before=v, after={**v, "value": new_value, "residualValue": new_residual},

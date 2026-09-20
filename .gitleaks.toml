@@ -1,0 +1,22 @@
+title = "NUA gitleaks config"
+
+# Extend the default ruleset rather than replacing it — we only need to
+# allowlist a handful of confirmed false positives, not redefine detection.
+[extend]
+useDefault = true
+
+[allowlist]
+  description = "Confirmed false positives: business-logic dict keys and test-only fixture values that trip the entropy-based generic-api-key rule, not real credentials."
+  regexTarget = "match"
+  regexes = [
+    # services/nua_intelligence.py's ash_insights upsert key (plus its own
+    # docstring) and tests/inprocess/test_nua_tenant_isolation.py's
+    # fixtures — "theft-signal-1" is an Ash insight category/key
+    # identifier, never a secret. See services/nua_intelligence.py's
+    # docstring for why the (category, key) pair looks like this.
+    '''theft-signal-1''',
+    # tests/inprocess/test_ash_safety_controls.py — idempotencyKey values
+    # are deliberately human-readable test fixtures (the test asserts two
+    # DIFFERENT such keys produce two different outcomes), not credentials.
+    '''test-idem-key-ash-safety-2[ab]''',
+  ]

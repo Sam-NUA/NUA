@@ -16,6 +16,7 @@ from typing import Any, Dict, List, Optional
 
 from database import db
 from models.kitchen_order import KitchenOrder
+from middleware.actor_context import tenant_scope_filter, get_actor_context
 
 log = logging.getLogger(__name__)
 
@@ -24,7 +25,7 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-async def _enrich_categories(items: List[dict]) -> List[dict]:
+async def _enrich_categories(items: List[dict], business_id: Optional[str] = None) -> List[dict]:
     """Fill in each item's category from the product catalog.
 
     Coursing maps categories to courses, so an item without one silently
@@ -34,8 +35,9 @@ async def _enrich_categories(items: List[dict]) -> List[dict]:
     missing = [i.get("productId") for i in items if not i.get("category") and i.get("productId")]
     if not missing:
         return [dict(i) for i in items]
+    query = {"$and": [tenant_scope_filter(business_id), {"id": {"$in": missing}}]}
     rows = await db.products.find(
-        {"id": {"$in": missing}},
+        query,
         {"_id": 0, "id": 1, "category": 1, "name": 1, "allergens": 1, "dietary": 1},
     ).to_list(200)
     by_id = {r["id"]: r for r in rows}
@@ -63,26 +65,43 @@ async def create_ticket(items: List[dict], *, order_type: str,
                         external_id: Optional[str] = None,
                         notes: Optional[str] = None,
                         actor: str = "system",
-                        straight_fire: Optional[bool] = None) -> Optional[Dict[str, Any]]:
+                        straight_fire: Optional[bool] = None,
+                        business_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
     """Create a coursed kitchen ticket for a channel order.
 
     Returns the ticket, or None when there's nothing to cook. Idempotent on
     `external_id`: replaying the same channel order returns the existing
     ticket rather than making a second one.
+
+    `business_id` defaults from the request's actor context (same pattern
+    used throughout this codebase's tenant-isolation fixes) — stamped on
+    the kitchen order and used to scope the external_id idempotency lookup
+    and category enrichment, so two businesses' channel orders (staff
+    accepting an online order, the AI phone agent drafting one) can never
+    collide or leak into each other's KDS. Callers with no business signal
+    at all (the kiosk-checkout path, genuinely unauthenticated by design —
+    see TENANT_ISOLATION_REMAINING_WORK.md) simply leave this None, same
+    behavior as before this parameter existed.
     """
+    if business_id is None:
+        business_id = get_actor_context().get("businessId")
+
+    if not business_id:
+        raise ValueError("Business ownership required for a kitchen ticket")
     items = [i for i in (items or []) if i]
     if not items:
         return None
 
     if external_id:
-        existing = await db.kitchen_orders.find_one({"externalId": external_id}, {"_id": 0})
+        existing_query = {"$and": [tenant_scope_filter(business_id), {"externalId": external_id}]}
+        existing = await db.kitchen_orders.find_one(existing_query, {"_id": 0})
         if existing:
             return existing
 
     from services import coursing, print_routing
 
-    items = await _enrich_categories(items)
-    config = await coursing.get_config()
+    items = await _enrich_categories(items, business_id)
+    config = await coursing.get_config(business_id=business_id)
     ot = str(order_type or "takeaway").replace("-", "_")
     straight = (coursing.is_straight_fire(ot, config, False)
                 if straight_fire is None else bool(straight_fire))
@@ -106,6 +125,7 @@ async def create_ticket(items: List[dict], *, order_type: str,
     doc["source"] = source
     doc["externalId"] = external_id
     doc["straightFired"] = straight
+    doc["businessId"] = business_id
     try:
         doc["orderStations"] = await print_routing.stations_for(priced)
     except Exception as e:

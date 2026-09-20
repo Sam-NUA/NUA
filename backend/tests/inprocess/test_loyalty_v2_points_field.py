@@ -17,7 +17,7 @@ def _seed_customer(name, email):
     loop = asyncio.get_event_loop()
     from database import db
     from routes.customers import Customer
-    doc = Customer(name=name, email=email, phone="0400000000").dict()
+    doc = Customer(businessId="default", name=name, email=email, phone="0400000000").dict()
     loop.run_until_complete(db.customers.insert_one(doc))
     return doc["id"]
 
@@ -29,7 +29,7 @@ def test_a_milestone_points_reward_lands_on_the_real_points_field(client, owner_
     from database import db
     # A milestone with a points reward and a trivially-met threshold (0
     # visits) so awarding it doesn't depend on unrelated seed/fixture data.
-    loop.run_until_complete(db.loyalty_milestones.insert_one({
+    loop.run_until_complete(db.loyalty_milestones.insert_one({"businessId": "default",
         "id": "MS-TEST-1", "name": "Test milestone", "metric": "visits", "threshold": 0,
         "reward": {"type": "points", "value": 50}, "order": 999,
     }))

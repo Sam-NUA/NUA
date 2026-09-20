@@ -20,6 +20,7 @@ from datetime import datetime, timezone
 from typing import Optional
 from database import db
 from deps import get_user
+from middleware.actor_context import tenant_scope_filter, tenant_owns, tenant_owns_strict, get_actor_context
 from services import voice_calls as vc
 import os
 import uuid
@@ -72,13 +73,16 @@ def _closing_message(outcome: str) -> str:
 
 
 async def initiate_call(*, customer_id: Optional[str], phone: Optional[str], purpose: str,
-                          context: Optional[dict], base_url: str, actor: Optional[dict]) -> dict:
+                          context: Optional[dict], base_url: str, actor: Optional[dict],
+                          business_id: Optional[str] = None) -> dict:
     """Shared by the HTTP endpoint and the Ash `call_customer` tool."""
+    if business_id is None:
+        business_id = get_actor_context().get("businessId")
     context = context or {}
     customer = None
     if customer_id:
-        customer = await db.customers.find_one({"id": customer_id}, {"_id": 0})
-        if not customer:
+        customer = await db.customers.find_one({**tenant_scope_filter(business_id), "id": customer_id}, {"_id": 0})
+        if customer is None or not tenant_owns(customer.get("businessId"), business_id):
             raise HTTPException(status_code=404, detail="Customer not found")
         phone = phone or customer.get("phone")
 
@@ -99,7 +103,7 @@ async def initiate_call(*, customer_id: Optional[str], phone: Optional[str], pur
         "transcript": [{"speaker": "nua", "text": opening, "at": _now()}],
         "turns": 0, "status": "initiating", "outcome": None,
         "createdBy": (actor or {}).get("name") or (actor or {}).get("id") or "ash-agent",
-        "createdAt": _now(),
+        "createdAt": _now(), "businessId": business_id,
     }
     await db.voice_calls.insert_one(dict(doc))
 
@@ -127,16 +131,17 @@ async def create_call(data: dict, http_request: Request, user: dict = Depends(ge
 
 
 @router.get("/voice/calls")
-async def list_calls(limit: int = 50, _: dict = Depends(get_user)):
+async def list_calls(limit: int = 50, user: dict = Depends(get_user)):
     limit = max(1, min(200, limit))
-    rows = await db.voice_calls.find({}, {"_id": 0}).sort("createdAt", -1).to_list(limit)
+    rows = await db.voice_calls.find(tenant_scope_filter(user.get("businessId")), {"_id": 0}) \
+        .sort("createdAt", -1).to_list(limit)
     return rows
 
 
 @router.get("/voice/calls/{call_id}")
-async def get_call(call_id: str, _: dict = Depends(get_user)):
-    row = await db.voice_calls.find_one({"id": call_id}, {"_id": 0})
-    if not row:
+async def get_call(call_id: str, user: dict = Depends(get_user)):
+    row = await db.voice_calls.find_one({"$and": [{"id": call_id}, tenant_scope_filter(user.get("businessId"))]}, {"_id": 0})
+    if row is None or not tenant_owns_strict(row.get("businessId"), user.get("businessId")):
         raise HTTPException(status_code=404, detail="Call not found")
     return row
 

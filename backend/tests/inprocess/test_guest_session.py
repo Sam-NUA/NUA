@@ -27,7 +27,7 @@ def test_verify_issues_a_guest_token_and_a_known_profile(client, owner_headers):
         "name": "Session Test Guest", "email": "session.guest@example.com", "phone": phone})
 
     _request_code(client, phone)
-    r = req(client, "POST", "/api/guest/session/verify", json={"phone": phone, "code": FIXED_CODE})
+    r = req(client, "POST", "/api/guest/session/verify", json={"phone": phone, "code": FIXED_CODE, "business": "default"})
     assert r.status_code == 200, r.text[:200]
     body = r.json()
     assert body["token"]
@@ -41,7 +41,7 @@ def test_verify_still_issues_a_token_for_an_unknown_phone(client):
     forms won't prefill, not that verification fails."""
     phone = "0471" + str(uuid.uuid4().int)[:6]
     _request_code(client, phone)
-    r = req(client, "POST", "/api/guest/session/verify", json={"phone": phone, "code": FIXED_CODE})
+    r = req(client, "POST", "/api/guest/session/verify", json={"phone": phone, "code": FIXED_CODE, "business": "default"})
     assert r.status_code == 200, r.text[:200]
     body = r.json()
     assert body["token"]
@@ -59,9 +59,9 @@ def test_verify_rejects_a_wrong_code(client):
 def test_verify_code_is_single_use(client):
     phone = "0473" + str(uuid.uuid4().int)[:6]
     _request_code(client, phone)
-    first = req(client, "POST", "/api/guest/session/verify", json={"phone": phone, "code": FIXED_CODE})
+    first = req(client, "POST", "/api/guest/session/verify", json={"phone": phone, "code": FIXED_CODE, "business": "default"})
     assert first.status_code == 200
-    second = req(client, "POST", "/api/guest/session/verify", json={"phone": phone, "code": FIXED_CODE})
+    second = req(client, "POST", "/api/guest/session/verify", json={"phone": phone, "code": FIXED_CODE, "business": "default"})
     assert second.status_code == 401
 
 
@@ -71,7 +71,7 @@ def test_me_endpoint_resolves_from_a_valid_token(client, owner_headers):
         "name": "Me Endpoint Guest", "email": "me.guest@example.com", "phone": phone})
     _request_code(client, phone)
     token = req(client, "POST", "/api/guest/session/verify",
-               json={"phone": phone, "code": FIXED_CODE}).json()["token"]
+               json={"phone": phone, "code": FIXED_CODE, "business": "default"}).json()["token"]
 
     r = req(client, "GET", "/api/guest/session/me", headers={"Authorization": f"Bearer {token}"})
     assert r.status_code == 200, r.text[:200]

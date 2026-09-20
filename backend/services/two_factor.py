@@ -294,18 +294,21 @@ async def revoke_device(user_id: str, device_id: str) -> bool:
 
 # ── Policy ─────────────────────────────────────────────────────────────────
 
-async def policy() -> dict:
-    doc = await db.settings.find_one({"key": "two_factor_policy"}, {"_id": 0})
-    value = (doc or {}).get("value") or {}
+async def policy(business_id: Optional[str] = None) -> dict:
+    """Defaults business_id from the request's actor context (same
+    pattern as notification_service.send()) so existing callers don't
+    need editing — this used to be one 2FA-enforcement policy shared by
+    every business on the deployment; see services/tenant_settings.py."""
+    from services.tenant_settings import get_setting
+    value = await get_setting("two_factor_policy", business_id) or {}
     return {"required": bool(value.get("required", False)),
             "roles": value.get("roles") or list(ENFORCED_ROLES)}
 
 
-async def set_policy(required: bool, roles: Optional[List[str]] = None) -> dict:
+async def set_policy(required: bool, roles: Optional[List[str]] = None, business_id: Optional[str] = None) -> dict:
+    from services.tenant_settings import set_setting
     value = {"required": bool(required), "roles": roles or list(ENFORCED_ROLES)}
-    await db.settings.update_one({"key": "two_factor_policy"},
-                                 {"$set": {"key": "two_factor_policy", "value": value}},
-                                 upsert=True)
+    await set_setting("two_factor_policy", value, business_id)
     return value
 
 
@@ -318,7 +321,7 @@ async def required_for(user: dict) -> bool:
     """
     if user.get("twoFactorEnabled"):
         return True
-    p = await policy()
+    p = await policy(user.get("businessId"))
     return p["required"] and user.get("role") in p["roles"]
 
 

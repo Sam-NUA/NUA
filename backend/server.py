@@ -6,6 +6,8 @@ from fastapi import FastAPI, APIRouter
 from starlette.middleware.cors import CORSMiddleware
 import logging
 import os
+import re
+from typing import Optional
 
 from database import client
 
@@ -50,6 +52,7 @@ from routes.phase_ef import router as phase_ef_router
 from routes.phase_ef_wave2 import router as phase_ef_wave2_router
 from routes.v25_suite import router as v25_suite_router
 from routes.licensing import router as licensing_router
+from routes.ownership_migration import router as ownership_migration_router
 from routes.v26_commerce import router as v26_commerce_router
 from routes.online_orders import router as online_orders_router
 from routes.inventory_accounting import router as inventory_accounting_router
@@ -121,6 +124,7 @@ api_router.include_router(phase_ef_router)
 api_router.include_router(phase_ef_wave2_router)
 api_router.include_router(v25_suite_router)
 api_router.include_router(licensing_router)
+api_router.include_router(ownership_migration_router)
 api_router.include_router(v26_commerce_router)
 api_router.include_router(online_orders_router)
 api_router.include_router(inventory_accounting_router)
@@ -236,6 +240,15 @@ PUBLIC_API_PREFIXES = (
     # routes/voice_calls.py (services/voice_calls.validate_signature), the
     # same trust model as the Coinbase webhook below uses HMAC for.
     "/api/voice/twiml/", "/api/voice/gather/", "/api/voice/status/",
+    # Inbound-call gather turns only — trailing slash so this can never
+    # match /api/voice/inbound/status, /config, /recent or /active (the
+    # owner/staff-facing endpoints in routes/voice_inbound.py, which stay
+    # behind the normal auth middleware). The bare POST /api/voice/inbound
+    # webhook itself (no call_id suffix yet) is listed as an exact path in
+    # PUBLIC_API_PATHS below instead, for the same reason — a prefix with
+    # no trailing slash there would have also matched every one of those
+    # staff-only sub-paths.
+    "/api/voice/inbound/gather/",
 )
 
 PUBLIC_API_PATHS = {
@@ -299,6 +312,15 @@ PUBLIC_API_PATHS = {
     # Coinbase Commerce webhook — authenticated by its own HMAC signature
     # (services/coinbase_commerce.py verify_webhook_signature), not a user token.
     "/api/webhook/coinbase",
+    # Twilio's very first inbound-call webhook — no call_id exists yet (that
+    # only appears once routes/voice_inbound.py creates the voice_calls doc
+    # and hands back a gather URL under /api/voice/inbound/gather/, which is
+    # in PUBLIC_API_PREFIXES above instead). Authenticated by Twilio request-
+    # signature validation inside the route itself, same as the other voice
+    # webhooks. Exact path only — never widen this to a prefix, or every
+    # owner/staff-facing /api/voice/inbound/* endpoint below it would also
+    # bypass auth.
+    "/api/voice/inbound",
     # A browser reporting its own crash — has to work from the login screen
     # and the guest ordering pages, neither of which carries a token.
     "/api/ops/client-errors",
@@ -324,7 +346,22 @@ class RequireAuthMiddleware(BaseHTTPMiddleware):
     """Reject /api/ traffic that carries no valid token, before it reaches a route."""
 
     async def dispatch(self, request, call_next):
-        path = request.url.path
+        # request.scope["path"], not request.url.path: starlette's Request.url
+        # rebuilds a URL by string-concatenating the raw, unvalidated Host
+        # header with the real path and reparsing it (PYSEC-2026-161 /
+        # GHSA-86qp-5c8j-p5mr) — a Host header like "x/api/public" turns
+        # request.url.path into "/api/public/api/users", which
+        # _is_public_api() then waves through with no token check at all,
+        # while FastAPI's actual routing (which dispatches on scope["path"]
+        # directly, never touching Host) still sends the request to the
+        # real, sensitive handler. Verified end-to-end against a route with
+        # no route-level Depends() (GET/POST /api/users): the unmodified
+        # request correctly 401s, the same request with that Host header
+        # reaches routes/settings.py's get_users()/create_user() with zero
+        # authentication. scope["path"] is what the router actually uses
+        # and is not derived from any header, so it can't be spoofed this
+        # way regardless of which starlette version is installed.
+        path = request.scope["path"]
         if request.method == "OPTIONS" or not path.startswith("/api/"):
             return await call_next(request)
         if _is_public_api(path):
@@ -354,8 +391,13 @@ class RequireAuthMiddleware(BaseHTTPMiddleware):
         return await call_next(request)
 
 
+def _table_id_from_path(path: str) -> Optional[str]:
+    m = re.match(r"^/api/table/([^/]+)", path)
+    return m.group(1) if m else None
+
+
 class RateLimitMiddleware(BaseHTTPMiddleware):
-    """120 req/min per (tenant, identity). Excludes static & public booking.
+    """120 req/min per (tenant, identity) for authenticated staff traffic.
 
     A handful of paths get a stricter, IP-only override instead of the
     default — specifically ones that are unauthenticated by design and
@@ -364,6 +406,15 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
     voucher codes has no `identity` beyond "unauthenticated", so without
     this override every guessed code would share the same generous 120/min
     room as every other anonymous request across the whole API.
+
+    /api/public/* and /api/table/* used to be excluded from rate limiting
+    entirely (found during the Trust Release final readiness audit) — an
+    anonymous caller could hit booking/waitlist creation, menu reads, or
+    table order placement at unlimited rate. PREFIX_OVERRIDES below covers
+    the write/enumeration-risk paths specifically (booking, waitlist,
+    voice webhooks) with their own stricter limits; everything else under
+    those two prefixes now falls through to a real, if generous, default
+    instead of no limit at all.
     """
     PATH_OVERRIDES = {
         "/api/vouchers/public-check": (10, 60),  # 10 req/min per IP
@@ -387,6 +438,32 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         # tab can't grow client_error_log unbounded.
         "/api/ops/client-errors": (30, 60),  # 30 req/min per IP
     }
+    # Ordered (prefix, limit, window) list for endpoints whose path carries
+    # a variable segment (table_id, call_id) that PATH_OVERRIDES' exact-match
+    # dict can't key on. First matching prefix wins, checked before the
+    # generic public/table default.
+    PREFIX_OVERRIDES = (
+        # Booking/waitlist creation — a real, moderately-costly write on a
+        # fully anonymous surface; same tier as the guest-lookup overrides
+        # above.
+        ("/api/public/book", 10, 60),
+        ("/api/public/join-waitlist", 10, 60),
+        # Twilio's own webhook-delivery IPs are a shared pool across every
+        # customer's calls, not one IP per caller, and legitimate retry
+        # behavior for a single call can itself fire several requests in
+        # quick succession — generous enough that real multi-call traffic
+        # and retries are never mistaken for abuse, still bounded against a
+        # flood. The route's own CallSid-based dedup (routes/voice_inbound.py)
+        # is what actually protects against a duplicate booking; this is
+        # just a backstop against volume.
+        ("/api/voice/inbound", 60, 60),
+    )
+    # Everything else under /api/public/* and /api/table/* (menu reads,
+    # availability checks, order status polling, table order placement) —
+    # generous enough for normal guest traffic (including several guests at
+    # one venue sharing a WiFi NAT's IP, see the table_id keying below),
+    # bounded against a scraping/enumeration flood.
+    GUEST_DEFAULT_LIMIT = (60, 60)
 
     def __init__(self, app):
         super().__init__(app)
@@ -396,13 +473,34 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         self._last_evict = time()
 
     async def dispatch(self, request, call_next):
-        path = request.url.path
-        if not path.startswith("/api/") or path.startswith("/api/public") or path.startswith("/api/table"):
+        # scope["path"], not request.url.path — see RequireAuthMiddleware's
+        # comment on why request.url.path is Host-header-spoofable.
+        path = request.scope["path"]
+        if not path.startswith("/api/"):
             return await call_next(request)
+
         override = self.PATH_OVERRIDES.get(path)
+        prefix_override = next((o for o in self.PREFIX_OVERRIDES if path.startswith(o[0])), None)
+        is_guest_surface = path.startswith("/api/public") or path.startswith("/api/table")
+
         if override:
             limit, window = override
             key = f"path:{path}:{request.client.host if request.client else 'unknown'}"
+        elif prefix_override:
+            _prefix, limit, window = prefix_override
+            key = f"prefix:{_prefix}:{request.client.host if request.client else 'unknown'}"
+        elif is_guest_surface:
+            limit, window = self.GUEST_DEFAULT_LIMIT
+            ip = request.client.host if request.client else "unknown"
+            # Table-scoped, not just IP-scoped: several guests at one venue
+            # commonly share a single WiFi NAT's public IP, and keying
+            # purely on IP would let one table's QR-ordering activity
+            # throttle every other table's guests at the same venue. A
+            # resolved business (menu/booking reads carry ?business=) is
+            # folded in for the same reason on the business-scoped paths.
+            table_id = _table_id_from_path(path)
+            business = request.query_params.get("business")
+            key = f"guest:{ip}:{table_id or business or 'na'}"
         else:
             limit, window = self.limit, self.window
             tenant = request.headers.get("X-Tenant-Id", "default")
@@ -437,7 +535,14 @@ class NuaAliasMiddleware(BaseHTTPMiddleware):
     """Rewrite /api/ash/... to /api/nua/... so old tests keep working after
     the routes were renamed to the /nua namespace."""
     async def dispatch(self, request, call_next):
-        p = request.url.path
+        # scope["path"], not request.url.path — see RequireAuthMiddleware's
+        # comment. Beyond just being unreliable here, request.url.path would
+        # let a crafted Host header make this middleware rewrite
+        # scope["path"] to an attacker-chosen value (this middleware is the
+        # outermost layer, so that rewrite would reach every middleware and
+        # route after it) instead of only ever touching a genuine /api/ash/*
+        # request.
+        p = request.scope["path"]
         if p.startswith("/api/ash/") or p == "/api/ash":
             new_path = "/api/nua/" + p[len("/api/ash/"):] if p != "/api/ash" else "/api/nua"
             request.scope["path"] = new_path
@@ -505,10 +610,15 @@ async def startup():
         await _apply_persisted_wallet_credentials()
     except Exception as exc:
         logger.warning("Wallet credentials preload skipped: %s", exc)
-    # Seed Enterprise Chart of Accounts (idempotent)
+    # Seed Enterprise Chart of Accounts for the default business (idempotent).
+    # Explicit business_id="default": at startup there is no request/actor
+    # context to default from, and an untagged chart of accounts would be
+    # treated as "visible to every business" by tenant_scope_filter's safe
+    # default — defeating the whole point of accounts being scoped per
+    # business. Other businesses seed their own via POST /accounting/seed.
     try:
         from services.accounting_service import seed_chart_of_accounts
-        r = await seed_chart_of_accounts()
+        r = await seed_chart_of_accounts(business_id="default")
         if r.get("seeded"):
             logger.info("Chart of Accounts seeded: %s new accounts", r["seeded"])
     except Exception as exc:
@@ -516,7 +626,7 @@ async def startup():
     # Seed alcohol catalog + measured stock (idempotent)
     try:
         from services.alcohol_seeder import seed_alcohol_catalog
-        r = await seed_alcohol_catalog()
+        r = await seed_alcohol_catalog(business_id="default")
         if r.get("categoriesInserted") or r.get("productsInserted"):
             logger.info("Alcohol catalog seeded: +%s categories, +%s products, +%s stock-units",
                           r["categoriesInserted"], r["productsInserted"], r["stockUnitsInserted"])

@@ -20,11 +20,13 @@ from database import db
 
 
 def _fernet() -> Fernet:
-    secret = os.environ.get("JWT_SECRET", "").encode("utf-8")
-    if not secret:
-        # Tests / local dev without JWT_SECRET set still get a stable
-        # (process-lifetime-only) key rather than a hard crash.
-        secret = b"nua-connect-dev-key-not-for-production"
+    # No hardcoded fallback: this key encrypts third-party provider
+    # credentials at rest, so a known, source-visible default would mean
+    # every deployment that forgot to set JWT_SECRET stores those
+    # credentials under a publicly-guessable key. Tests/local dev set
+    # JWT_SECRET explicitly (tests/inprocess/conftest.py, run_demo_backend.py,
+    # scripts/run_e2e_server.py) so this never needs a fallback there either.
+    secret = os.environ["JWT_SECRET"].encode("utf-8")
     key = base64.urlsafe_b64encode(hashlib.sha256(secret).digest())
     return Fernet(key)
 

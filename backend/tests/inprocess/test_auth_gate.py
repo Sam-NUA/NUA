@@ -40,12 +40,28 @@ MUST_BE_SHUT = [
     ("GET", "/api/reservations/guest-lookup"), ("GET", "/api/bookings/inbox"),
     ("GET", "/api/automation/alerts"), ("GET", "/api/kitchen/prep-list"),
     ("GET", "/api/receipt/settings"),
-    ("POST", "/api/products"), ("POST", "/api/expenses"), ("POST", "/api/suppliers"),
+    ("POST", "/api/products?business=default"), ("POST", "/api/expenses"), ("POST", "/api/suppliers"),
 ]
 
 
 def _is_public(path):
     return path in INTENTIONALLY_PUBLIC or path.startswith(PUBLIC_PREFIXES)
+
+
+def _registered_routes(app):
+    """Return concrete routes across FastAPI's eager and lazy router layouts.
+
+    FastAPI 0.141 keeps included routers as lazy ``_IncludedRouter`` entries
+    instead of flattening every APIRoute into ``app.routes``.  Walking the
+    effective contexts preserves this security test's full-route sweep while
+    remaining compatible with the eager layout used by older releases.
+    """
+    for route in app.routes:
+        effective_contexts = getattr(route, "effective_route_contexts", None)
+        if effective_contexts:
+            yield from effective_contexts()
+        else:
+            yield route
 
 
 @pytest.mark.parametrize("method,path", MUST_BE_SHUT, ids=lambda v: str(v).replace("/", "_"))
@@ -55,10 +71,37 @@ def test_internal_endpoints_refuse_anonymous(anon, method, path):
         f"{method} {path} answered {r.status_code} with no credential: {r.text[:200]}"
 
 
+def test_a_forged_host_header_cannot_smuggle_a_protected_path_past_the_gate(anon):
+    """Regression coverage for PYSEC-2026-161 / GHSA-86qp-5c8j-p5mr.
+
+    The vulnerable legacy Starlette version rebuilt Request.url by
+    string-concatenating the raw, unvalidated Host header with the real
+    path and reparsing it. server.py's RequireAuthMiddleware used to read
+    `request.url.path` for its public/protected decision — a Host header of
+    "x/api/public" turned "/api/users" into "/api/public/api/users" for that
+    check alone, waving a real staff-management request through with zero
+    token, while FastAPI's actual routing (which dispatches on
+    request.scope["path"] directly and never touches Host) still sent it to
+    routes/settings.py's get_users()/create_user(). Reproduced end to end
+    against a real un-authenticated MongoDB call before the fix (server.py,
+    middleware/license_middleware.py now read scope["path"] instead).
+    Exercises every PUBLIC_API_PREFIXES entry as the injected suffix against
+    every MUST_BE_SHUT path, since any one of them turning a protected path
+    "public"-looking is the same bypass."""
+    for spoofed_prefix in PUBLIC_PREFIXES:
+        host = f"x{spoofed_prefix}"
+        for method, path in MUST_BE_SHUT:
+            r = req(anon, method, path, json={}, headers={"Host": host})
+            assert r.status_code in (401, 403), (
+                f"{method} {path} with Host: {host!r} answered {r.status_code} "
+                f"with no credential — Host-header path-injection bypass: {r.text[:200]}"
+            )
+
+
 def test_no_get_route_answers_anonymously_unless_allow_listed(anon, app):
     """The sweep itself — this is what found the original 66."""
     paths = sorted({
-        r.path for r in app.routes
+        r.path for r in _registered_routes(app)
         if "GET" in (getattr(r, "methods", set()) or set())
         and getattr(r, "path", "").startswith("/api")
         and "{" not in getattr(r, "path", "")
@@ -147,7 +190,7 @@ def test_storefront_order_and_tracking_work_for_a_guest(anon):
     products = req(anon, "GET", "/api/online/products")
     assert products.status_code == 200 and products.json()
     assert req(anon, "GET", "/api/online/categories").status_code == 200
-    r = req(anon, "POST", "/api/online/orders", json={
+    r = req(anon, "POST", "/api/online/orders?business=default", json={
         "channel": "pickup", "customerName": "Anon Guest", "customerPhone": "0400999888",
         "items": [{"productId": products.json()[0]["id"], "name": "Thing",
                    "quantity": 1, "price": 10.0}]})
@@ -164,11 +207,11 @@ def test_kiosk_ordering_works_for_a_guest_end_to_end(anon):
     prefix the real route actually lives under) instead of the real
     /api/v25/kiosk/session path. Every kiosk endpoint was unreachable by an
     actual guest kiosk client until that was fixed."""
-    products = req(anon, "GET", "/api/products")
+    products = req(anon, "GET", "/api/products?business=default")
     assert products.status_code == 200 and products.json()
     pid = products.json()[0]["id"]
 
-    start = req(anon, "POST", "/api/v25/kiosk/session", json={"guests": 2})
+    start = req(anon, "POST", "/api/v25/kiosk/session", json={"guests": 2, "business": "default"})
     assert start.status_code == 200, start.text[:200]
     sid = start.json()["id"]
 
@@ -195,7 +238,7 @@ TRADE_FIELDS = ("cost", "stock", "sku")
 
 
 def test_guest_menu_has_the_menu_but_not_the_trade_data(anon):
-    r = req(anon, "GET", "/api/products")
+    r = req(anon, "GET", "/api/products?business=default")
     assert r.status_code == 200
     menu = r.json()
     assert any(p.get("name") and p.get("price") for p in menu), "guest menu had no sellable item"
@@ -211,7 +254,7 @@ def test_storefront_listing_hides_trade_data_too(anon):
 
 
 def test_staff_still_see_cost_and_stock(client, owner_headers):
-    r = req(client, "GET", "/api/products", headers=owner_headers)
+    r = req(client, "GET", "/api/products?business=default", headers=owner_headers)
     assert r.status_code == 200
     assert any(p.get("cost") for p in r.json()), "no product carried a cost for a logged-in user"
 
@@ -229,14 +272,14 @@ def test_staff_still_see_cost_and_stock(client, owner_headers):
 
 def test_every_public_path_entry_matches_a_real_route(app):
     import server
-    real_paths = {r.path for r in app.routes if hasattr(r, "path")}
+    real_paths = {r.path for r in _registered_routes(app) if hasattr(r, "path")}
     for path in server.PUBLIC_API_PATHS:
         assert path in real_paths, f"{path!r} is in PUBLIC_API_PATHS but no route is registered at that exact path"
 
 
 def test_every_public_prefix_covers_at_least_one_real_route(app):
     import server
-    real_paths = [r.path for r in app.routes if hasattr(r, "path")]
+    real_paths = [r.path for r in _registered_routes(app) if hasattr(r, "path")]
     for prefix in server.PUBLIC_API_PREFIXES:
         assert any(p.startswith(prefix) for p in real_paths), \
             f"{prefix!r} is in PUBLIC_API_PREFIXES but no registered route starts with it"
@@ -254,7 +297,7 @@ def test_public_prefixes_dont_accidentally_cover_a_staff_only_neighbor(app):
     after it) is the staff "list everything active" pattern, never
     something a single unauthenticated guest should reach."""
     import server
-    real_paths = {r.path for r in app.routes if hasattr(r, "path")}
+    real_paths = {r.path for r in _registered_routes(app) if hasattr(r, "path")}
 
     for prefix in server.PUBLIC_API_PREFIXES:
         assert prefix.endswith("/"), \
@@ -271,7 +314,7 @@ def test_public_prefixes_dont_accidentally_cover_a_staff_only_neighbor(app):
 def test_kiosk_session_prefix_does_not_reach_the_staff_session_list(app):
     import server
     assert "/api/v25/kiosk/session/" in server.PUBLIC_API_PREFIXES
-    real_paths = {r.path for r in app.routes if hasattr(r, "path")}
+    real_paths = {r.path for r in _registered_routes(app) if hasattr(r, "path")}
     assert "/api/v25/kiosk/sessions" in real_paths, "the staff session-list route moved or was renamed"
     assert not "/api/v25/kiosk/sessions".startswith("/api/v25/kiosk/session/"), \
         "the kiosk prefix would now also cover the staff-only session list"

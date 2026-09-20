@@ -47,9 +47,10 @@
       "title": "稍后支付",
       "partial": "支付部分金额",
       "payNow": "立即支付",
-      "amountToPay": "支付金额",
+      "amountToPay": "记入账单的金额",
       "remaining": "剩余余额",
-      "tabCreated": "账户已创建 - 您可以稍后支付剩余金额"
+      "confirmTab": "记入账单 {{amount}}",
+      "tabCreated": "账单已创建 — 工作人员将收取并确认此付款"
     },
     "customSplit": {
       "setupTitle": "设置自定义份额",

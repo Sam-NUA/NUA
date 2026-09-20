@@ -30,7 +30,7 @@ def test_concierge_reservation_matches_an_existing_customer_by_phone(client, own
         }
     monkeypatch.setattr(v25, "_llm_json", fake_llm_json)
 
-    _run(db.customers.insert_one({
+    _run(db.customers.insert_one({"businessId": "default",
         "id": "CUST-MATCH-1", "name": "Alexander Chen", "email": "alex@example.com",
         "phone": "+61412345678", "isVip": True, "allergies": ["peanuts"], "visits": 12,
     }))
@@ -88,7 +88,7 @@ def test_bookings_inbox_conversion_matches_an_existing_customer(client, owner_he
         return parsed, "summary", "reply", False
     monkeypatch.setattr(inbox, "_ai_parse", fake_ai_parse)
 
-    _run(db.customers.insert_one({
+    _run(db.customers.insert_one({"businessId": "default",
         "id": "CUST-MATCH-2", "name": "Jordan Lee", "email": "jordan@example.com",
         "phone": "+61455111222", "membershipTier": "Gold", "seatingPreference": "booth",
     }))
@@ -118,10 +118,10 @@ def test_find_matching_customer_matches_on_phone_tail_regardless_of_formatting()
     from services.customer_match import find_matching_customer
     from database import db
 
-    _run(db.customers.insert_one({"id": "CUST-TAIL-1", "name": "Sam Rivera",
+    _run(db.customers.insert_one({"businessId": "default", "id": "CUST-TAIL-1", "name": "Sam Rivera",
                                    "email": "sam@example.com", "phone": "0412 999 000"}))
     try:
-        match = _run(find_matching_customer(phone="+61 412 999 000"))
+        match = _run(find_matching_customer(phone="+61 412 999 000", business_id="default"))
         assert match is not None
         assert match["id"] == "CUST-TAIL-1"
     finally:

@@ -12,7 +12,13 @@ export function SplitBillStaff() {
   const [selectedSplitId, setSelectedSplitId] = useState(null);
   const [refreshInterval] = useState(3000);
   const [connectedIds, setConnectedIds] = useState({});
+  const [processingTabIds, setProcessingTabIds] = useState({});
   const wsRef = useRef({});
+  // One idempotency key per tab, generated on first attempt and reused for
+  // every retry of that same tab — so a network timeout + resend, or an
+  // impatient double-click before the button's disabled state paints,
+  // can never record the same cash collection twice.
+  const tabIdempotencyKeysRef = useRef({});
 
   const pollSplits = useCallback(async () => {
     setLoading(true);
@@ -82,12 +88,26 @@ export function SplitBillStaff() {
   }, []);
 
   const handleProcessTab = async (splitId, tabId, amount) => {
+    if (processingTabIds[tabId]) return;
+    if (!tabIdempotencyKeysRef.current[tabId]) {
+      tabIdempotencyKeysRef.current[tabId] = crypto.randomUUID();
+    }
+    const idempotencyKey = tabIdempotencyKeysRef.current[tabId];
+    setProcessingTabIds(prev => ({ ...prev, [tabId]: true }));
     try {
-      await api.post(`/table/split/${splitId}/staff-process-tab`, { tabId, amount, method: 'cash' });
+      await api.post(`/table/split/${splitId}/staff-process-tab`,
+        { tabId, amount, method: 'cash', idempotencyKey });
       toast.success('Tab processed successfully');
+      delete tabIdempotencyKeysRef.current[tabId];
       pollSplits();
     } catch (e) {
       toast.error(e?.response?.data?.detail || 'Failed to process tab');
+    } finally {
+      setProcessingTabIds(prev => {
+        const next = { ...prev };
+        delete next[tabId];
+        return next;
+      });
     }
   };
 
@@ -381,11 +401,12 @@ export function SplitBillStaff() {
                             </div>
                             <Button
                               size="sm"
+                              disabled={!!processingTabIds[tab.id]}
                               onClick={() => handleProcessTab(selectedSplit.id, tab.id, tab.remainingBalance)}
                               className="gap-1"
                             >
                               <DollarSign size={14} />
-                              Process
+                              {processingTabIds[tab.id] ? 'Processing…' : 'Process'}
                             </Button>
                           </div>
                         </div>

@@ -144,12 +144,19 @@ async def export_business_data(business_id: str, collection: Optional[str] = Non
     if collection and collection in collections_to_export:
         collections_to_export = [collection]
 
+    # tenant_scope_filter, not a bare {"businessId": business_id} fallback to
+    # {} on empty results — this used to re-query with NO filter at all
+    # whenever a business genuinely had zero docs in some collection (a
+    # brand-new business with no transactions yet, say), handing the
+    # exporting owner every OTHER business's data in that collection too.
+    # tenant_scope_filter's own fail-open behavior (matching untagged legacy
+    # rows) still covers the pre-tenant-stamping case this fallback was
+    # trying to serve, without ever crossing into another business's data.
+    biz_or_untagged = tenant_scope_filter(business_id)
     export_data = {"business": business, "exportedAt": datetime.now(timezone.utc).isoformat()}
     for coll_name in collections_to_export:
         coll = db[coll_name]
-        docs = await coll.find({"businessId": business_id}, {"_id": 0}).to_list(10000)
-        if not docs:
-            docs = await coll.find({}, {"_id": 0}).to_list(10000)
+        docs = await coll.find(biz_or_untagged, {"_id": 0}).to_list(10000)
         export_data[coll_name] = {"count": len(docs), "data": docs}
 
     return export_data
@@ -257,35 +264,8 @@ _BACKFILL_COLLECTIONS = ["customers", "vouchers", "wallet_ledger", "loyalty_ledg
 
 @router.post("/backfill-tenant")
 async def backfill_tenant(user: dict = Depends(require_owner)):
-    """One-time (but safe to re-run — idempotent) migration: stamp
-    businessId="default" onto any document in the collections above that's
-    missing one. Only ever sets a currently-absent-or-null value; never
-    overwrites a businessId a document already has."""
-    results = {}
-    query = {"$or": [{"businessId": {"$exists": False}}, {"businessId": None}]}
-    for name in _BACKFILL_COLLECTIONS:
-        r = await db[name].update_many(query, {"$set": {"businessId": "default"}})
-        results[name] = r.modified_count
-    # Businesses created before the online-storefront slug field existed
-    # never got one — without it, /order-online?business=<slug> has nothing
-    # to resolve for them. Assigned one per business (not update_many; each
-    # needs its own collision-checked slug).
-    slugged = 0
-    async for biz in db.businesses.find({"$or": [{"slug": {"$exists": False}}, {"slug": None}]}, {"_id": 0, "id": 1, "name": 1}):
-        await db.businesses.update_one({"id": biz["id"]}, {"$set": {"slug": await _unique_slug(biz.get("name", ""))}})
-        slugged += 1
-    results["businesses.slug"] = slugged
-    # Same gap as the "default" business's own grandfather-in in
-    # seed_default_business() above, generalised to every business: one
-    # created before the onboardingComplete field existed has it missing
-    # (falsy), which traps its owner behind the first-run OnboardingWizard
-    # on every login. Only a genuinely-missing field is backfilled — a
-    # business that explicitly has onboardingComplete=False is still
-    # mid-wizard and must keep seeing it.
-    results["businesses.onboardingComplete"] = (await db.businesses.update_many(
-        {"onboardingComplete": {"$exists": False}}, {"$set": {"onboardingComplete": True}}
-    )).modified_count
-    return {"backfilled": results, "total": sum(results.values())}
+    """Retired: bulk assignment to default was not ownership evidence."""
+    raise HTTPException(status_code=410, detail="Use the support-authorized ownership migration with evidence review")
 
 
 # Every collection that can hold rows written by the startup seeders
@@ -314,7 +294,7 @@ async def purge_demo_data(data: dict, user: dict = Depends(require_owner)):
 
     results = {}
     for name in _DEMO_TAGGED_COLLECTIONS:
-        r = await db[name].delete_many({"isDemo": True})
+        r = await db[name].delete_many({"isDemo": True, **tenant_scope_filter(user["businessId"])})
         results[name] = r.deleted_count
     return {"purged": results, "total": sum(results.values())}
 
@@ -326,23 +306,27 @@ async def get_setup_status(business_id: str, user: dict = Depends(require_owner)
     readiness on the Pulse dashboard instead of running curl commands.
     Read-only — never modifies anything."""
     await _owned_business_or_404(business_id, user)
-    untagged_query = {"$or": [{"businessId": {"$exists": False}}, {"businessId": None}]}
-    untagged_total = 0
-    for name in _BACKFILL_COLLECTIONS:
-        untagged_total += await db[name].count_documents(untagged_query)
+    # Only a deployment-wide readiness flag is exposed, never ambiguous rows
+    # or counts attributed to an arbitrary business. Support resolves those.
+    from services.ownership_migration import MIGRATABLE_COLLECTIONS
+    review_required = False
+    for name in MIGRATABLE_COLLECTIONS:
+        if await db[name].find_one({"businessId": None}, {"_id": 1}):
+            review_required = True
+            break
 
     demo_total = 0
     for name in _DEMO_TAGGED_COLLECTIONS:
-        demo_total += await db[name].count_documents({"isDemo": True})
+        demo_total += await db[name].count_documents({"isDemo": True, **tenant_scope_filter(business_id)})
 
-    has_menu = await db.products.count_documents({"isDemo": {"$ne": True}}) > 0
+    has_menu = await db.products.count_documents({"isDemo": {"$ne": True}, **tenant_scope_filter(business_id)}) > 0
     has_staff = await db.auth_users.count_documents({"businessId": business_id}) > 1
 
     checklist = {
-        "backfillComplete": untagged_total == 0,
+        "backfillComplete": not review_required,
         "demoDataPurged": demo_total == 0,
         "hasMenu": has_menu,
         "hasStaff": has_staff,
     }
     return {**checklist, "ready": all(checklist.values()),
-            "untaggedRowsRemaining": untagged_total, "demoRowsRemaining": demo_total}
+            "ownershipReviewRequired": review_required, "untaggedRowsRemaining": None, "demoRowsRemaining": demo_total}

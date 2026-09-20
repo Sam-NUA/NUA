@@ -15,9 +15,10 @@ scope: one signal, computed from data already being written (transactions,
 products), no new inputs and no model to train or maintain.
 """
 from __future__ import annotations
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 from datetime import datetime, timedelta, timezone
 from database import db
+from middleware.actor_context import tenant_scope_filter
 from services import rules_engine
 import logging
 
@@ -26,14 +27,16 @@ logger = logging.getLogger(__name__)
 DEDUPE_HOURS = 12  # don't re-emit for the same product more than this often
 
 
-async def compute_predicted_stockouts(lookback_days: int = 7, horizon_days: float = 2.0) -> List[Dict[str, Any]]:
+async def compute_predicted_stockouts(lookback_days: int = 7, horizon_days: float = 2.0,
+                                       business_id: Optional[str] = None) -> List[Dict[str, Any]]:
     """Project days-remaining for every product from its actual sales
     velocity over the last `lookback_days`, and return the ones projected
     to hit zero within `horizon_days`. Products already at/below zero are
     excluded — inventory.stockout already owns that case."""
+    biz_scope = tenant_scope_filter(business_id)
     cutoff = datetime.utcnow() - timedelta(days=lookback_days)
     txns = await db.transactions.find(
-        {"timestamp": {"$gte": cutoff}, "status": "completed"},
+        {"timestamp": {"$gte": cutoff}, "status": "completed", **biz_scope},
         {"_id": 0, "items": 1},
     ).to_list(5000)
 
@@ -49,7 +52,7 @@ async def compute_predicted_stockouts(lookback_days: int = 7, horizon_days: floa
         return []
 
     products = await db.products.find(
-        {"id": {"$in": list(usage.keys())}}, {"_id": 0, "id": 1, "name": 1, "stock": 1},
+        {"id": {"$in": list(usage.keys())}, **biz_scope}, {"_id": 0, "id": 1, "name": 1, "stock": 1},
     ).to_list(2000)
 
     predictions = []
@@ -71,25 +74,36 @@ async def compute_predicted_stockouts(lookback_days: int = 7, horizon_days: floa
     return predictions
 
 
-async def _recently_emitted(product_id: str) -> bool:
+async def _recently_emitted(product_id: str, business_id: Optional[str] = None) -> bool:
     cutoff = (datetime.now(timezone.utc) - timedelta(hours=DEDUPE_HOURS)).isoformat()
     row = await db.rule_events.find_one({
         "type": "inventory.predicted_stockout", "entityId": product_id, "ts": {"$gte": cutoff},
+        **tenant_scope_filter(business_id),
     })
     return row is not None
 
 
-async def scan_and_emit_predicted_stockouts(*, lookback_days: int = 7, horizon_days: float = 2.0) -> Dict[str, Any]:
+async def scan_and_emit_predicted_stockouts(*, lookback_days: int = 7, horizon_days: float = 2.0,
+                                             business_id: Optional[str] = None) -> Dict[str, Any]:
     """Compute predictions and emit one event per product not already
     flagged in the last DEDUPE_HOURS — called from the hourly Ash scheduler
-    loop, same cadence as the rest of the insight scan."""
-    predictions = await compute_predicted_stockouts(lookback_days=lookback_days, horizon_days=horizon_days)
+    loop, same cadence as the rest of the insight scan.
+
+    business_id is None (scans every business) when called from that
+    scheduler loop, which has no per-request actor context — a known,
+    documented gap shared with nua_intelligence.py's own generators.
+    routes/rules_engine.py's manual-trigger endpoint passes the caller's
+    own businessId explicitly.
+    """
+    predictions = await compute_predicted_stockouts(
+        lookback_days=lookback_days, horizon_days=horizon_days, business_id=business_id)
     emitted = []
     for pred in predictions:
-        if await _recently_emitted(pred["productId"]):
+        if await _recently_emitted(pred["productId"], business_id):
             continue
         try:
-            await rules_engine.emit_event("inventory.predicted_stockout", pred, entity_id=pred["productId"])
+            await rules_engine.emit_event("inventory.predicted_stockout", pred, entity_id=pred["productId"],
+                                           business_id=business_id)
             emitted.append(pred["productId"])
         except Exception as e:
             logger.warning(f"[predictive] emit failed for {pred['productId']}: {e}")

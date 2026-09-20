@@ -40,11 +40,13 @@ TIER 1-5 EXTRAS
 - AI fraud detection          GET        /api/v25/fraud-detection
 """
 from fastapi import APIRouter, HTTPException, Request, Depends
-from deps import get_user, require_owner, require_owner_or_manager
+from deps import get_user, optional_user, require_owner, require_owner_or_manager
 from database import db
 from routes.products import GUEST_HIDDEN_PRODUCT_FIELDS
+from middleware.actor_context import tenant_scope_filter, tenant_owns, tenant_owns_strict
 from datetime import datetime, timezone, timedelta
 from collections import Counter, defaultdict
+from typing import Optional, Any, cast
 import uuid
 import os
 import json
@@ -85,22 +87,25 @@ async def push_sync(data: dict, user: dict = Depends(get_user)):
     """Receive a batch of pending offline operations from a client."""
     ops = data.get("ops") or []
     accepted, conflicts = [], []
+    business_id = user.get("businessId")
     for op in ops:
         op_id = op.get("clientOpId") or _uid("OP")
-        existing = await db.sync_ops.find_one({"clientOpId": op_id}, {"_id": 0})
+        existing = await db.sync_ops.find_one(
+            {"$and": [tenant_scope_filter(business_id), {"clientOpId": op_id}]}, {"_id": 0})
         if existing:
             conflicts.append({"clientOpId": op_id, "reason": "duplicate"})
             continue
         rec = {**op, "clientOpId": op_id, "id": _uid("SYNC"), "userId": user["id"],
-               "status": "applied", "receivedAt": _now()}
+               "status": "applied", "receivedAt": _now(), "businessId": business_id}
         await db.sync_ops.insert_one(rec)
         accepted.append(op_id)
     return {"accepted": accepted, "conflicts": conflicts}
 
 
 @router.get("/sync-queue")
-async def list_sync(limit: int = 100):
-    rows = await db.sync_ops.find({}, {"_id": 0}).sort("receivedAt", -1).to_list(limit)
+async def list_sync(limit: int = 100, user: dict = Depends(get_user)):
+    rows = await db.sync_ops.find(tenant_scope_filter(user.get("businessId")), {"_id": 0}) \
+        .sort("receivedAt", -1).to_list(limit)
     return rows
 
 
@@ -110,8 +115,10 @@ async def process_sync_queue(user: dict = Depends(require_owner_or_manager)):
     the most common op types written by the POS while offline: create
     transaction, create kitchen order, adjust stock, append to held tab.
     Idempotent — already-applied clientOpIds are skipped."""
-    pending = await db.sync_ops.find({"status": "applied", "replayedAt": {"$exists": False}},
-                                     {"_id": 0}).to_list(500)
+    business_id = user.get("businessId")
+    query = {"$and": [tenant_scope_filter(business_id),
+                       {"status": "applied", "replayedAt": {"$exists": False}}]}
+    pending = await db.sync_ops.find(query, {"_id": 0}).to_list(500)
     applied, errors = 0, []
     for op in pending:
         kind = op.get("kind") or op.get("type")
@@ -121,19 +128,31 @@ async def process_sync_queue(user: dict = Depends(require_owner_or_manager)):
                 payload.setdefault("id", _uid("TX"))
                 payload.setdefault("createdAt", _now())
                 payload["offlineReplayed"] = True
+                payload["businessId"] = business_id
                 await db.transactions.insert_one(payload)
             elif kind == "kitchen.order":
                 payload.setdefault("id", _uid("KO"))
                 payload.setdefault("status", "pending")
+                payload["businessId"] = business_id
                 await db.kitchen_orders.insert_one(payload)
             elif kind == "stock.adjust":
+                guard = await db.products.find_one(
+                    {"$and": [{"id": payload.get("productId")}, tenant_scope_filter(business_id)]}, {"_id": 0, "id": 1, "businessId": 1})
+                if guard is None or not tenant_owns_strict(guard.get("businessId"), business_id):
+                    errors.append({"clientOpId": op.get("clientOpId"), "reason": "product not found"})
+                    continue
                 await db.products.update_one(
-                    {"id": payload.get("productId")},
+                    {"$and": [{"id": payload.get("productId")}, tenant_scope_filter(business_id)]},
                     {"$inc": {"stock": int(payload.get("delta", 0))}},
                 )
             elif kind == "tab.append":
+                guard = await db.pos_tabs.find_one(
+                    {"$and": [{"id": payload.get("tabId")}, tenant_scope_filter(business_id)]}, {"_id": 0, "id": 1, "businessId": 1})
+                if guard is None or not tenant_owns_strict(guard.get("businessId"), business_id):
+                    errors.append({"clientOpId": op.get("clientOpId"), "reason": "tab not found"})
+                    continue
                 await db.pos_tabs.update_one(
-                    {"id": payload.get("tabId")},
+                    {"$and": [{"id": payload.get("tabId")}, tenant_scope_filter(business_id)]},
                     {"$push": {"cart": payload.get("item")}},
                 )
             else:
@@ -156,7 +175,8 @@ async def process_sync_queue(user: dict = Depends(require_owner_or_manager)):
 async def list_exceptions(user: dict = Depends(require_owner_or_manager)):
     days = 14
     cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
-    tx = await db.transactions.find({"createdAt": {"$gte": cutoff}}, {"_id": 0}).to_list(5000)
+    query = {"$and": [tenant_scope_filter(user.get("businessId")), {"createdAt": {"$gte": cutoff}}]}
+    tx = await db.transactions.find(query, {"_id": 0}).to_list(5000)
     voids, comps, discounts, refunds = 0, 0, 0, 0
     by_user = defaultdict(lambda: {"voids": 0, "comps": 0, "discounts": 0.0, "refunds": 0.0})
     exceptions = []
@@ -187,11 +207,13 @@ async def list_exceptions(user: dict = Depends(require_owner_or_manager)):
 # v25 MUST-HAVE — Multi-Site Command Center
 # ============================================================================
 @router.get("/sites")
-async def list_sites(_: dict = Depends(get_user)):
-    sites = await db.sites.find({}, {"_id": 0}).to_list(100)
+async def list_sites(user: dict = Depends(get_user)):
+    business_id = user.get("businessId")
+    sites = await db.sites.find(tenant_scope_filter(business_id), {"_id": 0}).to_list(100)
     if not sites:
         # Seed default
-        s = {"id": "site-hq", "name": "Headquarters", "city": "Sydney", "active": True, "createdAt": _now()}
+        s = {"id": _uid("SITE"), "name": "Headquarters", "city": "Sydney", "active": True,
+             "createdAt": _now(), "businessId": business_id}
         await db.sites.insert_one(s)
         s.pop("_id", None)
         sites = [s]
@@ -202,7 +224,7 @@ async def list_sites(_: dict = Depends(get_user)):
 async def create_site(data: dict, user: dict = Depends(get_user)):
     if user["role"] != "owner": raise HTTPException(status_code=403, detail="Owner only")
     site = {"id": _uid("SITE"), "name": data.get("name", "New Site"), "city": data.get("city", ""),
-            "active": True, "createdAt": _now()}
+            "active": True, "createdAt": _now(), "businessId": user.get("businessId")}
     await db.sites.insert_one(site); site.pop("_id", None)
     return site
 
@@ -214,7 +236,7 @@ async def publish_to_sites(data: dict, user: dict = Depends(get_user)):
     publish = {
         "id": _uid("PUB"), "siteIds": data.get("siteIds", []),
         "bundle": data.get("bundle", {}), "publishedBy": user["id"],
-        "publishedAt": _now(), "rolledBack": False,
+        "publishedAt": _now(), "rolledBack": False, "businessId": user.get("businessId"),
     }
     await db.publications.insert_one(publish); publish.pop("_id", None)
     return publish
@@ -223,7 +245,10 @@ async def publish_to_sites(data: dict, user: dict = Depends(get_user)):
 @router.post("/sites/rollback/{pub_id}")
 async def rollback_publish(pub_id: str, user: dict = Depends(get_user)):
     if user["role"] != "owner": raise HTTPException(status_code=403, detail="Owner only")
-    r = await db.publications.update_one({"id": pub_id}, {"$set": {"rolledBack": True, "rolledBackAt": _now()}})
+    guard = await db.publications.find_one({"$and": [{"id": pub_id}, tenant_scope_filter(user.get("businessId"))]}, {"_id": 0, "id": 1, "businessId": 1})
+    if guard is None or not tenant_owns_strict(guard.get("businessId"), user.get("businessId")):
+        raise HTTPException(status_code=404, detail="Publication not found")
+    r = await db.publications.update_one({"$and": [{"id": pub_id}, tenant_scope_filter(user.get("businessId"))]}, {"$set": {"rolledBack": True, "rolledBackAt": _now()}})
     if r.matched_count == 0: raise HTTPException(status_code=404, detail="Publication not found")
     return {"rolledBack": True, "id": pub_id}
 
@@ -232,15 +257,16 @@ async def rollback_publish(pub_id: str, user: dict = Depends(get_user)):
 # v25 MUST-HAVE — Hardware Health
 # ============================================================================
 @router.get("/hardware")
-async def hardware_status(_: dict = Depends(get_user)):
-    devices = await db.hardware.find({}, {"_id": 0}).to_list(200)
+async def hardware_status(user: dict = Depends(get_user)):
+    business_id = user.get("businessId")
+    devices = await db.hardware.find(tenant_scope_filter(business_id), {"_id": 0}).to_list(200)
     if not devices:
         # Seed a baseline fleet so the UI has something to show
         seed = [
-            {"id": "PRN-KITCHEN-1", "kind": "printer", "name": "Kitchen printer", "status": "online", "lastSeen": _now()},
-            {"id": "PRN-RECEIPT-1", "kind": "printer", "name": "Receipt printer", "status": "online", "lastSeen": _now()},
-            {"id": "TERM-FRONT-1", "kind": "terminal", "name": "Front counter", "status": "online", "lastSeen": _now()},
-            {"id": "SCN-BAR-1", "kind": "scanner", "name": "Barcode scanner", "status": "online", "lastSeen": _now()},
+            {"id": _uid("PRN"), "kind": "printer", "name": "Kitchen printer", "status": "online", "lastSeen": _now(), "businessId": business_id},
+            {"id": _uid("PRN"), "kind": "printer", "name": "Receipt printer", "status": "online", "lastSeen": _now(), "businessId": business_id},
+            {"id": _uid("TERM"), "kind": "terminal", "name": "Front counter", "status": "online", "lastSeen": _now(), "businessId": business_id},
+            {"id": _uid("SCN"), "kind": "scanner", "name": "Barcode scanner", "status": "online", "lastSeen": _now(), "businessId": business_id},
         ]
         for d in seed: await db.hardware.insert_one(d)
         for d in seed: d.pop("_id", None)
@@ -250,7 +276,19 @@ async def hardware_status(_: dict = Depends(get_user)):
 
 @router.post("/hardware/heartbeat")
 async def hardware_heartbeat(data: dict, request: Request):
-    """Devices ping in with a shared secret header `X-Device-Secret`."""
+    """Devices ping in with a shared secret header `X-Device-Secret`.
+
+    KNOWN GAP (documented, not fixed here): this secret is one single value
+    shared by every device on the whole deployment (env
+    DEVICE_HEARTBEAT_SECRET, default "nua-device-2026"), not a per-device
+    credential like temperature.py's real sensors use. Any device that
+    knows it can heartbeat any hardware id, including another business's.
+    Closing that needs a real per-device provisioning/secret scheme, not a
+    mechanical scoping fix — out of scope for this pass. As a partial
+    mitigation: an existing device's businessId is never overwritten by a
+    heartbeat, so once a device is correctly tagged (e.g. by site
+    provisioning) a heartbeat can't reassign it to a different business.
+    """
     secret = request.headers.get("X-Device-Secret")
     expected = os.environ.get("DEVICE_HEARTBEAT_SECRET", "nua-device-2026")
     if secret != expected:
@@ -259,6 +297,9 @@ async def hardware_heartbeat(data: dict, request: Request):
     if not dev_id: raise HTTPException(status_code=400, detail="id required")
     update = {"status": data.get("status", "online"), "lastSeen": _now(),
               "errors": data.get("errors", [])}
+    existing = await db.hardware.find_one({"id": dev_id}, {"_id": 0, "id": 1})
+    if existing is None and data.get("businessId"):
+        update["businessId"] = data.get("businessId")
     await db.hardware.update_one({"id": dev_id}, {"$set": update}, upsert=True)
     return {"recorded": True}
 
@@ -269,17 +310,25 @@ async def hardware_heartbeat(data: dict, request: Request):
 @router.get("/disputes")
 async def list_disputes(user: dict = Depends(get_user)):
     if user["role"] not in ("owner", "manager"): raise HTTPException(status_code=403, detail="Owner/Manager only")
-    rows = await db.disputes.find({}, {"_id": 0}).sort("openedAt", -1).to_list(200)
+    rows = await db.disputes.find(tenant_scope_filter(user.get("businessId")), {"_id": 0}) \
+        .sort("openedAt", -1).to_list(200)
     return rows
 
 
 @router.post("/disputes")
 async def open_dispute(data: dict, user: dict = Depends(get_user)):
     if user["role"] not in ("owner", "manager"): raise HTTPException(status_code=403, detail="Owner/Manager only")
+    business_id = user.get("businessId")
+    tx_id = data.get("txId")
+    if tx_id:
+        tx_guard = await db.transactions.find_one({"$and": [{"id": tx_id}, tenant_scope_filter(business_id)]}, {"_id": 0, "id": 1, "businessId": 1})
+        if tx_guard is None or not tenant_owns_strict(tx_guard.get("businessId"), business_id):
+            raise HTTPException(status_code=404, detail="Transaction not found")
     d = {
-        "id": _uid("DSP"), "txId": data.get("txId"), "amount": float(data.get("amount", 0) or 0),
+        "id": _uid("DSP"), "txId": tx_id, "amount": float(data.get("amount", 0) or 0),
         "reason": data.get("reason", "fraud"), "status": "open",
         "evidence": data.get("evidence", []), "openedAt": _now(), "openedBy": user["id"],
+        "businessId": business_id,
     }
     await db.disputes.insert_one(d); d.pop("_id", None)
     return d
@@ -289,16 +338,20 @@ async def open_dispute(data: dict, user: dict = Depends(get_user)):
 async def attach_evidence(dispute_id: str, data: dict, user: dict = Depends(get_user)):
     """Auto-assemble an evidence pack: transaction details + items + signature + IP."""
     if user["role"] not in ("owner", "manager"): raise HTTPException(status_code=403, detail="Owner/Manager only")
-    d = await db.disputes.find_one({"id": dispute_id}, {"_id": 0})
-    if not d: raise HTTPException(status_code=404, detail="Not found")
-    tx = await db.transactions.find_one({"id": d.get("txId")}, {"_id": 0})
+    business_id = user.get("businessId")
+    d = await db.disputes.find_one({"$and": [{"id": dispute_id}, tenant_scope_filter(business_id)]}, {"_id": 0})
+    if d is None or not tenant_owns_strict(d.get("businessId"), business_id):
+        raise HTTPException(status_code=404, detail="Not found")
+    tx = await db.transactions.find_one({"$and": [{"id": d.get("txId")}, tenant_scope_filter(business_id)]}, {"_id": 0})
+    if tx is not None and not tenant_owns_strict(tx.get("businessId"), business_id):
+        tx = None
     evidence = {
         "transactionSnapshot": tx or {},
         "addedNotes": data.get("notes", ""),
         "assembledAt": _now(),
         "assembledBy": user["id"],
     }
-    await db.disputes.update_one({"id": dispute_id}, {"$push": {"evidence": evidence}, "$set": {"status": "evidence_submitted"}})
+    await db.disputes.update_one({"$and": [{"id": dispute_id}, tenant_scope_filter(business_id)]}, {"$push": {"evidence": evidence}, "$set": {"status": "evidence_submitted"}})
     return {"updated": True, "evidence": evidence}
 
 
@@ -306,9 +359,10 @@ async def attach_evidence(dispute_id: str, data: dict, user: dict = Depends(get_
 # v25 MUST-HAVE — Supplier Marketplace
 # ============================================================================
 @router.get("/suppliers/compare")
-async def compare_suppliers(item: str = "", _: dict = Depends(require_owner_or_manager)):
+async def compare_suppliers(item: str = "", user: dict = Depends(require_owner_or_manager)):
     """Compare quotes per ingredient across suppliers."""
-    q = {} if not item else {"item": {"$regex": item, "$options": "i"}}
+    scope = tenant_scope_filter(user.get("businessId"))
+    q = scope if not item else {"$and": [scope, {"item": {"$regex": item, "$options": "i"}}]}
     quotes = await db.supplier_quotes.find(q, {"_id": 0}).to_list(500)
     # Group by item, sort by price
     by_item = defaultdict(list)
@@ -329,7 +383,8 @@ async def compare_suppliers(item: str = "", _: dict = Depends(require_owner_or_m
 @router.post("/suppliers/quote")
 async def add_quote(data: dict, user: dict = Depends(get_user)):
     if user["role"] not in ("owner", "manager"): raise HTTPException(status_code=403, detail="Owner/Manager only")
-    q = {"id": _uid("QTE"), **data, "createdAt": _now(), "createdBy": user["id"]}
+    q = {"id": _uid("QTE"), **data, "createdAt": _now(), "createdBy": user["id"],
+         "businessId": user.get("businessId")}
     await db.supplier_quotes.insert_one(q); q.pop("_id", None)
     return q
 
@@ -338,9 +393,11 @@ async def add_quote(data: dict, user: dict = Depends(get_user)):
 # v27 SHOULD-HAVE — Kiosk session
 # ============================================================================
 @router.post("/kiosk/session")
-async def kiosk_start(data: dict):
+async def kiosk_start(data: dict, user: Optional[dict] = Depends(optional_user)):
+    from routes.online_orders import resolve_or_require_business_id
+    business_id = user["businessId"] if user else await resolve_or_require_business_id(data.get("business"))
     from services.retention import kiosk_session_expiry
-    s = {"id": _uid("KSK"), "tableId": data.get("tableId"), "guests": int(data.get("guests", 1)),
+    s = {"id": "KSK-" + uuid.uuid4().hex, "businessId": business_id, "tableId": data.get("tableId"), "guests": int(data.get("guests", 1)),
          "cart": [], "status": "active", "startedAt": _now(),
          "expiresAt": kiosk_session_expiry()}
     await db.kiosk_sessions.insert_one(s); s.pop("_id", None)
@@ -356,7 +413,22 @@ async def kiosk_add(sid: str, data: dict):
     item = {k: v for k, v in (item or {}).items() if k != "item"}
     if not item:
         raise HTTPException(status_code=400, detail="No item supplied")
-    await db.kiosk_sessions.update_one({"id": sid}, {"$push": {"cart": item}})
+    session = await db.kiosk_sessions.find_one({"id": sid, "status": "active", "_ownershipQuarantined": {"$ne": True}}, {"_id": 0})
+    if not session or not session.get("businessId"):
+        raise HTTPException(status_code=404, detail="Session not found")
+    product = await db.products.find_one({"id": item.get("productId") or item.get("id"),
+                                          **tenant_scope_filter(session["businessId"])}, {"_id": 0})
+    if not product:
+        raise HTTPException(status_code=404, detail="Product not found")
+    try:
+        quantity = int(item.get("quantity", 1))
+        if quantity < 1 or quantity > 100:
+            raise ValueError()
+    except (ValueError, TypeError):
+        raise HTTPException(status_code=400, detail="Quantity must be between 1 and 100")
+    item.update({"productId": product["id"], "productName": product["name"],
+                 "price": product["price"], "quantity": quantity, "category": product.get("category")})
+    await db.kiosk_sessions.update_one({"id": sid, "_ownershipQuarantined": {"$ne": True}}, {"$push": {"cart": item}})
     return {"added": True, "item": item}
 
 
@@ -373,8 +445,8 @@ async def kiosk_set_course(sid: str, data: dict):
         course = int(data.get("course"))
     except (TypeError, ValueError):
         raise HTTPException(status_code=400, detail="A numeric course is required")
-    s = await db.kiosk_sessions.find_one({"id": sid}, {"_id": 0})
-    if not s:
+    s = await db.kiosk_sessions.find_one({"id": sid, "_ownershipQuarantined": {"$ne": True}}, {"_id": 0})
+    if not s or not s.get("businessId"):
         raise HTTPException(status_code=404, detail="Session not found")
     cart = list(s.get("cart") or [])
     hit = False
@@ -385,15 +457,20 @@ async def kiosk_set_course(sid: str, data: dict):
             break
     if not hit:
         raise HTTPException(status_code=404, detail="Cart line not found")
-    await db.kiosk_sessions.update_one({"id": sid}, {"$set": {"cart": cart}})
+    await db.kiosk_sessions.update_one({"id": sid, "_ownershipQuarantined": {"$ne": True}}, {"$set": {"cart": cart}})
     return {"ok": True, "cart": cart}
 
 
 @router.post("/kiosk/session/{sid}/checkout")
 async def kiosk_checkout(sid: str):
-    s = await db.kiosk_sessions.find_one({"id": sid}, {"_id": 0})
-    if not s: raise HTTPException(status_code=404, detail="Session not found")
+    s = await db.kiosk_sessions.find_one({"id": sid, "_ownershipQuarantined": {"$ne": True}}, {"_id": 0})
+    if not s or not s.get("businessId"): raise HTTPException(status_code=404, detail="Session not found")
     cart = s.get("cart") or []
+    # No loyalty-tier discount here either — same structural reason as
+    # routes/online_orders.py's place_order: a kiosk session only ever
+    # carries guestName (freeform), never a resolved customerId, so there is
+    # no membershipTier to discount against. See
+    # tests/inprocess/test_loyalty_tier_discount_channel_consistency.py.
     total = sum(float(i.get("price", 0) or 0) * int(i.get("quantity", 1) or 1) for i in cart)
 
     # Checkout used to write a total and stop, so kiosk food never reached the
@@ -406,12 +483,12 @@ async def kiosk_checkout(sid: str):
             order_type="dine_in" if s.get("tableId") else "takeaway",
             table_number=s.get("tableNumber"),
             source="kiosk", external_id=sid, actor="Kiosk",
-            guest_name=s.get("guestName"),
+            guest_name=s.get("guestName"), business_id=s.get("businessId"),
         )
     except Exception as e:
         logging.getLogger(__name__).warning("kiosk checkout: kitchen ticket failed — %s", e)
 
-    await db.kiosk_sessions.update_one({"id": sid}, {"$set": {
+    await db.kiosk_sessions.update_one({"id": sid, "_ownershipQuarantined": {"$ne": True}}, {"$set": {
         "status": "checkout", "total": round(total, 2), "checkoutAt": _now(),
         "kitchenOrderId": (ticket or {}).get("id"),
     }})
@@ -421,8 +498,18 @@ async def kiosk_checkout(sid: str):
 
 
 @router.get("/kiosk/sessions")
-async def kiosk_list(_: dict = Depends(get_user)):
-    rows = await db.kiosk_sessions.find({}, {"_id": 0}).sort("startedAt", -1).to_list(50)
+async def kiosk_list(user: dict = Depends(get_user)):
+    """KNOWN GAP (documented, not fully fixed here): kiosk sessions are
+    created by an unattended, unauthenticated kiosk device (kiosk_start
+    above) that has no reliable signal to resolve which business a table
+    belongs to — same architectural gap as table_ordering.py and
+    public.py's booking portal (see TENANT_ISOLATION_REMAINING_WORK.md).
+    Scoped here for defense-in-depth so a session that IS tagged (once a
+    real tableId->business resolution exists) is correctly isolated, but
+    today's untagged sessions remain visible to every business's staff via
+    tenant_scope_filter's safe default."""
+    rows = await db.kiosk_sessions.find(tenant_scope_filter(user.get("businessId")), {"_id": 0}) \
+        .sort("startedAt", -1).to_list(50)
     return rows
 
 
@@ -430,8 +517,8 @@ async def kiosk_list(_: dict = Depends(get_user)):
 async def kiosk_upsell(sid: str):
     """Pure-data upsell suggestions for a kiosk session — picks complementary
     items the cart is missing (drink if only food, side if only main, etc.)."""
-    s = await db.kiosk_sessions.find_one({"id": sid}, {"_id": 0})
-    if not s: raise HTTPException(status_code=404, detail="Session not found")
+    s = await db.kiosk_sessions.find_one({"id": sid, "_ownershipQuarantined": {"$ne": True}}, {"_id": 0})
+    if not s or not s.get("businessId"): raise HTTPException(status_code=404, detail="Session not found")
     cart = s.get("cart", [])
     cats_in_cart = {(i.get("category") or "").lower() for i in cart}
     suggestions = []
@@ -516,24 +603,31 @@ async def substitute(data: dict):
 
 
 @router.post("/products/{product_id}/86")
-async def toggle_86(product_id: str, data: dict, request: Request, user: dict = Depends(get_user)):
+async def toggle_86(product_id: str, data: dict, user: dict = Depends(get_user)):
     """Toggle 86 (out-of-stock flag) for a product. Sets stock=0 and active=False
     when 86'd; restores active=True (preserves stock as-is) when un-86'd. Returns
     one recommended substitute so the cashier can offer it on the spot."""
     if user["role"] not in ("owner", "manager", "kitchen"):
         raise HTTPException(status_code=403, detail="Owner/Manager/Kitchen only")
+    guard = await db.products.find_one({"$and": [{"id": product_id}, tenant_scope_filter(user.get("businessId"))]}, {"_id": 0, "id": 1, "businessId": 1})
+    if guard is None or not tenant_owns_strict(guard.get("businessId"), user.get("businessId")):
+        raise HTTPException(status_code=404, detail="Product not found")
     flag = bool(data.get("eightySixed", True))
     update = {"eightySixed": flag, "eightySixedAt": _now() if flag else None,
               "eightySixedBy": user["id"] if flag else None}
     if flag:
         update["stock"] = 0
-    r = await db.products.update_one({"id": product_id}, {"$set": update})
+    r = await db.products.update_one({"$and": [{"id": product_id}, tenant_scope_filter(user.get("businessId"))]}, {"$set": update})
     if r.matched_count == 0:
         raise HTTPException(status_code=404, detail="Product not found")
     sub = None
     if flag:
         try:
-            res = await substitute({"productId": product_id}, request)
+            # substitute() takes a single `data` dict — it was previously
+            # called with a second (Request) argument it doesn't accept,
+            # which raised a TypeError on every call, silently swallowed
+            # by this try/except, so suggestedSubstitute was always None.
+            res = await substitute({"productId": product_id})
             sub = (res.get("substitutes") or [None])[0]
         except Exception:
             sub = None
@@ -548,7 +642,7 @@ async def churn_risk(user: dict = Depends(get_user)):
     if user["role"] not in ("owner", "manager"): raise HTTPException(status_code=403, detail="Owner/Manager only")
     # Customer hasn't visited in 30+ days but visited 3+ times historically
     cutoff = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
-    customers = await db.customers.find({}, {"_id": 0}).to_list(2000)
+    customers = await db.customers.find(tenant_scope_filter(user.get("businessId")), {"_id": 0}).to_list(2000)
     at_risk = []
     for c in customers:
         last = c.get("lastVisit") or c.get("lastSeen")
@@ -561,30 +655,42 @@ async def churn_risk(user: dict = Depends(get_user)):
 @router.post("/recovery/win-back")
 async def trigger_win_back(data: dict, user: dict = Depends(get_user)):
     if user["role"] not in ("owner", "manager"): raise HTTPException(status_code=403, detail="Owner/Manager only")
+    business_id = user.get("businessId")
     cids = data.get("customerIds", [])
     voucher_value = float(data.get("voucherValue", 15))
-    campaign = {"id": _uid("RCV"), "customerIds": cids, "voucherValue": voucher_value,
-                "status": "queued", "createdAt": _now(), "createdBy": user["id"]}
-    await db.recovery_campaigns.insert_one(campaign)
+    # Only ever issue vouchers to the caller's own customers — a raw
+    # customerIds list from the client must not be trusted to belong to
+    # this business.
+    owned_cids = []
     for cid in cids:
+        c_guard = await cast(Any, db.customers).find_one({**tenant_scope_filter(user.get("businessId")), "id": cid}, {"_id": 0, "id": 1, "businessId": 1})
+        if c_guard is not None and tenant_owns(c_guard.get("businessId"), business_id):
+            owned_cids.append(cid)
+    campaign = {"id": _uid("RCV"), "customerIds": owned_cids, "voucherValue": voucher_value,
+                "status": "queued", "createdAt": _now(), "createdBy": user["id"],
+                "businessId": business_id}
+    await db.recovery_campaigns.insert_one(campaign)
+    for cid in owned_cids:
         await db.vouchers.insert_one({"id": _uid("VCH"), "customerId": cid, "amount": voucher_value,
-                                       "reason": "win_back", "status": "active", "createdAt": _now()})
+                                       "reason": "win_back", "status": "active", "createdAt": _now(),
+                                       "businessId": business_id})
     campaign.pop("_id", None)
-    return {"queued": len(cids), "campaign": campaign}
+    return {"queued": len(owned_cids), "campaign": campaign}
 
 
 # ============================================================================
 # v28 SHOULD-HAVE — Station Readiness Score
 # ============================================================================
 @router.get("/station-readiness")
-async def station_readiness(_: dict = Depends(get_user)):
+async def station_readiness(user: dict = Depends(get_user)):
     # Combine: open prep tickets (lower=better), staff rostered, stock OK, printer status
-    pending = await db.kitchen_orders.count_documents({"status": {"$in": ["pending", "in_progress"]}})
+    scope = tenant_scope_filter(user.get("businessId"))
+    pending = await db.kitchen_orders.count_documents({**scope, "status": {"$in": ["pending", "in_progress"]}})
     today = datetime.now(timezone.utc).date().isoformat()
-    shifts_today = await db.roster_shifts.count_documents({"date": today})
-    low_stock = await db.products.count_documents({"stock": {"$lte": 5}, "active": {"$ne": False}})
-    printers_online = await db.hardware.count_documents({"kind": "printer", "status": "online"})
-    printers_total = await db.hardware.count_documents({"kind": "printer"})
+    shifts_today = await db.roster_shifts.count_documents({**scope, "date": today})
+    low_stock = await db.products.count_documents({**scope, "stock": {"$lte": 5}, "active": {"$ne": False}})
+    printers_online = await db.hardware.count_documents({**scope, "kind": "printer", "status": "online"})
+    printers_total = await db.hardware.count_documents({**scope, "kind": "printer"})
     # Score 0-100
     score = 100
     score -= min(pending * 2, 30)
@@ -609,7 +715,8 @@ async def station_readiness(_: dict = Depends(get_user)):
 @router.get("/margin-guardrails")
 async def margin_guardrails(user: dict = Depends(get_user)):
     if user["role"] not in ("owner", "manager"): raise HTTPException(status_code=403, detail="Owner/Manager only")
-    products = await db.products.find({"active": {"$ne": False}}, {"_id": 0}).to_list(500)
+    scope = tenant_scope_filter(user.get("businessId"))
+    products = await db.products.find({**scope, "active": {"$ne": False}}, {"_id": 0}).to_list(500)
     warnings = []
     for p in products:
         price = float(p.get("price", 0) or 0)
@@ -631,14 +738,16 @@ async def margin_guardrails(user: dict = Depends(get_user)):
 async def ash_plan(user: dict = Depends(get_user)):
     """Aggregate today's signals into a single approval plan."""
     if user["role"] not in ("owner", "manager"): raise HTTPException(status_code=403, detail="Owner/Manager only")
+    business_id = user.get("businessId")
+    scope = tenant_scope_filter(business_id)
     # Gather signals
     now = datetime.now(timezone.utc)
     yesterday = (now - timedelta(days=1)).isoformat()
-    today_tx = await db.transactions.count_documents({"createdAt": {"$gte": yesterday}})
-    bookings_today = await db.reservations.count_documents({"date": now.date().isoformat()})
-    bookings_yest = await db.reservations.count_documents({"date": (now.date() - timedelta(days=7)).isoformat()})
+    today_tx = await db.transactions.count_documents({**scope, "createdAt": {"$gte": yesterday}})
+    bookings_today = await db.reservations.count_documents({**scope, "date": now.date().isoformat()})
+    bookings_yest = await db.reservations.count_documents({**scope, "date": (now.date() - timedelta(days=7)).isoformat()})
     booking_delta = ((bookings_today - bookings_yest) / max(bookings_yest, 1)) * 100
-    low_stock = await db.products.count_documents({"stock": {"$lte": 5}, "active": {"$ne": False}})
+    low_stock = await db.products.count_documents({**scope, "stock": {"$lte": 5}, "active": {"$ne": False}})
     # Build plan
     actions = []
     if booking_delta < -20:
@@ -656,29 +765,38 @@ async def ash_plan(user: dict = Depends(get_user)):
         "signals": {"todaysTransactions": today_tx, "bookingsToday": bookings_today, "bookingDeltaPct": round(booking_delta, 1), "lowStockItems": low_stock},
         "actions": actions,
         "status": "pending_approval",
+        "businessId": business_id,
     }
-    # Replace today's existing plan (idempotent — don't grow the collection)
+    # Replace today's existing plan (idempotent — don't grow the collection).
+    # Keyed by (planDate, status, businessId): businessId was missing here,
+    # so two different businesses' daily plans silently overwrote each other.
     await db.ash_plans.update_one(
-        {"planDate": plan["planDate"], "status": "pending_approval"},
+        {"planDate": plan["planDate"], "status": "pending_approval", "businessId": business_id},
         {"$set": plan}, upsert=True,
     )
     return plan
 
 
 @router.post("/ash-pro/approve")
-async def ash_approve(data: dict, request: Request, _: dict = Depends(require_owner)):
+async def ash_approve(data: dict, user: dict = Depends(require_owner)):
     plan_id = data.get("planId")
     approved_action_ids = data.get("actionIds", [])  # empty = approve all
-    plan = await db.ash_plans.find_one({"id": plan_id}, {"_id": 0})
-    if not plan: raise HTTPException(status_code=404, detail="Plan not found")
+    business_id = user.get("businessId")
+    plan = await db.ash_plans.find_one({"$and": [{"id": plan_id}, tenant_scope_filter(business_id)]}, {"_id": 0})
+    if plan is None or not tenant_owns_strict(plan.get("businessId"), business_id):
+        raise HTTPException(status_code=404, detail="Plan not found")
     executed = []
     for act in plan.get("actions", []):
         if approved_action_ids and act["id"] not in approved_action_ids: continue
         # Execute (stubbed where external services would be involved)
         if act["type"] == "generate_pos":
             try:
+                # generate_po expects the real authenticated user dict (it
+                # reads user["businessId"]/user["id"] internally) — this
+                # previously passed the raw Request object instead, which
+                # generate_po was never written to accept.
                 from routes.phase_ef import generate_po
-                r = await generate_po(request)
+                r = await generate_po(user)
                 executed.append({**act, "result": r})
             except Exception as e:
                 executed.append({**act, "error": str(e)[:120]})
@@ -686,9 +804,10 @@ async def ash_approve(data: dict, request: Request, _: dict = Depends(require_ow
             await db.agent_decisions.insert_one({
                 "id": _uid("AGT"), "actionType": act["type"], "summary": act["summary"],
                 "payload": act.get("params", {}), "status": "executed", "createdAt": _now(),
+                "businessId": business_id,
             })
             executed.append({**act, "result": {"ok": True}})
-    await db.ash_plans.update_one({"id": plan_id}, {"$set": {"status": "approved", "executedAt": _now(), "executed": executed}})
+    await db.ash_plans.update_one({"$and": [{"id": plan_id}, tenant_scope_filter(business_id)]}, {"$set": {"status": "approved", "executedAt": _now(), "executed": executed}})
     return {"executed": len(executed), "actions": executed}
 
 
@@ -698,12 +817,13 @@ async def ash_approve(data: dict, request: Request, _: dict = Depends(require_ow
 @router.get("/profit-guardian")
 async def profit_guardian(user: dict = Depends(get_user)):
     if user["role"] not in ("owner", "manager"): raise HTTPException(status_code=403, detail="Owner/Manager only")
+    scope = tenant_scope_filter(user.get("businessId"))
     # Compare last-7d cost % vs prior 7-day window for each product
     now = datetime.now(timezone.utc)
     cur_start = (now - timedelta(days=7)).isoformat()
     prev_start = (now - timedelta(days=14)).isoformat()
-    cur = await db.transactions.find({"createdAt": {"$gte": cur_start}}, {"_id": 0, "items": 1}).to_list(5000)
-    prev = await db.transactions.find({"createdAt": {"$gte": prev_start, "$lt": cur_start}}, {"_id": 0, "items": 1}).to_list(5000)
+    cur = await db.transactions.find({**scope, "createdAt": {"$gte": cur_start}}, {"_id": 0, "items": 1}).to_list(5000)
+    prev = await db.transactions.find({**scope, "createdAt": {"$gte": prev_start, "$lt": cur_start}}, {"_id": 0, "items": 1}).to_list(5000)
     def aggregate(rows):
         rev, cost, units = defaultdict(float), defaultdict(float), defaultdict(int)
         for t in rows:
@@ -716,7 +836,7 @@ async def profit_guardian(user: dict = Depends(get_user)):
         return rev, cost, units
     cur_rev, _, cur_units = aggregate(cur)
     prev_rev, _, prev_units = aggregate(prev)
-    products = {p["id"]: p for p in await db.products.find({}, {"_id": 0}).to_list(2000)}
+    products = {p["id"]: p for p in await db.products.find(scope, {"_id": 0}).to_list(2000)}
     alerts = []
     for pid in cur_rev:
         p = products.get(pid)
@@ -747,11 +867,12 @@ async def profit_guardian(user: dict = Depends(get_user)):
 # TIER 1 — Digital Twin Forecast
 # ============================================================================
 @router.get("/digital-twin")
-async def digital_twin(_: dict = Depends(get_user)):
+async def digital_twin(user: dict = Depends(get_user)):
+    scope = tenant_scope_filter(user.get("businessId"))
     now = datetime.now(timezone.utc)
     # 8-week average revenue per weekday
     cutoff = (now - timedelta(days=56)).isoformat()
-    tx = await db.transactions.find({"createdAt": {"$gte": cutoff}}, {"_id": 0, "createdAt": 1, "total": 1}).to_list(20000)
+    tx = await db.transactions.find({**scope, "createdAt": {"$gte": cutoff}}, {"_id": 0, "createdAt": 1, "total": 1}).to_list(20000)
     by_dow = defaultdict(list)
     for t in tx:
         try:
@@ -761,7 +882,7 @@ async def digital_twin(_: dict = Depends(get_user)):
             continue
     today_dow = now.weekday()
     today_avg = sum(by_dow.get(today_dow, [])) / max(len(by_dow.get(today_dow, [])) / 8, 1) if by_dow.get(today_dow) else 0
-    bookings = await db.reservations.count_documents({"date": now.date().isoformat()})
+    bookings = await db.reservations.count_documents({**scope, "date": now.date().isoformat()})
     avg_party = 2.5
     expected_covers = bookings * avg_party
     # Confidence band ±8%
@@ -780,15 +901,16 @@ async def digital_twin(_: dict = Depends(get_user)):
 # TIER 1 — AI Shift Manager (real-time alerts)
 # ============================================================================
 @router.get("/shift-manager")
-async def shift_manager(_: dict = Depends(get_user)):
+async def shift_manager(user: dict = Depends(get_user)):
+    scope = tenant_scope_filter(user.get("businessId"))
     alerts = []
     # Check kitchen station overload
-    pending = await db.kitchen_orders.count_documents({"status": "pending"})
+    pending = await db.kitchen_orders.count_documents({**scope, "status": "pending"})
     if pending > 8:
         alerts.append({"type": "kitchen_overload", "severity": "high",
                        "message": f"Kitchen has {pending} pending tickets — pull a hand from bar/front to expo."})
     # Check oldest ticket
-    oldest = await db.kitchen_orders.find_one({"status": "pending"}, {"_id": 0}, sort=[("createdAt", 1)])
+    oldest = await db.kitchen_orders.find_one({**scope, "status": "pending"}, {"_id": 0}, sort=[("createdAt", 1)])
     if oldest:
         try:
             dt = datetime.fromisoformat(oldest["createdAt"].replace("Z", "+00:00"))
@@ -806,8 +928,9 @@ async def shift_manager(_: dict = Depends(get_user)):
 @router.post("/marketing/auto")
 async def auto_marketing(data: dict, user: dict = Depends(get_user)):
     if user["role"] not in ("owner", "manager"): raise HTTPException(status_code=403, detail="Owner/Manager only")
+    scope = tenant_scope_filter(user.get("businessId"))
     audience = data.get("audience", "all")
-    target = await db.customers.find({} if audience == "all" else {"membershipTier": audience}, {"_id": 0}).to_list(2000)
+    target = await db.customers.find(scope if audience == "all" else {**scope, "membershipTier": audience}, {"_id": 0}).to_list(2000)
     sys_msg = ("You are a restaurant CMO. Generate a short 1-line SMS + 50-word email "
                "for a midweek slowdown offer. Return STRICT JSON: "
                '{"sms":"...","emailSubject":"...","emailBody":"..."}')
@@ -824,7 +947,7 @@ async def auto_marketing(data: dict, user: dict = Depends(get_user)):
         "offer": data.get("offer") or {"valueType": "percentage", "value": 15,
                                        "label": "Midweek offer"},
         "status": "draft", "createdAt": _now(), "createdBy": user["id"],
-        "sent": 0, "vouchersIssued": 0,
+        "sent": 0, "vouchersIssued": 0, "businessId": user.get("businessId"),
     }
     await db.marketing_campaigns.insert_one(campaign); campaign.pop("_id", None)
     return campaign
@@ -845,15 +968,15 @@ async def send_marketing(campaign_id: str, data: dict = None, user: dict = Depen
     """
     if user["role"] not in ("owner", "manager"):
         raise HTTPException(status_code=403, detail="Owner/Manager only")
-    campaign = await db.marketing_campaigns.find_one({"id": campaign_id}, {"_id": 0})
-    if not campaign:
+    campaign = await db.marketing_campaigns.find_one({"$and": [{"id": campaign_id}, tenant_scope_filter(user.get("businessId"))]}, {"_id": 0})
+    if campaign is None or not tenant_owns_strict(campaign.get("businessId"), user.get("businessId")):
         raise HTTPException(status_code=404, detail="Campaign not found")
     if campaign.get("status") == "held":
         raise HTTPException(status_code=400, detail="Campaign is on hold — take it off hold before sending")
 
     edits = {k: v for k, v in (data or {}).items() if k in ("emailSubject", "emailBody", "sms") and v}
     if edits:
-        await db.marketing_campaigns.update_one({"id": campaign_id}, {"$set": edits})
+        await db.marketing_campaigns.update_one({"$and": [{"id": campaign_id}, tenant_scope_filter(user.get("businessId"))]}, {"$set": edits})
         campaign.update(edits)
 
     return await _execute_campaign_send(campaign)
@@ -874,8 +997,9 @@ async def _execute_campaign_send(campaign: dict) -> dict:
     from utils.notifications import send_email
 
     audience = campaign.get("audience", "all")
+    scope = tenant_scope_filter(campaign.get("businessId"))
     targets = await db.customers.find(
-        {} if audience == "all" else {"membershipTier": audience}, {"_id": 0}
+        scope if audience == "all" else {**scope, "membershipTier": audience}, {"_id": 0}
     ).to_list(2000)
 
     issued, sent, skipped = 0, 0, 0
@@ -885,7 +1009,8 @@ async def _execute_campaign_send(campaign: dict) -> dict:
             skipped += 1
             continue
         existing = await db.vouchers.find_one(
-            {"customerId": c["id"], "sourceType": "campaign", "sourceRef": campaign_id},
+            {"customerId": c["id"], "sourceType": "campaign", "sourceRef": campaign_id,
+             **scope},
             {"_id": 0},
         )
         voucher = existing or await issue_campaign_voucher(c, campaign)
@@ -906,7 +1031,7 @@ async def _execute_campaign_send(campaign: dict) -> dict:
             "delivered": bool(receipt.get("delivered")),
         })
 
-    await db.marketing_campaigns.update_one({"id": campaign_id}, {"$set": {
+    await db.marketing_campaigns.update_one({"id": campaign_id, **scope}, {"$set": {
         "status": "sent", "sentAt": _now(),
         "vouchersIssued": issued, "sent": sent, "skipped": skipped,
         "recipientLog": recipients[:2000],
@@ -916,7 +1041,8 @@ async def _execute_campaign_send(campaign: dict) -> dict:
             "recipients": len(recipients)}
 
 
-async def create_and_send_campaign_from_approval(params: dict, created_by: str = "ash") -> dict:
+async def create_and_send_campaign_from_approval(params: dict, created_by: str = "ash",
+                                                   business_id: Optional[str] = None) -> dict:
     """Turn an Ash-drafted marketing-campaign approval into a real, sendable
     v25 campaign and send it immediately — this is what fires when an owner
     clicks Approve on a "marketing.launch_campaign" approval.
@@ -937,7 +1063,7 @@ async def create_and_send_campaign_from_approval(params: dict, created_by: str =
         "emailBody": copy.get("email") or copy.get("sms") or "",
         "offer": params.get("offer") or {"valueType": "percentage", "value": 10, "label": "Thanks for being a regular"},
         "status": "draft", "createdAt": _now(), "createdBy": created_by,
-        "sent": 0, "vouchersIssued": 0,
+        "sent": 0, "vouchersIssued": 0, "businessId": business_id,
         "ashDraft": {"segment": params.get("segment"), "reasoning": params.get("reasoning")},
     }
     await db.marketing_campaigns.insert_one(dict(campaign))
@@ -951,22 +1077,26 @@ async def hold_marketing(campaign_id: str, data: dict = None, user: dict = Depen
     draft. A held campaign can't be sent until it's taken off hold again."""
     if user["role"] not in ("owner", "manager"):
         raise HTTPException(status_code=403, detail="Owner/Manager only")
-    campaign = await db.marketing_campaigns.find_one({"id": campaign_id}, {"_id": 0})
-    if not campaign:
+    campaign = await db.marketing_campaigns.find_one({"$and": [{"id": campaign_id}, tenant_scope_filter(user.get("businessId"))]}, {"_id": 0})
+    if campaign is None or not tenant_owns_strict(campaign.get("businessId"), user.get("businessId")):
         raise HTTPException(status_code=404, detail="Campaign not found")
     if campaign.get("status") == "sent":
         raise HTTPException(status_code=400, detail="Campaign already sent")
     hold = (data or {}).get("hold", True)
     new_status = "held" if hold else "draft"
-    await db.marketing_campaigns.update_one({"id": campaign_id}, {"$set": {"status": new_status}})
+    await db.marketing_campaigns.update_one({"$and": [{"id": campaign_id}, tenant_scope_filter(user.get("businessId"))]}, {"$set": {"status": new_status}})
     return {"campaignId": campaign_id, "status": new_status}
 
 
 @router.get("/marketing/auto/{campaign_id}/performance")
-async def marketing_performance(campaign_id: str, _: dict = Depends(get_user)):
+async def marketing_performance(campaign_id: str, user: dict = Depends(get_user)):
     """Redemption attribution — which issued vouchers actually came back."""
+    campaign = await db.marketing_campaigns.find_one({"$and": [{"id": campaign_id}, tenant_scope_filter(user.get("businessId"))]}, {"_id": 0, "id": 1, "businessId": 1})
+    if campaign is None or not tenant_owns_strict(campaign.get("businessId"), user.get("businessId")):
+        raise HTTPException(status_code=404, detail="Campaign not found")
     vouchers = await db.vouchers.find(
-        {"sourceType": "campaign", "sourceRef": campaign_id}, {"_id": 0}
+        {"sourceType": "campaign", "sourceRef": campaign_id,
+         **tenant_scope_filter(user.get("businessId"))}, {"_id": 0}
     ).to_list(5000)
     redeemed = [v for v in vouchers if v.get("status") == "redeemed"
                 or int(v.get("redemptionCount") or 0) > 0]
@@ -980,8 +1110,9 @@ async def marketing_performance(campaign_id: str, _: dict = Depends(get_user)):
 
 
 @router.get("/marketing/auto")
-async def list_marketing(_: dict = Depends(get_user)):
-    rows = await db.marketing_campaigns.find({}, {"_id": 0}).sort("createdAt", -1).to_list(50)
+async def list_marketing(user: dict = Depends(get_user)):
+    rows = await db.marketing_campaigns.find(tenant_scope_filter(user.get("businessId")), {"_id": 0}) \
+        .sort("createdAt", -1).to_list(50)
     return rows
 
 
@@ -989,8 +1120,8 @@ async def list_marketing(_: dict = Depends(get_user)):
 # TIER 2 — Dynamic Pricing rules
 # ============================================================================
 @router.get("/dynamic-pricing")
-async def list_dynamic_rules():
-    rules = await db.dynamic_pricing.find({}, {"_id": 0}).to_list(200)
+async def list_dynamic_rules(user: dict = Depends(get_user)):
+    rules = await db.dynamic_pricing.find(tenant_scope_filter(user.get("businessId")), {"_id": 0}).to_list(200)
     return rules
 
 
@@ -1005,7 +1136,7 @@ async def add_dynamic_rule(data: dict, user: dict = Depends(get_user)):
         "hourStart": int(data.get("hourStart", 0)),
         "hourEnd": int(data.get("hourEnd", 24)),
         "multiplier": float(data.get("multiplier", 1.0)),
-        "active": True, "createdAt": _now(),
+        "active": True, "createdAt": _now(), "businessId": user.get("businessId"),
     }
     await db.dynamic_pricing.insert_one(rule); rule.pop("_id", None)
     return rule
@@ -1015,10 +1146,13 @@ async def add_dynamic_rule(data: dict, user: dict = Depends(get_user)):
 # TIER 2 — Subscription Memberships
 # ============================================================================
 @router.get("/subscriptions/plans")
-async def list_sub_plans():
-    plans = await db.subscription_plans.find({}, {"_id": 0}).to_list(50)
+async def list_sub_plans(user: dict = Depends(get_user)):
+    business_id = user.get("businessId")
+    plans = await db.subscription_plans.find(tenant_scope_filter(business_id), {"_id": 0}).to_list(50)
     if not plans:
-        seed = [{"id": "SUB-COFFEE", "name": "Coffee Club", "priceMonthly": 29, "perks": ["1 free coffee daily", "10% off food", "Priority booking"]}]
+        seed = [{"id": _uid("SUB"), "name": "Coffee Club", "priceMonthly": 29,
+                 "perks": ["1 free coffee daily", "10% off food", "Priority booking"],
+                 "businessId": business_id}]
         for s in seed: await db.subscription_plans.insert_one(s)
         for s in seed: s.pop("_id", None)
         plans = seed
@@ -1043,23 +1177,28 @@ async def add_sub_plan(data: dict, user: dict = Depends(get_user)):
         "trialDays": int(data.get("trialDays", 0)),
         "manualCode": manual, "barcode": manual,
         "active": bool(data.get("active", True)),
-        "createdAt": _now(),
+        "createdAt": _now(), "businessId": user.get("businessId"),
     }
     await db.subscription_plans.insert_one(plan); plan.pop("_id", None)
     return plan
 
 
 @router.post("/subscriptions/enroll")
-async def enroll_sub(data: dict, _: dict = Depends(get_user)):
-    sub = {"id": _uid("SUBSC"), "customerId": data.get("customerId"), "planId": data.get("planId"),
-           "status": "active", "startedAt": _now()}
+async def enroll_sub(data: dict, user: dict = Depends(get_user)):
+    business_id = user.get("businessId")
+    plan_id = data.get("planId")
+    plan_guard = await db.subscription_plans.find_one({"$and": [{"id": plan_id}, tenant_scope_filter(business_id)]}, {"_id": 0, "id": 1, "businessId": 1})
+    if plan_guard is None or not tenant_owns_strict(plan_guard.get("businessId"), business_id):
+        raise HTTPException(status_code=404, detail="planId does not exist")
+    sub = {"id": _uid("SUBSC"), "customerId": data.get("customerId"), "planId": plan_id,
+           "status": "active", "startedAt": _now(), "businessId": business_id}
     await db.subscriptions.insert_one(sub); sub.pop("_id", None)
     return sub
 
 
 @router.get("/subscriptions/members")
-async def list_sub_members(_: dict = Depends(get_user)):
-    rows = await db.subscriptions.find({}, {"_id": 0}).to_list(500)
+async def list_sub_members(user: dict = Depends(get_user)):
+    rows = await db.subscriptions.find(tenant_scope_filter(user.get("businessId")), {"_id": 0}).to_list(500)
     return rows
 
 
@@ -1069,6 +1208,10 @@ async def update_sub_member(sub_id: str, data: dict, user: dict = Depends(get_us
     notes. Validates the new planId actually exists when present."""
     if user["role"] != "owner":
         raise HTTPException(status_code=403, detail="Owner only")
+    business_id = user.get("businessId")
+    guard = await db.subscriptions.find_one({"$and": [{"id": sub_id}, tenant_scope_filter(business_id)]}, {"_id": 0, "id": 1, "businessId": 1})
+    if guard is None or not tenant_owns_strict(guard.get("businessId"), business_id):
+        raise HTTPException(status_code=404, detail="Membership not found")
     allowed = {"planId", "status", "notes", "customerId"}
     update = {k: v for k, v in data.items() if k in allowed}
     if not update:
@@ -1076,13 +1219,15 @@ async def update_sub_member(sub_id: str, data: dict, user: dict = Depends(get_us
     if "status" in update and update["status"] not in ("active", "paused", "cancelled"):
         raise HTTPException(status_code=400, detail="status must be active | paused | cancelled")
     if "planId" in update:
-        if not await db.subscription_plans.find_one({"id": update["planId"]}):
+        plan_guard = await db.subscription_plans.find_one(
+            {"$and": [{"id": update["planId"]}, tenant_scope_filter(business_id)]}, {"_id": 0, "id": 1, "businessId": 1})
+        if plan_guard is None or not tenant_owns_strict(plan_guard.get("businessId"), business_id):
             raise HTTPException(status_code=404, detail="planId does not exist")
     update["updatedAt"] = _now()
-    r = await db.subscriptions.update_one({"id": sub_id}, {"$set": update})
+    r = await db.subscriptions.update_one({"$and": [{"id": sub_id}, tenant_scope_filter(business_id)]}, {"$set": update})
     if r.matched_count == 0:
         raise HTTPException(status_code=404, detail="Membership not found")
-    row = await db.subscriptions.find_one({"id": sub_id}, {"_id": 0})
+    row = await db.subscriptions.find_one({"$and": [{"id": sub_id}, tenant_scope_filter(business_id)]}, {"_id": 0})
     return row
 
 
@@ -1092,8 +1237,11 @@ async def cancel_sub_member(sub_id: str, user: dict = Depends(get_user)):
     Keeps the row for audit so the next renewal/billing run can ignore it."""
     if user["role"] != "owner":
         raise HTTPException(status_code=403, detail="Owner only")
+    guard = await db.subscriptions.find_one({"$and": [{"id": sub_id}, tenant_scope_filter(user.get("businessId"))]}, {"_id": 0, "id": 1, "businessId": 1})
+    if guard is None or not tenant_owns_strict(guard.get("businessId"), user.get("businessId")):
+        raise HTTPException(status_code=404, detail="Membership not found")
     r = await db.subscriptions.update_one(
-        {"id": sub_id},
+        {"$and": [{"id": sub_id}, tenant_scope_filter(user.get("businessId"))]},
         {"$set": {"status": "cancelled", "cancelledAt": _now()}},
     )
     if r.matched_count == 0:
@@ -1113,8 +1261,8 @@ async def cancel_sub_member(sub_id: str, user: dict = Depends(get_user)):
 # TIER 3 — Recipe Costing Engine
 # ============================================================================
 @router.get("/recipes/list")
-async def list_recipes_costed(_: dict = Depends(get_user)):
-    recipes = await db.product_recipes.find({}, {"_id": 0}).to_list(500)
+async def list_recipes_costed(user: dict = Depends(get_user)):
+    recipes = await db.product_recipes.find(tenant_scope_filter(user.get("businessId")), {"_id": 0}).to_list(500)
     return recipes
 
 
@@ -1122,20 +1270,27 @@ async def list_recipes_costed(_: dict = Depends(get_user)):
 async def upsert_recipe(data: dict, user: dict = Depends(get_user)):
     """Attach a recipe of ingredients (productId + qty + costPerUnit) to a product."""
     if user["role"] not in ("owner", "manager"): raise HTTPException(status_code=403, detail="Owner/Manager only")
+    business_id = user.get("businessId")
     pid = data.get("productId")
     if not pid: raise HTTPException(status_code=400, detail="productId required")
+    prod_guard = await db.products.find_one({"$and": [{"id": pid}, tenant_scope_filter(business_id)]}, {"_id": 0, "id": 1, "businessId": 1})
+    if prod_guard is None or not tenant_owns_strict(prod_guard.get("businessId"), business_id):
+        raise HTTPException(status_code=404, detail="Product not found")
     ingredients = data.get("ingredients", [])  # [{item, quantity, unit, costPerUnit}]
     total_cost = sum(float(i.get("quantity", 0) or 0) * float(i.get("costPerUnit", 0) or 0) for i in ingredients)
     rec = {"productId": pid, "ingredients": ingredients, "computedCost": round(total_cost, 2),
-           "updatedAt": _now(), "updatedBy": user["id"]}
+           "updatedAt": _now(), "updatedBy": user["id"], "businessId": business_id}
     await db.product_recipes.update_one({"productId": pid}, {"$set": rec}, upsert=True)
     # Also push the computed cost back to product.cost so margin engines update
-    await db.products.update_one({"id": pid}, {"$set": {"cost": round(total_cost, 2), "recipeLinked": True}})
+    await db.products.update_one({"$and": [{"id": pid}, tenant_scope_filter(business_id)]}, {"$set": {"cost": round(total_cost, 2), "recipeLinked": True}})
     return rec
 
 
 @router.get("/recipes/{product_id}")
-async def get_recipe(product_id: str, _: dict = Depends(get_user)):
+async def get_recipe(product_id: str, user: dict = Depends(get_user)):
+    prod_guard = await db.products.find_one({"$and": [{"id": product_id}, tenant_scope_filter(user.get("businessId"))]}, {"_id": 0, "id": 1, "businessId": 1})
+    if prod_guard is None or not tenant_owns_strict(prod_guard.get("businessId"), user.get("businessId")):
+        raise HTTPException(status_code=404, detail="Product not found")
     r = await db.product_recipes.find_one({"productId": product_id}, {"_id": 0})
     return r or {"productId": product_id, "ingredients": [], "computedCost": 0}
 
@@ -1147,15 +1302,16 @@ async def get_recipe(product_id: str, _: dict = Depends(get_user)):
 async def predictive_orders(user: dict = Depends(get_user)):
     """Generate next-week supplier orders based on velocity + bookings + weather hints."""
     if user["role"] not in ("owner", "manager"): raise HTTPException(status_code=403, detail="Owner/Manager only")
+    scope = tenant_scope_filter(user.get("businessId"))
     cutoff = (datetime.now(timezone.utc) - timedelta(days=14)).isoformat()
-    tx = await db.transactions.find({"createdAt": {"$gte": cutoff}}, {"_id": 0, "items": 1}).to_list(5000)
+    tx = await db.transactions.find({**scope, "createdAt": {"$gte": cutoff}}, {"_id": 0, "items": 1}).to_list(5000)
     units_per_week = Counter()
     for t in tx:
         for it in t.get("items", []) or []:
             pid = it.get("productId")
             if pid: units_per_week[pid] += int(it.get("quantity", 1) or 1)
     # next week target = 7-day average rounded up
-    products = await db.products.find({"active": {"$ne": False}}, {"_id": 0}).to_list(500)
+    products = await db.products.find({**scope, "active": {"$ne": False}}, {"_id": 0}).to_list(500)
     suggestions = []
     for p in products:
         weekly = units_per_week.get(p["id"], 0) / 2  # 14d -> 7d
@@ -1175,8 +1331,9 @@ async def predictive_orders(user: dict = Depends(get_user)):
 # TIER 3 — Waste Tracking
 # ============================================================================
 @router.get("/waste")
-async def list_waste(_: dict = Depends(get_user)):
-    rows = await db.waste_log.find({}, {"_id": 0}).sort("createdAt", -1).to_list(500)
+async def list_waste(user: dict = Depends(get_user)):
+    rows = await db.waste_log.find(tenant_scope_filter(user.get("businessId")), {"_id": 0}) \
+        .sort("createdAt", -1).to_list(500)
     return rows
 
 
@@ -1186,7 +1343,7 @@ async def log_waste(data: dict, user: dict = Depends(get_user)):
         "id": _uid("WST"), "productId": data.get("productId"), "productName": data.get("productName", ""),
         "quantity": float(data.get("quantity", 0)), "reason": data.get("reason", "spoilage"),
         "estCost": float(data.get("estCost", 0)),
-        "createdAt": _now(), "createdBy": user["id"],
+        "createdAt": _now(), "createdBy": user["id"], "businessId": user.get("businessId"),
     }
     await db.waste_log.insert_one(entry); entry.pop("_id", None)
     return entry
@@ -1196,7 +1353,8 @@ async def log_waste(data: dict, user: dict = Depends(get_user)):
 async def waste_insights(user: dict = Depends(get_user)):
     if user["role"] not in ("owner", "manager"): raise HTTPException(status_code=403, detail="Owner/Manager only")
     cutoff = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
-    rows = await db.waste_log.find({"createdAt": {"$gte": cutoff}}, {"_id": 0}).to_list(2000)
+    query = {"$and": [tenant_scope_filter(user.get("businessId")), {"createdAt": {"$gte": cutoff}}]}
+    rows = await db.waste_log.find(query, {"_id": 0}).to_list(2000)
     total_cost = sum(float(r.get("estCost", 0)) for r in rows)
     by_reason = Counter([r.get("reason", "?") for r in rows])
     by_product = Counter([r.get("productName", "?") for r in rows])
@@ -1208,18 +1366,20 @@ async def waste_insights(user: dict = Depends(get_user)):
 # TIER 4 — Universal Guest Profile
 # ============================================================================
 @router.get("/guest/{customer_id}")
-async def universal_guest(customer_id: str, _: dict = Depends(get_user)):
-    c = await db.customers.find_one({"id": customer_id}, {"_id": 0})
-    if not c: raise HTTPException(status_code=404, detail="Customer not found")
-    visits = await db.transactions.count_documents({"customerId": customer_id})
+async def universal_guest(customer_id: str, user: dict = Depends(get_user)):
+    c = await db.customers.find_one({**tenant_scope_filter(user.get("businessId")), "id": customer_id}, {"_id": 0})
+    if c is None or not tenant_owns(c.get("businessId"), user.get("businessId")):
+        raise HTTPException(status_code=404, detail="Customer not found")
+    scope = tenant_scope_filter(user.get("businessId"))
+    visits = await db.transactions.count_documents({"customerId": customer_id, **scope})
     spend_agg = await db.transactions.aggregate([
-        {"$match": {"customerId": customer_id}},
+        {"$match": {"customerId": customer_id, **scope}},
         {"$group": {"_id": None, "total": {"$sum": "$total"}}}
     ]).to_list(1)
     total_spend = float(spend_agg[0]["total"]) if spend_agg else 0
-    reservations = await db.reservations.count_documents({"customerId": customer_id})
+    reservations = await db.reservations.count_documents({"customerId": customer_id, **scope})
     points = await db.loyalty_ledger.aggregate([
-        {"$match": {"customerId": customer_id}},
+        {"$match": {"customerId": customer_id, **scope}},
         {"$group": {"_id": None, "balance": {"$sum": "$delta"}}}
     ]).to_list(1)
     return {
@@ -1234,7 +1394,7 @@ async def universal_guest(customer_id: str, _: dict = Depends(get_user)):
 # TIER 4 — AI Concierge
 # ============================================================================
 @router.post("/concierge")
-async def concierge(data: dict, _: dict = Depends(get_user)):
+async def concierge(data: dict, user: dict = Depends(get_user)):
     msg = (data.get("message") or "").strip()
     if not msg: raise HTTPException(status_code=400, detail="message required")
     sys_msg = (
@@ -1268,7 +1428,7 @@ async def concierge(data: dict, _: dict = Depends(get_user)):
             "partySize": int(out.get("partySize", 2) or 2),
             "date": out["date"], "time": out.get("time", "19:00"),
             "notes": notes, "status": "confirmed", "source": "ai_concierge",
-            "createdAt": _now(),
+            "createdAt": _now(), "businessId": user.get("businessId"),
         }
         await db.reservations.insert_one(r)
         return {"created": True, "reservationId": r["id"], "reply": reply, "intent": "reservation",
@@ -1284,12 +1444,13 @@ async def concierge(data: dict, _: dict = Depends(get_user)):
 @router.get("/reputation")
 async def reputation(user: dict = Depends(get_user)):
     if user["role"] not in ("owner", "manager"): raise HTTPException(status_code=403, detail="Owner/Manager only")
-    reviews = await db.reviews.find({}, {"_id": 0}).sort("createdAt", -1).to_list(500)
+    business_id = user.get("businessId")
+    reviews = await db.reviews.find(tenant_scope_filter(business_id), {"_id": 0}).sort("createdAt", -1).to_list(500)
     if not reviews:
         # Seed a few samples so the dashboard isn't empty
         seed = [
-            {"id": _uid("RV"), "source": "Google", "rating": 5, "author": "Mei L.", "text": "Best espresso in town.", "responded": False, "createdAt": _now()},
-            {"id": _uid("RV"), "source": "TripAdvisor", "rating": 2, "author": "Tom", "text": "Service was slow at lunch.", "responded": False, "createdAt": _now()},
+            {"id": _uid("RV"), "source": "Google", "rating": 5, "author": "Mei L.", "text": "Best espresso in town.", "responded": False, "createdAt": _now(), "businessId": business_id},
+            {"id": _uid("RV"), "source": "TripAdvisor", "rating": 2, "author": "Tom", "text": "Service was slow at lunch.", "responded": False, "createdAt": _now(), "businessId": business_id},
         ]
         for r in seed: await db.reviews.insert_one(r)
         for r in seed: r.pop("_id", None)
@@ -1308,15 +1469,18 @@ async def reputation(user: dict = Depends(get_user)):
 async def respond_review(data: dict, user: dict = Depends(get_user)):
     if user["role"] not in ("owner", "manager"): raise HTTPException(status_code=403, detail="Owner/Manager only")
     rid = data.get("reviewId"); response = (data.get("response") or "").strip()
+    rev_guard = await db.reviews.find_one({"$and": [{"id": rid}, tenant_scope_filter(user.get("businessId"))]}, {"_id": 0, "id": 1, "businessId": 1})
+    if rev_guard is None or not tenant_owns_strict(rev_guard.get("businessId"), user.get("businessId")):
+        raise HTTPException(status_code=404, detail="Review not found")
     if not response:
         # Ask LLM to draft
-        rev = await db.reviews.find_one({"id": rid}, {"_id": 0})
+        rev = await db.reviews.find_one({"$and": [{"id": rid}, tenant_scope_filter(user.get("businessId"))]}, {"_id": 0})
         if not rev: raise HTTPException(status_code=404, detail="Review not found")
         out = await _llm_json(f"rep-{uuid.uuid4().hex[:6]}",
             "You write warm, professional restaurant review responses (2-3 sentences). Return STRICT JSON: {\"response\":\"...\"}",
             f"Source: {rev.get('source')} · Rating: {rev.get('rating')}/5 · Review: {rev.get('text')}")
         response = out.get("response") if isinstance(out, dict) else "Thank you for your feedback."
-    await db.reviews.update_one({"id": rid}, {"$set": {"responded": True, "response": response, "respondedAt": _now()}})
+    await db.reviews.update_one({"$and": [{"id": rid}, tenant_scope_filter(user.get("businessId"))]}, {"$set": {"responded": True, "response": response, "respondedAt": _now()}})
     return {"updated": True, "response": response}
 
 
@@ -1326,15 +1490,22 @@ async def respond_review(data: dict, user: dict = Depends(get_user)):
 @router.post("/recovery-action")
 async def recovery_action(data: dict, user: dict = Depends(get_user)):
     if user["role"] not in ("owner", "manager"): raise HTTPException(status_code=403, detail="Owner/Manager only")
-    customer_id = data.get("customerId"); voucher = float(data.get("voucherAmount", 20))
+    business_id = user.get("businessId")
+    customer_id = data.get("customerId")
+    c_guard = await cast(Any, db.customers).find_one({**tenant_scope_filter(user.get("businessId")), "id": customer_id}, {"_id": 0, "id": 1, "businessId": 1})
+    if c_guard is None or not tenant_owns(c_guard.get("businessId"), business_id):
+        raise HTTPException(status_code=404, detail="Customer not found")
+    voucher = float(data.get("voucherAmount", 20))
     apology = data.get("apologyMessage", "We're sorry — please come back, on us.")
     rec = {
         "id": _uid("REC"), "customerId": customer_id, "voucher": voucher,
         "apology": apology, "managerFlagged": True, "status": "queued", "createdAt": _now(),
+        "businessId": business_id,
     }
     await db.recovery_actions.insert_one(rec)
     await db.vouchers.insert_one({"id": _uid("VCH"), "customerId": customer_id, "amount": voucher,
-                                  "reason": "service_recovery", "status": "active", "createdAt": _now()})
+                                  "reason": "service_recovery", "status": "active", "createdAt": _now(),
+                                  "businessId": business_id})
     rec.pop("_id", None)
     return rec
 
@@ -1345,8 +1516,9 @@ async def recovery_action(data: dict, user: dict = Depends(get_user)):
 @router.get("/franchise/dashboard")
 async def franchise_dashboard(user: dict = Depends(get_user)):
     if user["role"] != "owner": raise HTTPException(status_code=403, detail="Owner only")
-    sites = await db.sites.find({}, {"_id": 0}).to_list(100)
-    publications = await db.publications.find({}, {"_id": 0}).sort("publishedAt", -1).to_list(20)
+    scope = tenant_scope_filter(user.get("businessId"))
+    sites = await db.sites.find(scope, {"_id": 0}).to_list(100)
+    publications = await db.publications.find(scope, {"_id": 0}).sort("publishedAt", -1).to_list(20)
     return {"sites": sites, "recentPublications": publications}
 
 
@@ -1356,13 +1528,14 @@ async def franchise_dashboard(user: dict = Depends(get_user)):
 @router.get("/benchmark")
 async def benchmark(user: dict = Depends(get_user)):
     if user["role"] != "owner": raise HTTPException(status_code=403, detail="Owner only")
-    sites = await db.sites.find({}, {"_id": 0}).to_list(100)
+    scope = tenant_scope_filter(user.get("businessId"))
+    sites = await db.sites.find(scope, {"_id": 0}).to_list(100)
     # Without per-site data we still return a single-site summary so the UI works
     cutoff = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
-    tx = await db.transactions.find({"createdAt": {"$gte": cutoff}}, {"_id": 0}).to_list(5000)
+    tx = await db.transactions.find({**scope, "createdAt": {"$gte": cutoff}}, {"_id": 0}).to_list(5000)
     revenue = sum(float(t.get("total", 0) or 0) for t in tx)
     food_cost = 0.0
-    products = {p["id"]: p for p in await db.products.find({}, {"_id": 0}).to_list(2000)}
+    products = {p["id"]: p for p in await db.products.find(scope, {"_id": 0}).to_list(2000)}
     for t in tx:
         for it in t.get("items", []) or []:
             food_cost += float(products.get(it.get("productId"), {}).get("cost", 0) or 0) * int(it.get("quantity", 1) or 1)
@@ -1383,10 +1556,16 @@ async def benchmark(user: dict = Depends(get_user)):
 # ============================================================================
 @router.get("/warehouse/export")
 async def warehouse_export(collection: str = "transactions", limit: int = 1000,
-                           _: dict = Depends(require_owner)):
+                           user: dict = Depends(require_owner)):
+    """SEVERE finding, fixed here: this export had zero business filter —
+    an owner of any single business could pull every business's raw
+    transactions, customers, reservations, products or agent_decisions off
+    the whole deployment through a legitimate 'data warehouse export'
+    feature. Same class of bug as the /ops/backup whole-DB exfiltration
+    fixed earlier in this audit."""
     allowed = {"transactions", "customers", "reservations", "products", "agent_decisions"}
     if collection not in allowed: raise HTTPException(status_code=400, detail=f"Allowed: {allowed}")
-    rows = await db[collection].find({}, {"_id": 0}).to_list(limit)
+    rows = await db[collection].find(tenant_scope_filter(user.get("businessId")), {"_id": 0}).to_list(limit)
     return {"collection": collection, "rows": rows, "exportedAt": _now()}
 
 
@@ -1397,7 +1576,8 @@ async def warehouse_export(collection: str = "transactions", limit: int = 1000,
 async def fraud_detection(user: dict = Depends(get_user)):
     if user["role"] not in ("owner", "manager"): raise HTTPException(status_code=403, detail="Owner/Manager only")
     cutoff = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
-    tx = await db.transactions.find({"createdAt": {"$gte": cutoff}}, {"_id": 0}).to_list(5000)
+    query = {"$and": [tenant_scope_filter(user.get("businessId")), {"createdAt": {"$gte": cutoff}}]}
+    tx = await db.transactions.find(query, {"_id": 0}).to_list(5000)
     per_user = defaultdict(lambda: {"voids": 0, "comps": 0, "discounts": 0.0, "refunds": 0, "tx": 0})
     for t in tx:
         u = t.get("cashier") or t.get("createdBy") or "unknown"

@@ -6,7 +6,7 @@ from database import db
 from models.bas_report import BASReport, BASReportCreate
 from models.expense import Expense, ExpenseCreate
 from models.supplier import Supplier, SupplierCreate, PurchaseOrder, PurchaseOrderCreate
-from middleware.actor_context import tenant_scope_filter
+from middleware.actor_context import tenant_scope_filter, tenant_owns, tenant_owns_strict
 from utils.dates import date_range_filter as _date_match
 import asyncio
 import uuid
@@ -77,23 +77,25 @@ async def get_p_and_l(start_date: Optional[str] = None, end_date: Optional[str] 
 
 # ============ BAS/GST API ============
 @router.get("/bas-gst/reports", response_model=List[BASReport])
-async def get_bas_reports(_: dict = Depends(require_owner_or_manager)):
-    reports = await db.bas_reports.find().to_list(1000)
+async def get_bas_reports(user: dict = Depends(require_owner_or_manager)):
+    reports = await db.bas_reports.find(tenant_scope_filter(user.get("businessId"))).to_list(1000)
     return [BASReport(**r) for r in reports]
 
 @router.post("/bas-gst/reports", response_model=BASReport)
-async def create_bas_report(report: BASReportCreate, _: dict = Depends(require_owner_or_manager)):
-    transactions = await db.transactions.find().to_list(10000)
-    expenses = await db.expenses.find().to_list(10000)
+async def create_bas_report(report: BASReportCreate, user: dict = Depends(require_owner_or_manager)):
+    scope = tenant_scope_filter(user.get("businessId"))
+    transactions = await db.transactions.find(scope).to_list(10000)
+    expenses = await db.expenses.find(scope).to_list(10000)
     gst_collected = sum(t.get("gst", 0) for t in transactions)
     gst_paid = sum(e.get("gstAmount", 0) for e in expenses)
     total_sales = sum(t.get("total", 0) for t in transactions)
     total_purchases = sum(e.get("amount", 0) for e in expenses)
     report_dict = report.dict()
     report_dict.update({
+        "businessId": user.get("businessId"),
         "gstCollected": round(gst_collected, 2),
         "gstPaid": round(gst_paid, 2),
-        "netGST": round(gst_collected - gst_paid, 2),
+        "netGst": round(gst_collected - gst_paid, 2),
         "totalSales": round(total_sales, 2),
         "totalPurchases": round(total_purchases, 2),
     })
@@ -102,40 +104,47 @@ async def create_bas_report(report: BASReportCreate, _: dict = Depends(require_o
     return report_obj
 
 @router.post("/bas-gst/submit/{report_id}")
-async def submit_bas_report(report_id: str, use_api: bool = False):
-    report = await db.bas_reports.find_one({"id": report_id})
+async def submit_bas_report(report_id: str, use_api: bool = False,
+                            user: dict = Depends(require_owner_or_manager)):
+    query = {"id": report_id, **tenant_scope_filter(user.get("businessId"))}
+    report = await db.bas_reports.find_one(query)
     if not report:
         raise HTTPException(status_code=404, detail="Report not found")
     if use_api:
         await db.bas_reports.update_one(
-            {"id": report_id},
+            query,
             {"$set": {"status": "submitted", "submittedAt": datetime.utcnow().isoformat(), "atoReference": f"ATO-{str(uuid.uuid4())[:8].upper()}"}}
         )
         return {"message": "BAS submitted to ATO via API", "reference": f"ATO-{str(uuid.uuid4())[:8].upper()}"}
     else:
         await db.bas_reports.update_one(
-            {"id": report_id},
+            query,
             {"$set": {"status": "ready_to_lodge"}}
         )
         return {"message": "BAS marked as ready to lodge", "atoPortalUrl": "https://www.ato.gov.au/business-portal"}
 
 
 @router.get("/bas-gst/worksheet")
-async def bas_worksheet(period_start: str, period_end: str):
+async def bas_worksheet(period_start: str, period_end: str,
+                        user: dict = Depends(require_owner_or_manager)):
     """Return a fully-labelled BAS worksheet (G1–G20, 1A/1B, W1/W2, T1) for
     the requested period. Numbers are computed from POS transactions,
     expenses and committed pay runs in the same window.
 
     Reference: ATO NAT 4189 (Instructions for Business Activity Statement).
     """
+    scope = tenant_scope_filter(user.get("businessId"))
     tx = await db.transactions.find({
         "createdAt": {"$gte": period_start, "$lte": period_end + "T23:59:59Z"},
+        **scope,
     }, {"_id": 0}).to_list(50000)
     exp = await db.expenses.find({
         "date": {"$gte": period_start, "$lte": period_end + "T23:59:59Z"},
+        **scope,
     }, {"_id": 0}).to_list(50000)
     runs = await db.payruns.find({
         "payDate": {"$gte": period_start, "$lte": period_end},
+        **scope,
     }, {"_id": 0}).to_list(500)
 
     # GST supplies (G1) — include GST-inclusive.
@@ -266,8 +275,9 @@ async def create_supplier(supplier: SupplierCreate, user: dict = Depends(require
 # canonical GET endpoint lives in phase_ef.py; this strict-model variant is kept
 # here only for legacy POST (creating supplier-linked POs with GST math).
 @router.post("/purchase-orders", response_model=PurchaseOrder)
-async def create_purchase_order(po: PurchaseOrderCreate):
-    supplier = await db.suppliers.find_one({"id": po.supplierId})
+async def create_purchase_order(po: PurchaseOrderCreate, user: dict = Depends(require_owner_or_manager)):
+    supplier = await db.suppliers.find_one(
+        {"id": po.supplierId, **tenant_scope_filter(user.get("businessId"))})
     if not supplier:
         raise HTTPException(status_code=404, detail="Supplier not found")
     subtotal = sum(item["quantity"] * item["price"] for item in po.items)
@@ -276,7 +286,8 @@ async def create_purchase_order(po: PurchaseOrderCreate):
     po_obj = PurchaseOrder(
         supplierId=po.supplierId, supplierName=supplier["name"],
         expectedDelivery=po.expectedDelivery, items=po.items,
-        subtotal=subtotal, gst=gst, total=total, notes=po.notes
+        subtotal=subtotal, gst=gst, total=total, notes=po.notes,
+        businessId=user.get("businessId"),
     )
     await db.purchase_orders.insert_one(po_obj.dict())
     return po_obj
@@ -320,14 +331,14 @@ async def export_report_csv(report_type: str, start_date: str, end_date: str, _:
 @router.get("/pre-shift/today")
 async def get_pre_shift_data(_: dict = Depends(get_user)):
     today = datetime.utcnow().strftime('%Y-%m-%d')
-    reservations = await db.reservations.find({"date": today}, {"_id": 0}).sort("time", 1).to_list(100)
+    reservations = await db.reservations.find({"date": today, **tenant_scope_filter()}, {"_id": 0}).sort("time", 1).to_list(100)
     # One batched $in lookup instead of one find_one() per reservation, per
     # loop — the VIP pass and the dietary-alerts pass below both used to
     # re-fetch the same customer doc a second time.
     cust_ids = list({r["customerId"] for r in reservations if r.get("customerId")})
     customers_by_id = {}
     if cust_ids:
-        rows = await db.customers.find({"id": {"$in": cust_ids}}, {"_id": 0}).to_list(len(cust_ids))
+        rows = await db.customers.find({**tenant_scope_filter(), "id": {"$in": cust_ids}}, {"_id": 0}).to_list(len(cust_ids))
         customers_by_id = {c["id"]: c for c in rows}
     vip_guests = []
     for r in reservations:
@@ -372,9 +383,9 @@ async def get_pre_shift_data(_: dict = Depends(get_user)):
     total_covers = sum(r.get("partySize", 0) for r in reservations)
     confirmed = len([r for r in reservations if r.get("status") == "confirmed"])
     seated = len([r for r in reservations if r.get("status") == "seated"])
-    kitchen_pending = await db.kitchen_orders.count_documents({"status": {"$in": ["new", "preparing"]}})
-    waitlist_count = await db.waitlist.count_documents({"status": "waiting"})
-    txns_today = await db.transactions.find({}, {"_id": 0}).sort("timestamp", -1).to_list(100)
+    kitchen_pending = await db.kitchen_orders.count_documents({"status": {"$in": ["new", "preparing"]}, **tenant_scope_filter()})
+    waitlist_count = await db.waitlist.count_documents({"status": "waiting", **tenant_scope_filter()})
+    txns_today = await db.transactions.find(tenant_scope_filter(), {"_id": 0}).sort("timestamp", -1).to_list(100)
     revenue_today = sum(t.get("total", 0) for t in txns_today)
     return {
         "date": today, "reservations": reservations, "totalReservations": len(reservations),
@@ -388,11 +399,11 @@ async def get_pre_shift_data(_: dict = Depends(get_user)):
 # ============ AI COMMAND CENTER API ============
 @router.get("/analytics/command-center")
 async def get_command_center(_: dict = Depends(require_owner_or_manager)):
-    all_txns = await db.transactions.find({}, {"_id": 0}).to_list(10000)
+    all_txns = await db.transactions.find(tenant_scope_filter(), {"_id": 0}).to_list(10000)
     total_revenue = sum(t.get("total", 0) for t in all_txns)
     total_txns = len(all_txns)
     avg_ticket = total_revenue / total_txns if total_txns > 0 else 0
-    products = await db.products.find({}, {"_id": 0}).to_list(1000)
+    products = await db.products.find(tenant_scope_filter(), {"_id": 0}).to_list(1000)
     product_map = {p["id"]: p for p in products}
     total_cogs = 0
     for txn in all_txns:
@@ -401,9 +412,9 @@ async def get_command_center(_: dict = Depends(require_owner_or_manager)):
             if prod:
                 total_cogs += prod.get("cost", 0) * item.get("quantity", 0)
     food_cost_pct = (total_cogs / total_revenue * 100) if total_revenue > 0 else 0
-    expenses = await db.expenses.find({}, {"_id": 0}).to_list(10000)
+    expenses = await db.expenses.find(tenant_scope_filter(), {"_id": 0}).to_list(10000)
     total_expenses = sum(e.get("amount", 0) for e in expenses)
-    shifts = await db.staff_shifts.find({}, {"_id": 0}).to_list(1000)
+    shifts = await db.staff_shifts.find(tenant_scope_filter(), {"_id": 0}).to_list(1000)
     total_hours = sum(s.get("totalHours", 0) for s in shifts)
     labor_cost = total_hours * 30
     labor_pct = (labor_cost / total_revenue * 100) if total_revenue > 0 else 0
@@ -427,7 +438,7 @@ async def get_command_center(_: dict = Depends(require_owner_or_manager)):
     top_sellers = sorted(product_sales.values(), key=lambda x: x["revenue"], reverse=True)[:10]
     low_performers = sorted(product_sales.values(), key=lambda x: x["margin"])[:5]
     today = datetime.utcnow().strftime('%Y-%m-%d')
-    today_res = await db.reservations.find({"date": today}, {"_id": 0}).to_list(100)
+    today_res = await db.reservations.find({"date": today, **tenant_scope_filter()}, {"_id": 0}).to_list(100)
     insights = []
     if food_cost_pct > 35:
         insights.append({"type": "warning", "title": "High Food Cost", "message": f"Food cost at {food_cost_pct:.1f}% - target is under 35%.", "priority": "high"})
@@ -439,7 +450,7 @@ async def get_command_center(_: dict = Depends(require_owner_or_manager)):
         worst = low_performers[0]
         if worst["margin"] < 20:
             insights.append({"type": "alert", "title": "Underperforming Dish", "message": f'"{worst["name"]}" has only {worst["margin"]:.0f}% margin.', "priority": "medium"})
-    customers = await db.customers.find({}, {"_id": 0}).to_list(10000)
+    customers = await db.customers.find({**tenant_scope_filter(), }, {"_id": 0}).to_list(10000)
     vip_count = len([c for c in customers if c.get("isVip")])
     avg_rating = sum(c.get("feedbackRating", 0) for c in customers if c.get("feedbackRating", 0) > 0)
     rated = len([c for c in customers if c.get("feedbackRating", 0) > 0])
@@ -456,8 +467,8 @@ async def get_command_center(_: dict = Depends(require_owner_or_manager)):
 # ============ MENU ENGINEERING API ============
 @router.get("/analytics/menu-engineering")
 async def get_menu_engineering():
-    products = await db.products.find({}, {"_id": 0}).to_list(1000)
-    all_txns = await db.transactions.find({}, {"_id": 0}).to_list(10000)
+    products = await db.products.find(tenant_scope_filter(), {"_id": 0}).to_list(1000)
+    all_txns = await db.transactions.find(tenant_scope_filter(), {"_id": 0}).to_list(10000)
     product_map = {p["id"]: p for p in products}
     sales_data = {}
     for txn in all_txns:
@@ -519,8 +530,8 @@ async def get_menu_engineering():
 # ============ WHAT-IF SIMULATOR ============
 @router.post("/analytics/what-if")
 async def what_if_simulation(changes: List[dict]):
-    products = await db.products.find({}, {"_id": 0}).to_list(1000)
-    txns = await db.transactions.find({}, {"_id": 0}).to_list(10000)
+    products = await db.products.find(tenant_scope_filter(), {"_id": 0}).to_list(1000)
+    txns = await db.transactions.find(tenant_scope_filter(), {"_id": 0}).to_list(10000)
     product_map = {p["id"]: p for p in products}
     product_sales = {}
     for txn in txns:
@@ -572,7 +583,7 @@ async def what_if_simulation(changes: List[dict]):
 # ============ DEMAND FORECASTING API ============
 @router.get("/analytics/demand-forecast")
 async def get_demand_forecast():
-    reservations = await db.reservations.find({}, {"_id": 0}).to_list(1000)
+    reservations = await db.reservations.find(tenant_scope_filter(), {"_id": 0}).to_list(1000)
     today = datetime.utcnow()
     forecast = []
     for i in range(7):
@@ -603,7 +614,7 @@ async def get_demand_forecast():
 # ============ TABLE TURN-TIME OPTIMIZATION ============
 @router.get("/analytics/table-turns")
 async def get_table_turn_analytics():
-    reservations = await db.reservations.find({}, {"_id": 0}).to_list(5000)
+    reservations = await db.reservations.find(tenant_scope_filter(), {"_id": 0}).to_list(5000)
     completed = [r for r in reservations if r.get("status") == "completed" and r.get("seatedAt") and r.get("completedAt")]
     turn_times = []
     for r in completed:
@@ -632,7 +643,7 @@ async def get_table_turn_analytics():
     section_avgs = [{"section": sec, "avgDuration": round(sum(ds) / len(ds), 1), "count": len(ds)} for sec, ds in by_section.items()]
     optimal_turn = max(45, avg_turn * 0.85)
     potential_extra = 0
-    tables = await db.floor_plans.find({}, {"_id": 0}).to_list(10)
+    tables = await db.floor_plans.find(tenant_scope_filter(), {"_id": 0}).to_list(10)
     total_tables = sum(len(p.get("tables", [])) for p in tables)
     if total_tables > 0:
         current_turns_per_night = (5 * 60) / avg_turn
@@ -656,7 +667,7 @@ async def get_smart_roster(_: dict = Depends(require_owner_or_manager)):
         day_name = day.strftime('%A')
         is_weekend = day.weekday() >= 4
         base_staff = 6 if is_weekend else 4
-        reservations = await db.reservations.find({"date": day_str}, {"_id": 0}).to_list(100)
+        reservations = await db.reservations.find({"date": day_str, **tenant_scope_filter()}, {"_id": 0}).to_list(100)
         covers = sum(r.get("partySize", 0) for r in reservations)
         extra_staff = covers // 20
         total_staff = base_staff + extra_staff
@@ -712,8 +723,8 @@ async def get_forecast_suggestions():
         })
 
     # --- Revenue: promote the highest-margin popular item ---
-    all_txns = await db.transactions.find({}, {"_id": 0}).to_list(10000)
-    products = await db.products.find({}, {"_id": 0}).to_list(2000)
+    all_txns = await db.transactions.find(tenant_scope_filter(), {"_id": 0}).to_list(10000)
+    products = await db.products.find(tenant_scope_filter(), {"_id": 0}).to_list(2000)
     product_map = {p["id"]: p for p in products}
     product_sales: dict = {}
     total_revenue = 0.0
@@ -804,8 +815,8 @@ async def predict_customer_for_order(order_items: List[dict]):
     if not order_items:
         return {"matched": False, "message": "No items provided"}
     item_names = set(item.get("productName", "").lower() for item in order_items)
-    customers = await db.customers.find({}, {"_id": 0}).to_list(1000)
-    txns = await db.transactions.find({}, {"_id": 0}).to_list(10000)
+    customers = await db.customers.find({**tenant_scope_filter(), }, {"_id": 0}).to_list(1000)
+    txns = await db.transactions.find(tenant_scope_filter(), {"_id": 0}).to_list(10000)
     customer_patterns = {}
     for txn in txns:
         cid = txn.get("customerId")
@@ -841,10 +852,75 @@ async def predict_customer_for_order(order_items: List[dict]):
     return {"matched": False, "message": "No matching customer patterns found"}
 
 @router.post("/orders/link-customer")
-async def link_order_to_customer(transaction_id: str, customer_id: str, points_earned: int = 0):
-    await db.transactions.update_one({"id": transaction_id}, {"$set": {"customerId": customer_id}})
-    if points_earned > 0:
-        await db.customers.update_one({"id": customer_id}, {"$inc": {"points": points_earned, "visits": 1}})
+async def link_order_to_customer(transaction_id: str, customer_id: str, user: dict = Depends(get_user)):
+    """Attach the "predicted" customer (see predict_customer_for_order above)
+    to a completed sale the register didn't have a loyalty match for at the
+    time, and back-credit the points that sale would have earned had the
+    customer been linked at checkout.
+
+    Used to accept a client-supplied `points_earned` with no auth at all —
+    any bearer token from any business could award an arbitrary number of
+    points to any customer of any business, with no ledger entry and no
+    audit trail (found in the Trust Release final readiness audit). Fixed
+    to require auth, verify both the transaction and the customer belong to
+    the caller's own business, and compute points itself from the
+    transaction's own stored items/total via the same
+    services.sale_recorder.compute_points_earned/credit_loyalty_points
+    canonical path routes/transactions.py's checkout uses — never a
+    client-supplied number.
+    """
+    business_id = user.get("businessId")
+    txn = await db.transactions.find_one({"$and": [{"id": transaction_id}, tenant_scope_filter(business_id)]}, {"_id": 0})
+    if not txn or not tenant_owns_strict(txn.get("businessId"), business_id):
+        raise HTTPException(status_code=404, detail="Transaction not found")
+    customer = await db.customers.find_one({**tenant_scope_filter(user.get("businessId")), "id": customer_id}, {"_id": 0})
+    if not customer or not tenant_owns(customer.get("businessId"), business_id):
+        raise HTTPException(status_code=404, detail="Customer not found")
+    existing_customer_id = txn.get("customerId")
+    if existing_customer_id and existing_customer_id != customer_id:
+        raise HTTPException(status_code=409, detail="This order is already linked to a different customer")
+
+    # Idempotent: a retry (or this order already having been linked earlier)
+    # must not credit the same sale's points twice.
+    already_earned = await db.loyalty_ledger.find_one(
+        {"transactionId": transaction_id, "type": "earn", **tenant_scope_filter(business_id)}, {"_id": 0})
+    if already_earned:
+        await db.transactions.update_one({"$and": [{"id": transaction_id}, tenant_scope_filter(business_id)]}, {"$set": {"customerId": customer_id}})
+        return {"message": "Order linked (points already credited earlier)",
+                "pointsEarned": already_earned.get("points", 0), "skipped": True}
+
+    # Points computed from the sale's own recorded items/total — the exact
+    # same inputs and formula routes/transactions.py's checkout uses, not a
+    # client-supplied number.
+    from services.tenant_settings import get_scoped_singleton
+    from services.sale_recorder import compute_points_earned, credit_loyalty_points
+    loyalty_cfg = await get_scoped_singleton(db.loyalty_config, {"id": "default"}, business_id) or {}
+    tier_name = customer.get("membershipTier", "Bronze")
+    tier_doc = await db.loyalty_tiers.find_one(
+        {"name": tier_name, **tenant_scope_filter(business_id)}, {"_id": 0})
+    loyalty_multiplier = float((tier_doc or {}).get("multiplier", 1.0))
+    earn_lines = []
+    subtotal = float(txn.get("subtotal") or 0)
+    for item in txn.get("items", []):
+        product = await db.products.find_one(
+            {"id": item.get("productId"), **tenant_scope_filter(business_id)},
+            {"_id": 0, "category": 1},
+        )
+        line_total = float(item.get("price", 0)) * float(item.get("quantity", 1))
+        earn_lines.append(((product or {}).get("category") or "Other", line_total))
+    total = float(txn.get("total") or 0)
+    points_earned = compute_points_earned(subtotal, total, loyalty_multiplier, earn_lines, loyalty_cfg)
+
+    await db.transactions.update_one({"$and": [{"id": transaction_id}, tenant_scope_filter(business_id)]}, {"$set": {"customerId": customer_id}})
+    await credit_loyalty_points(customer_id, points_earned, total, transaction_id, business_id=business_id)
+
+    from services.audit_service import log_event
+    await log_event(
+        entity_type="loyalty_ledger", entity_id=transaction_id, action="created",
+        after={"transactionId": transaction_id, "customerId": customer_id, "pointsEarned": points_earned},
+        memo=f"Linked order {transaction_id} to customer {customer_id}, credited {points_earned} points",
+        severity="notice", tags=["loyalty", "order_link"],
+    )
     return {"message": "Order linked and points awarded", "pointsEarned": points_earned}
 
 
@@ -892,22 +968,24 @@ async def get_today_pulse(_user: dict = Depends(require_owner_or_manager)):
     today_iso = now.date().isoformat()
 
     # --- Sales today ---
+    scope = tenant_scope_filter(_user.get("businessId"))
     txns = await db.transactions.find(
-        {"timestamp": {"$gte": day_start.replace(tzinfo=None)}}, {"_id": 0}
+        {"timestamp": {"$gte": day_start.replace(tzinfo=None)}, **scope}, {"_id": 0}
     ).to_list(5000)
     sales_today = round(sum(t.get("total", 0) for t in txns), 2)
     txn_count = len(txns)
     avg_ticket = round(sales_today / txn_count, 2) if txn_count else 0
 
     # --- Settings-driven thresholds ---
-    s = await db.settings.find_one({"key": "today_targets"}, {"_id": 0})
+    from services.tenant_settings import get_setting
+    today_targets_value = await get_setting("today_targets", _user.get("businessId"))
     cfg = {"dailySalesTarget": 0, "laborPctThreshold": 32, "refundRateThreshold": 5}
-    if s and isinstance(s.get("value"), dict):
-        cfg.update({k: v for k, v in s["value"].items() if v is not None})
+    if isinstance(today_targets_value, dict):
+        cfg.update({k: v for k, v in today_targets_value.items() if v is not None})
 
     # --- Labor: rostered cost today vs sales ---
-    shifts = await db.roster_shifts.find({"date": today_iso}, {"_id": 0}).to_list(500)
-    staff = await db.auth_users.find({}, {"_id": 0, "id": 1, "name": 1, "payRate": 1}).to_list(1000)
+    shifts = await db.roster_shifts.find({"date": today_iso, **scope}, {"_id": 0}).to_list(500)
+    staff = await db.auth_users.find(scope, {"_id": 0, "id": 1, "name": 1, "payRate": 1}).to_list(1000)
     rate_by_id = {u["id"]: u.get("payRate", 0) for u in staff}
     labor_cost = 0.0
     for sh in shifts:
@@ -922,30 +1000,30 @@ async def get_today_pulse(_user: dict = Depends(require_owner_or_manager)):
     labor_pct = round((labor_cost / sales_today) * 100, 1) if sales_today > 0 else None
 
     # --- Exceptions ---
-    refunds = await db.refunds.find({}, {"_id": 0}).sort("timestamp", -1).to_list(200)
+    refunds = await db.refunds.find(scope, {"_id": 0}).sort("timestamp", -1).to_list(200)
     refunds_today = [r for r in refunds
                      if str(r.get("timestamp", ""))[:10] == today_iso]
     refund_total = round(sum(r.get("amount", 0) for r in refunds_today), 2)
     refund_rate = round((refund_total / sales_today) * 100, 1) if sales_today > 0 else 0
 
     voids_today = await db.comp_voids.count_documents(
-        {"processedAt": {"$regex": f"^{today_iso}"}})
+        {"processedAt": {"$regex": f"^{today_iso}"}, **tenant_scope_filter()})
 
     low_stock = await db.products.find(
-        {"active": {"$ne": False}, "stock": {"$gt": 0, "$lte": 5}},
+        {"active": {"$ne": False}, "stock": {"$gt": 0, "$lte": 5}, **tenant_scope_filter()},
         {"_id": 0, "id": 1, "name": 1, "stock": 1}).to_list(50)
     stockouts = await db.products.find(
-        {"active": {"$ne": False}, "stock": {"$lte": 0}},
+        {"active": {"$ne": False}, "stock": {"$lte": 0}, **tenant_scope_filter()},
         {"_id": 0, "id": 1, "name": 1, "stock": 1}).to_list(50)
 
-    bookings_tonight = await db.reservations.count_documents({"date": today_iso})
+    bookings_tonight = await db.reservations.count_documents({"date": today_iso, **tenant_scope_filter()})
     open_kitchen = await db.kitchen_orders.count_documents(
-        {"status": {"$in": ["pending", "in_progress"]}})
+        {"status": {"$in": ["pending", "in_progress"]}, **tenant_scope_filter()})
 
     # --- 7-day sales trend (today inclusive) for the Pulse sparkline ---
     trend_start = day_start - timedelta(days=6)
     trend_rows = await db.transactions.aggregate([
-        {"$match": {"timestamp": {"$gte": trend_start.replace(tzinfo=None)}}},
+        {"$match": {"timestamp": {"$gte": trend_start.replace(tzinfo=None)}, **tenant_scope_filter()}},
         {"$group": {
             "_id": {"$dateToString": {"format": "%Y-%m-%d", "date": "$timestamp"}},
             "total": {"$sum": "$total"},
@@ -1004,21 +1082,21 @@ TODAY_TARGETS_DEFAULTS = {"dailySalesTarget": 0, "laborPctThreshold": 32, "refun
 
 @router.get("/analytics/today-targets")
 async def get_today_targets(_user: dict = Depends(get_user)):
-    s = await db.settings.find_one({"key": "today_targets"}, {"_id": 0})
+    from services.tenant_settings import get_setting
+    value = await get_setting("today_targets", _user.get("businessId"))
     cfg = dict(TODAY_TARGETS_DEFAULTS)
-    if s and isinstance(s.get("value"), dict):
-        cfg.update({k: v for k, v in s["value"].items() if v is not None})
+    if isinstance(value, dict):
+        cfg.update({k: v for k, v in value.items() if v is not None})
     return cfg
 
 
 @router.post("/analytics/today-targets")
 async def save_today_targets(data: dict, _user: dict = Depends(require_owner_or_manager)):
+    from services.tenant_settings import set_setting
     cfg = {
         "dailySalesTarget": max(float(data.get("dailySalesTarget", 0) or 0), 0),
         "laborPctThreshold": max(float(data.get("laborPctThreshold", 32) or 0), 1),
         "refundRateThreshold": max(float(data.get("refundRateThreshold", 5) or 0), 0),
     }
-    await db.settings.update_one(
-        {"key": "today_targets"}, {"$set": {"key": "today_targets", "value": cfg}}, upsert=True
-    )
+    await set_setting("today_targets", cfg, _user.get("businessId"))
     return cfg

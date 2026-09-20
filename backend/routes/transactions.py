@@ -6,9 +6,10 @@ from deps import get_user, require_owner_or_manager
 from models.promotion import Promotion, PromotionCreate
 from models.transaction import Transaction, TransactionCreate
 from models.refund import Refund, RefundCreate
-from middleware.actor_context import tenant_scope_filter, tenant_owns
+from middleware.actor_context import tenant_scope_filter, tenant_owns_strict
 from utils.errors import log_and_continue
 from utils.dates import date_range_filter
+from pymongo.errors import DuplicateKeyError
 import logging
 import uuid
 
@@ -37,8 +38,8 @@ async def create_promotion(promotion: PromotionCreate, user: dict = Depends(requ
 
 @router.put("/promotions/{promo_id}")
 async def update_promotion(promo_id: str, data: dict, user: dict = Depends(require_owner_or_manager)):
-    existing = await db.promotions.find_one({"id": promo_id}, {"_id": 0, "businessId": 1})
-    if not existing or not tenant_owns(existing.get("businessId"), user.get("businessId")):
+    existing = await db.promotions.find_one({"$and": [{"id": promo_id}, tenant_scope_filter(user.get("businessId"))]}, {"_id": 0, "businessId": 1})
+    if not existing or not tenant_owns_strict(existing.get("businessId"), user.get("businessId")):
         raise HTTPException(status_code=404, detail="Promotion not found")
     allowed = {"name", "type", "discount", "active", "schedule",
                "products", "category", "categories",
@@ -47,7 +48,7 @@ async def update_promotion(promo_id: str, data: dict, user: dict = Depends(requi
                "minQuantity", "maxQuantity", "stackable",
                "startDate", "endDate", "activeDays", "startTime", "endTime", "channels"}
     update_data = {k: v for k, v in data.items() if k in allowed}
-    result = await db.promotions.find_one_and_update({"id": promo_id}, {"$set": update_data}, return_document=True)
+    result = await db.promotions.find_one_and_update({"$and": [{"id": promo_id}, tenant_scope_filter(user.get("businessId"))]}, {"$set": update_data}, return_document=True)
     if not result:
         raise HTTPException(status_code=404, detail="Promotion not found")
     result.pop("_id", None)
@@ -55,10 +56,10 @@ async def update_promotion(promo_id: str, data: dict, user: dict = Depends(requi
 
 @router.delete("/promotions/{promo_id}")
 async def delete_promotion(promo_id: str, user: dict = Depends(require_owner_or_manager)):
-    existing = await db.promotions.find_one({"id": promo_id}, {"_id": 0, "businessId": 1})
-    if not existing or not tenant_owns(existing.get("businessId"), user.get("businessId")):
+    existing = await db.promotions.find_one({"$and": [{"id": promo_id}, tenant_scope_filter(user.get("businessId"))]}, {"_id": 0, "businessId": 1})
+    if not existing or not tenant_owns_strict(existing.get("businessId"), user.get("businessId")):
         raise HTTPException(status_code=404, detail="Promotion not found")
-    result = await db.promotions.delete_one({"id": promo_id})
+    result = await db.promotions.delete_one({"$and": [{"id": promo_id}, tenant_scope_filter(user.get("businessId"))]})
     if result.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Promotion not found")
     return {"message": "Promotion deleted"}
@@ -85,6 +86,26 @@ async def get_transactions(
 
 @router.post("/transactions", response_model=Transaction)
 async def create_transaction(transaction: TransactionCreate, user: dict = Depends(get_user)):
+    business_id = user.get("businessId")
+    scope = tenant_scope_filter(business_id)
+    # Offline-queue replay dedup. The frontend's offline queue
+    # (frontend/src/lib/offlineQueue.js) retries this exact POST with the
+    # exact same payload whenever it can't confirm the previous attempt
+    # succeeded (e.g. connectivity dropped right after the server wrote the
+    # sale but before the response reached the client) — without this, that
+    # retry rings up a second, fully-effectuated duplicate sale: a second
+    # transaction, a second stock deduction, a second loyalty-points earn.
+    # Checked before any side effects (points redemption, stock, GL) run,
+    # so a genuine retry does none of that work twice. The db.transactions
+    # unique-sparse index on clientOpId is the actual atomic guard for the
+    # rarer concurrent-duplicate case; this early return handles the
+    # overwhelmingly common sequential-retry case cheaply.
+    if transaction.clientOpId:
+        prior = await db.transactions.find_one(
+            {"clientOpId": transaction.clientOpId, **scope}, {"_id": 0})
+        if prior:
+            return Transaction(**prior)
+
     items_list = []
     earn_lines = []  # [(category, lineTotal)] — for category-multiplier points earning below
     subtotal = 0
@@ -96,7 +117,8 @@ async def create_transaction(transaction: TransactionCreate, user: dict = Depend
         # the request body. Modifier surcharges are added on top (clamped to
         # non-negative). Unknown productIds (open/custom lines) keep the client
         # price, floored at zero.
-        product = await db.products.find_one({"id": item.productId}, {"_id": 0, "price": 1, "category": 1})
+        product = await db.products.find_one(
+            {"id": item.productId, **scope}, {"_id": 0, "price": 1, "category": 1})
         modifier_surcharge = sum(max(m.price, 0) for m in item.modifiers)
         if product is not None and isinstance(product.get("price"), (int, float)):
             unit_price = float(product["price"]) + modifier_surcharge
@@ -116,10 +138,10 @@ async def create_transaction(transaction: TransactionCreate, user: dict = Depend
     tier_discount = 0
     loyalty_multiplier = 1.0
     if transaction.customerId:
-        customer = await db.customers.find_one({"id": transaction.customerId})
+        customer = await db.customers.find_one({**scope, "id": transaction.customerId})
         if customer:
             tier_name = customer.get("membershipTier", "Bronze")
-            tier_doc = await db.loyalty_tiers.find_one({"name": tier_name}, {"_id": 0})
+            tier_doc = await db.loyalty_tiers.find_one({"name": tier_name, **scope}, {"_id": 0})
             if tier_doc:
                 tier_discount = subtotal * (float(tier_doc.get("discountPercent", 0)) / 100)
                 loyalty_multiplier = float(tier_doc.get("multiplier", 1.0))
@@ -139,7 +161,7 @@ async def create_transaction(transaction: TransactionCreate, user: dict = Depend
     for d in applied_discounts:
         if not d.get("voucherId"):
             continue
-        v = await db.vouchers.find_one({"id": d["voucherId"]}, {"_id": 0})
+        v = await db.vouchers.find_one({"id": d["voucherId"], **scope}, {"_id": 0})
         if not v or v.get("status") not in ("active", "partial"):
             d["amount"] = 0.0
         elif v.get("valueType") != "percentage":
@@ -150,7 +172,8 @@ async def create_transaction(transaction: TransactionCreate, user: dict = Depend
     # Loyalty config — used for both the redeem check below and the earn
     # calculation further down, so it's fetched once regardless of which (or
     # both) apply to this sale.
-    loyalty_cfg = await db.loyalty_config.find_one({"id": "default"}, {"_id": 0}) or {}
+    from services.tenant_settings import get_scoped_singleton
+    loyalty_cfg = await get_scoped_singleton(db.loyalty_config, {"id": "default"}, business_id) or {}
 
     # Points redemption: the client-supplied pointsDiscount is a display hint
     # only — the value actually deducted from the bill (and the points balance)
@@ -170,15 +193,15 @@ async def create_transaction(transaction: TransactionCreate, user: dict = Depend
         if points < min_redeem:
             raise HTTPException(status_code=400, detail=f"Minimum {min_redeem} points required to redeem")
         redeemed_doc = await db.customers.find_one_and_update(
-            {"id": customer_id, "points": {"$gte": points}, "loyaltyLocked": {"$ne": True}},
+            {**scope, "id": customer_id, "points": {"$gte": points}, "loyaltyLocked": {"$ne": True}},
             {"$inc": {"points": -points}},
         )
         if not redeemed_doc:
-            locked = await db.customers.find_one({"id": customer_id, "loyaltyLocked": True}, {"_id": 0, "id": 1})
+            locked = await db.customers.find_one({**scope, "id": customer_id, "loyaltyLocked": True}, {"_id": 0, "id": 1})
             if locked:
                 raise HTTPException(status_code=403, detail="Loyalty account locked pending fraud review")
         if not redeemed_doc:
-            balance = int((await db.customers.find_one({"id": customer_id}, {"_id": 0, "points": 1}) or {}).get("points", 0))
+            balance = int((await db.customers.find_one({**scope, "id": customer_id}, {"_id": 0, "points": 1}) or {}).get("points", 0))
             raise HTTPException(status_code=400, detail=f"Insufficient points: {balance} available, {points} requested")
         return round(points * redeem_rate, 2)
 
@@ -279,10 +302,22 @@ async def create_transaction(transaction: TransactionCreate, user: dict = Depend
         "timestamp": datetime.utcnow(),
         "status": "completed",
         "receiptNumber": f"R-{str(uuid.uuid4())[:8].upper()}",
-        "businessId": user.get("businessId"),
+        "businessId": business_id,
+        "clientOpId": transaction.clientOpId,
     }
 
-    await db.transactions.insert_one(txn_dict)
+    try:
+        await db.transactions.insert_one(txn_dict)
+    except DuplicateKeyError:
+        # A genuinely concurrent duplicate — another request with the same
+        # clientOpId won the race between our own find_one check above and
+        # this insert. Return that winner's transaction rather than raising;
+        # the caller (the offline queue) just wants "this sale exists now",
+        # not a 500 for having asked twice.
+        winner = await db.transactions.find_one({"clientOpId": transaction.clientOpId, **scope}, {"_id": 0})
+        if winner:
+            return Transaction(**winner)
+        raise
     txn_dict.pop("_id", None)
 
     # Record the redemption on the loyalty ledger for history/reporting — the
@@ -297,6 +332,7 @@ async def create_transaction(transaction: TransactionCreate, user: dict = Depend
                 "type": "redeem",
                 "points": -points_redeemed,
                 "value": points_discount,
+                "businessId": business_id,
                 "createdAt": datetime.utcnow().isoformat(),
             })
         except Exception:
@@ -343,9 +379,11 @@ async def create_transaction(transaction: TransactionCreate, user: dict = Depend
     if transaction.items:
         from pymongo import UpdateOne
         await db.products.bulk_write([
-            UpdateOne({"id": item.productId}, {"$inc": {"stock": -item.quantity}})
+            UpdateOne({"id": item.productId, **scope}, {"$inc": {"stock": -item.quantity}})
             for item in transaction.items
         ])
+        from utils.stock_ops import clamp_negative_stock
+        await clamp_negative_stock(item.productId for item in transaction.items)
 
     for item in transaction.items:
         try:
@@ -359,7 +397,7 @@ async def create_transaction(transaction: TransactionCreate, user: dict = Depend
             log_and_continue(logger, f"Measured-stock deduction failed for {item.productId}", e)
         # Emit inventory events for rules engine
         try:
-            p = await db.products.find_one({"id": item.productId}, {"_id": 0})
+            p = await db.products.find_one({"id": item.productId, **scope}, {"_id": 0})
             if p:
                 from services.rules_engine import safe_emit
                 stock = p.get("stock", 0)
@@ -374,12 +412,13 @@ async def create_transaction(transaction: TransactionCreate, user: dict = Depend
     # Update customer stats
     if transaction.customerId:
         from services.sale_recorder import credit_loyalty_points
-        await credit_loyalty_points(transaction.customerId, points_earned, total, txn_dict["id"])
+        await credit_loyalty_points(transaction.customerId, points_earned, total, txn_dict["id"],
+                                     business_id=business_id)
         # Free base identity layer — a repeat contact match at POS checkout is
         # an identity touchpoint (skipped automatically for base-only venues).
         try:
             from services.customer_identity import record_touchpoint
-            crm = await db.customers.find_one({"id": transaction.customerId}, {"_id": 0, "phone": 1, "email": 1, "name": 1})
+            crm = await db.customers.find_one({**scope, "id": transaction.customerId}, {"_id": 0, "phone": 1, "email": 1, "name": 1})
             if crm:
                 await record_touchpoint(
                     phone=crm.get("phone"), email=crm.get("email"),
@@ -400,28 +439,17 @@ async def create_transaction(transaction: TransactionCreate, user: dict = Depend
         for part in transaction.splitDetails:
             if not part.customerId or part.customerId == transaction.customerId:
                 continue
-            guest = await db.customers.find_one({"id": part.customerId}, {"_id": 0, "membershipTier": 1})
+            guest = await db.customers.find_one({**scope, "id": part.customerId}, {"_id": 0, "membershipTier": 1})
             if not guest:
                 continue
-            tier_doc = await db.loyalty_tiers.find_one({"name": guest.get("membershipTier", "Bronze")}, {"_id": 0})
+            tier_doc = await db.loyalty_tiers.find_one(
+                {"name": guest.get("membershipTier", "Bronze"), **scope}, {"_id": 0})
             mult = float(tier_doc.get("multiplier", 1.0)) if tier_doc else 1.0
             part_points = int(round(float(part.amount) * earn_rate * mult))
-            await db.customers.update_one(
-                {"id": part.customerId},
-                {"$inc": {"totalSpent": part.amount, "visits": 1, "points": part_points},
-                 "$set": {"lastVisit": datetime.utcnow().isoformat(),
-                          "lastVisitDate": datetime.utcnow().date().isoformat()}},
+            await credit_loyalty_points(
+                part.customerId, part_points, float(part.amount), txn_dict["id"],
+                business_id=business_id,
             )
-            if part_points > 0:
-                try:
-                    await db.loyalty_ledger.insert_one({
-                        "id": f"LP-{str(uuid.uuid4())[:8].upper()}",
-                        "customerId": part.customerId, "transactionId": txn_dict["id"],
-                        "type": "earn", "points": part_points,
-                        "createdAt": datetime.utcnow().isoformat(),
-                    })
-                except Exception:
-                    pass
 
     return Transaction(**txn_dict)
 
@@ -442,11 +470,13 @@ async def get_hourly_transactions(_user: dict = Depends(get_user)):
 
 @router.get("/transactions/{txn_id}")
 async def get_transaction_detail(txn_id: str, _user: dict = Depends(get_user)):
-    txn = await db.transactions.find_one({"id": txn_id}, {"_id": 0})
-    if not txn or not tenant_owns(txn.get("businessId"), _user.get("businessId")):
+    txn = await db.transactions.find_one({"$and": [{"id": txn_id}, tenant_scope_filter(_user.get("businessId"))]}, {"_id": 0})
+    if not txn or not tenant_owns_strict(txn.get("businessId"), _user.get("businessId")):
         raise HTTPException(status_code=404, detail="Transaction not found")
     # Attach any refunds for this transaction
-    refunds = await db.refunds.find({"originalTransactionId": txn_id}, {"_id": 0}).to_list(100)
+    refunds = await db.refunds.find(
+        {"originalTransactionId": txn_id, **tenant_scope_filter(_user.get("businessId"))},
+        {"_id": 0}).to_list(100)
     txn["refunds"] = refunds
     return txn
 
@@ -471,8 +501,10 @@ async def _reverse_loyalty_for_refund(original_txn: dict, refund_amount: float) 
     """
     total = float(original_txn.get("total") or 0)
     fraction = min(1.0, refund_amount / total) if total > 0 else 1.0
+    business_id = original_txn.get("businessId")
+    scope = tenant_scope_filter(business_id)
     entries = await db.loyalty_ledger.find(
-        {"transactionId": original_txn["id"], "type": {"$in": ["earn", "redeem"]}},
+        {"transactionId": original_txn["id"], "type": {"$in": ["earn", "redeem"]}, **scope},
         {"_id": 0, "customerId": 1, "type": 1, "points": 1},
     ).to_list(200)
     by_customer: dict = {}
@@ -495,18 +527,19 @@ async def _reverse_loyalty_for_refund(original_txn: dict, refund_amount: float) 
         # Clawback capped at whatever the customer still has — never drive
         # a balance negative because they already spent points earned here
         # on something else entirely.
-        current = await db.customers.find_one({"id": customer_id}, {"_id": 0, "points": 1})
+        current = await db.customers.find_one({**scope, "id": customer_id}, {"_id": 0, "points": 1})
         available = int((current or {}).get("points", 0))
         actual_clawback = min(earn_clawback, available)
         net = redeem_restore - actual_clawback
         if net == 0:
             continue
-        await db.customers.update_one({"id": customer_id}, {"$inc": {"points": net}})
+        await db.customers.update_one({**scope, "id": customer_id}, {"$inc": {"points": net}})
         await db.loyalty_ledger.insert_one({
             "id": f"LP-{str(uuid.uuid4())[:8].upper()}",
             "customerId": customer_id, "transactionId": original_txn["id"],
             "type": "refund_reversal", "points": net,
             "earnClawedBack": actual_clawback, "redeemRestored": redeem_restore,
+            "businessId": business_id,
             "createdAt": datetime.utcnow().isoformat(),
         })
         reversed_for.append({"customerId": customer_id, "earnClawedBack": actual_clawback, "redeemRestored": redeem_restore})
@@ -521,16 +554,48 @@ async def get_refunds(_user: dict = Depends(get_user)):
 
 @router.post("/refunds", response_model=Refund)
 async def create_refund(refund: RefundCreate, _user: dict = Depends(require_owner_or_manager)):
-    original_txn = await db.transactions.find_one({"id": refund.originalTransactionId})
-    if not original_txn or not tenant_owns(original_txn.get("businessId"), _user.get("businessId")):
+    original_txn = await db.transactions.find_one({"$and": [{"id": refund.originalTransactionId}, tenant_scope_filter(_user.get("businessId"))]})
+    if not original_txn or not tenant_owns_strict(original_txn.get("businessId"), _user.get("businessId")):
         raise HTTPException(status_code=404, detail="Original transaction not found")
     if refund.amount <= 0:
         raise HTTPException(status_code=400, detail="Refund amount must be positive")
-    # Cap cumulative refunds at the original transaction total
-    prior = await db.refunds.find({"originalTransactionId": refund.originalTransactionId}).to_list(1000)
+
+    # Atomic cumulative-refund cap. The old version read the sum of prior
+    # refunds, compared it to the total in Python, then separately inserted
+    # — two concurrent requests for the same transaction (a double-click, or
+    # two staff processing the same complaint) could both read the same
+    # "not yet refunded" balance before either wrote, and both pass the
+    # check, refunding more than the sale total with nothing to stop it.
+    # This claims the refund atomically on the transaction document itself:
+    # find_one_and_update's filter and the $inc it guards are evaluated as
+    # one operation, so MongoDB's own per-document serialization — not a
+    # Python-side check — is what decides which concurrent request(s) fit
+    # under the cap. $ifNull's fallback to the freshly-read `already_refunded`
+    # (the legacy db.refunds-sum baseline) only ever matters for the very
+    # first atomic claim against a transaction that had refunds recorded
+    # before this field existed; every claim after that serializes purely
+    # against `refundedTotal` on the document, with no read involved.
+    prior = await db.refunds.find({
+        "originalTransactionId": refund.originalTransactionId,
+        **tenant_scope_filter(_user.get("businessId")),
+    }).to_list(1000)
     already_refunded = sum(r.get("amount", 0) for r in prior)
-    refundable = round(original_txn.get("total", 0) - already_refunded, 2)
-    if refund.amount > refundable:
+    claimed = await db.transactions.find_one_and_update(
+        {"$and": [{
+            "id": refund.originalTransactionId,
+            "$expr": {
+                "$lte": [
+                    {"$add": [{"$ifNull": ["$refundedTotal", already_refunded]}, refund.amount]},
+                    "$total",
+                ]
+            },
+        }, tenant_scope_filter(_user.get("businessId"))]},
+        {"$inc": {"refundedTotal": refund.amount}},
+    )
+    if not claimed:
+        current = await db.transactions.find_one({"$and": [{"id": refund.originalTransactionId}, tenant_scope_filter(_user.get("businessId"))]}, {"_id": 0, "total": 1, "refundedTotal": 1})
+        refunded_now = (current or {}).get("refundedTotal", already_refunded)
+        refundable = round((current or {}).get("total", 0) - refunded_now, 2)
         raise HTTPException(
             status_code=400,
             detail=f"Refund exceeds remaining refundable amount (${refundable:.2f})"
@@ -556,7 +621,7 @@ async def create_refund(refund: RefundCreate, _user: dict = Depends(require_owne
         pass
     if refund.refundMethod == "store_credit" and refund.customerId:
         await db.customers.update_one(
-            {"id": refund.customerId},
+            {**tenant_scope_filter(), "id": refund.customerId},
             {"$inc": {"storeCredit": refund.amount}}
         )
 

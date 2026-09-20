@@ -96,6 +96,14 @@ class Transaction(BaseModel):
 class TransactionCreate(BaseModel):
     items: List[TransactionItem]
     paymentMethod: str
+    # Client-generated (the offline queue's local IndexedDB row id — see
+    # frontend/src/lib/offlineQueue.js). Optional and unused server-side
+    # unless present, so nothing about a normal online sale changes; it
+    # exists so a queued sale that actually succeeded but never got its
+    # response back to the client (dropped connection right after the
+    # server wrote it — the exact failure mode the offline queue exists to
+    # survive) doesn't get rung up a second time on the next retry.
+    clientOpId: Optional[str] = None
     paymentSplits: List[PaymentSplit] = []
     isSplitPayment: bool = False
     splitDetails: List[SplitDetail] = []

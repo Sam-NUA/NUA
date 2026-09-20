@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Building2, Plus, RefreshCw, DollarSign, Users, Package, Award, ShieldCheck, CreditCard, AlertTriangle, Link2, Pencil, Check, X, Download } from 'lucide-react';
+import { Building2, Plus, DollarSign, Users, Package, Award, ShieldCheck, CreditCard, AlertTriangle, Link2, Pencil, Check, X, Download } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
@@ -25,13 +25,11 @@ export default function MultiBusiness() {
   const [form, setForm] = useState(BLANK_FORM);
   const [saving, setSaving] = useState(false);
   const [summaries, setSummaries] = useState({}); // businessId -> summary
-  const [backfilling, setBackfilling] = useState(false);
   const [editingSlugFor, setEditingSlugFor] = useState(null); // businessId
   const [editingSlugValue, setEditingSlugValue] = useState('');
   const [savingSlug, setSavingSlug] = useState(false);
   const [savingTypeFor, setSavingTypeFor] = useState(null); // businessId
   const [exportingId, setExportingId] = useState(null);
-  const [backfillResult, setBackfillResult] = useState(null); // { businesses.slug -> count } from the last run
 
   const load = () => {
     setLoading(true);
@@ -124,23 +122,6 @@ export default function MultiBusiness() {
     } finally { setExportingId(null); }
   };
 
-  const runBackfill = async () => {
-    setBackfilling(true);
-    try {
-      const r = await businessAPI.backfillTenant();
-      const total = r.data?.total ?? 0;
-      // The backend already returns a per-collection breakdown
-      // (r.data.backfilled) — surface it instead of just the sum, so an
-      // owner debugging a stale report (e.g. "why does this business still
-      // show 0 customers?") can see which collection actually moved
-      // without having to ask an engineer to check the database.
-      setBackfillResult(r.data?.backfilled || {});
-      toast.success(total > 0 ? `Backfilled ${total} record(s) to the default business` : 'Nothing to backfill — all records already tagged');
-    } catch {
-      toast.error('Backfill failed');
-    } finally { setBackfilling(false); }
-  };
-
   if (user?.role !== 'owner') {
     return (
       <div className="flex flex-col items-center justify-center py-24 text-center" data-testid="multi-business-forbidden">
@@ -157,34 +138,18 @@ export default function MultiBusiness() {
           <h1 className="text-2xl font-bold flex items-center gap-2" style={{ color: theme.text }}>
             <Building2 size={24} /> Multi-Business
           </h1>
-          <p className="text-sm text-gray-500">Every business sharing this deployment — create new ones, and keep older data correctly tagged.</p>
+          <p className="text-sm text-gray-500">Every business sharing this deployment — create new ones and manage each venue independently.</p>
         </div>
         <div className="flex gap-2">
-          <Button variant="outline" onClick={runBackfill} disabled={backfilling} data-testid="backfill-btn">
-            <RefreshCw size={14} className={`mr-1.5 ${backfilling ? 'animate-spin' : ''}`} /> Backfill legacy data
-          </Button>
           <Button onClick={() => setShowCreate(true)} data-testid="create-business-btn">
             <Plus size={14} className="mr-1.5" /> New Business
           </Button>
         </div>
       </div>
 
-      <Card className="bg-blue-50/50 border-blue-200">
-        <CardContent className="p-4 text-sm text-blue-900 space-y-3">
-          <p><strong>Backfill legacy data</strong> stamps <code>businessId</code> onto any customer, voucher, wallet, loyalty, transaction, or refund record created before multi-business support existed, so reports can start splitting them apart by business. It's safe to run more than once — it only ever fills in missing values, never overwrites a record that already has a businessId.</p>
-          {backfillResult && (
-            <div className="pt-2 border-t border-blue-200" data-testid="backfill-breakdown">
-              <p className="text-xs font-semibold uppercase tracking-wide text-blue-700 mb-1.5">Last run — by collection</p>
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-x-4 gap-y-1 text-xs">
-                {Object.entries(backfillResult).map(([collection, count]) => (
-                  <div key={collection} className="flex justify-between gap-2">
-                    <span className="text-blue-800/80">{collection}</span>
-                    <span className={`font-mono font-semibold ${count > 0 ? 'text-blue-900' : 'text-blue-400'}`}>{count}</span>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
+      <Card className="bg-amber-50/50 border-amber-200">
+        <CardContent className="p-4 text-sm text-amber-900">
+          <p><strong>Legacy ownership needs support review.</strong> Older records without a <code>businessId</code> are never assigned to a venue automatically. An authorised operator must use the dry-run ownership-migration workflow, review its evidence and quarantine report, and record evidence for every manual resolution.</p>
         </CardContent>
       </Card>
 

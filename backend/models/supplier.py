@@ -35,6 +35,7 @@ class PurchaseOrder(BaseModel):
     total: float
     status: str = "pending"  # pending, received, cancelled
     notes: Optional[str] = None
+    businessId: Optional[str] = None
 
 class PurchaseOrderCreate(BaseModel):
     supplierId: str

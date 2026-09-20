@@ -58,17 +58,17 @@ def test_pre_shift_today_batches_customer_lookups_for_vip_and_dietary(client, ow
     cust_allergy = str(uuid.uuid4())
     _run(db.customers.delete_many({"id": {"$in": [cust_vip, cust_allergy]}}))
     _run(db.customers.insert_many([
-        {"id": cust_vip, "name": "VIP Guest", "email": "vip@test.com", "phone": "1", "isVip": True},
-        {"id": cust_allergy, "name": "Allergy Guest", "email": "allergy@test.com", "phone": "2",
+        {"id": cust_vip, "businessId": "default", "name": "VIP Guest", "email": "vip@test.com", "phone": "1", "isVip": True},
+        {"id": cust_allergy, "businessId": "default", "name": "Allergy Guest", "email": "allergy@test.com", "phone": "2",
          "allergies": ["Peanuts"]},
     ]))
     res_vip = str(uuid.uuid4())
     res_allergy = str(uuid.uuid4())
     _run(db.reservations.delete_many({"id": {"$in": [res_vip, res_allergy]}}))
     _run(db.reservations.insert_many([
-        {"id": res_vip, "date": today, "time": "18:00", "guestName": "VIP Guest",
+        {"id": res_vip, "businessId": "default", "date": today, "time": "18:00", "guestName": "VIP Guest",
          "customerId": cust_vip, "partySize": 2, "status": "confirmed"},
-        {"id": res_allergy, "date": today, "time": "19:00", "guestName": "Allergy Guest",
+        {"id": res_allergy, "businessId": "default", "date": today, "time": "19:00", "guestName": "Allergy Guest",
          "customerId": cust_allergy, "partySize": 4, "status": "confirmed"},
     ]))
 
@@ -89,12 +89,13 @@ def test_cleanup_legacy_categories_batches_product_counts(client, owner_headers)
     used_name = f"Used Legacy {uuid.uuid4().hex[:8]}"
     _run(db.categories.delete_many({"id": {"$in": [empty_cat_id, used_cat_id]}}))
     _run(db.categories.insert_many([
-        {"id": empty_cat_id, "name": empty_name},
-        {"id": used_cat_id, "name": used_name},
+        {"id": empty_cat_id, "name": empty_name, "businessId": "default"},
+        {"id": used_cat_id, "name": used_name, "businessId": "default"},
     ]))
     prod_id = str(uuid.uuid4())
     _run(db.products.delete_many({"id": prod_id}))
-    _run(db.products.insert_one({"id": prod_id, "name": "Widget", "category": used_name, "price": 5}))
+    _run(db.products.insert_one({"id": prod_id, "name": "Widget", "category": used_name,
+                                 "price": 5, "businessId": "default"}))
 
     r = req(client, "POST", "/api/categories/cleanup-legacy", headers=owner_headers)
     assert r.status_code == 200, r.text[:200]

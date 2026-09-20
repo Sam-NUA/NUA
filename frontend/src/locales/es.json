@@ -47,9 +47,10 @@
       "title": "Pagar Después",
       "partial": "Pagar Cantidad Parcial",
       "payNow": "Pagar Ahora",
-      "amountToPay": "Cantidad a Pagar",
+      "amountToPay": "Cantidad para la Cuenta",
       "remaining": "Saldo Pendiente",
-      "tabCreated": "Pestaña creada - puedes pagar el resto después"
+      "confirmTab": "Añadir {{amount}} a la Cuenta",
+      "tabCreated": "Cuenta creada — un miembro del personal cobrará y confirmará este pago"
     },
     "customSplit": {
       "setupTitle": "Configurar partes personalizadas",

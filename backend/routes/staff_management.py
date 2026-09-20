@@ -5,6 +5,7 @@ from deps import get_user, require_owner, require_owner_or_manager
 from database import db
 from datetime import datetime, timezone, timedelta, date as _date_cls
 from utils.au_payroll import effective_hourly_rate
+from middleware.actor_context import tenant_scope_filter
 import uuid
 
 router = APIRouter()
@@ -24,13 +25,15 @@ def _resolve_shift_date(day_name: str, week_start: Optional[str]) -> str:
         return ""
 
 
-async def _blackout_conflict(staff_id: Optional[str], day_name: Optional[str], week_start: Optional[str]) -> Optional[str]:
+async def _blackout_conflict(staff_id: Optional[str], day_name: Optional[str], week_start: Optional[str],
+                             business_id: Optional[str] = None) -> Optional[str]:
     """Reason string if staff_id can't work this roster slot (weekly availability,
     an explicit blackout range, or approved time off) — None if it's clear."""
     if not staff_id or not day_name:
         return None
     date_iso = _resolve_shift_date(day_name, week_start)
-    avail = await db.staff_availability.find_one({"staffId": staff_id}, {"_id": 0})
+    scope = tenant_scope_filter(business_id)
+    avail = await db.staff_availability.find_one({"staffId": staff_id, **scope}, {"_id": 0})
     if avail:
         weekly = avail.get("weeklyAvailable") or []
         if weekly and day_name[:3] not in weekly and day_name not in weekly:
@@ -44,6 +47,7 @@ async def _blackout_conflict(staff_id: Optional[str], day_name: Optional[str], w
         leave = await db.time_off_requests.find_one({
             "userId": staff_id, "status": "approved",
             "startDate": {"$lte": date_iso}, "endDate": {"$gte": date_iso},
+            **scope,
         })
         if leave:
             return f"Staff member has approved time off covering {date_iso}"
@@ -53,7 +57,8 @@ async def _blackout_conflict(staff_id: Optional[str], day_name: Optional[str], w
 _ROSTER_GRACE_MINUTES = 30  # early-arrival / running-over tolerance either side of a shift
 
 
-async def _is_rostered_now(staff_id: str, now: Optional[datetime] = None) -> bool:
+async def _is_rostered_now(staff_id: str, now: Optional[datetime] = None,
+                           business_id: Optional[str] = None) -> bool:
     """True if staff_id has a roster_shifts entry covering the current
     moment, with a grace window either side so an early arrival or a shift
     running slightly over isn't treated as unrostered. Same UTC-wall-clock
@@ -75,7 +80,8 @@ async def _is_rostered_now(staff_id: str, now: Optional[datetime] = None) -> boo
     yesterday_iso = (now.date() - timedelta(days=1)).isoformat()
     now_minutes = now.hour * 60 + now.minute
     shifts = await db.roster_shifts.find(
-        {"staffId": staff_id, "date": {"$in": [today_iso, yesterday_iso]}}, {"_id": 0}
+        {"staffId": staff_id, "date": {"$in": [today_iso, yesterday_iso]},
+         **tenant_scope_filter(business_id)}, {"_id": 0}
     ).to_list(50)
     for sh in shifts:
         try:
@@ -98,9 +104,11 @@ async def _is_rostered_now(staff_id: str, now: Optional[datetime] = None) -> boo
     return False
 
 
-async def _has_roster_override_today(staff_id: str) -> bool:
+async def _has_roster_override_today(staff_id: str, business_id: Optional[str] = None) -> bool:
     today_iso = datetime.now(timezone.utc).date().isoformat()
-    return await db.roster_overrides.find_one({"staffId": staff_id, "date": today_iso}, {"_id": 1}) is not None
+    return await db.roster_overrides.find_one(
+        {"staffId": staff_id, "date": today_iso, **tenant_scope_filter(business_id)}, {"_id": 1}
+    ) is not None
 
 
 def _issue_staff_token(user: dict) -> str:
@@ -132,7 +140,8 @@ async def pin_login(data: dict):
     user.pop("password_hash", None)
 
     if user["role"] not in ("owner", "manager"):
-        if not await _is_rostered_now(user["id"]) and not await _has_roster_override_today(user["id"]):
+        if (not await _is_rostered_now(user["id"], business_id=user.get("businessId"))
+                and not await _has_roster_override_today(user["id"], user.get("businessId"))):
             return {"needsApproval": True, "staffId": user["id"], "staffName": user["name"]}
 
     token = _issue_staff_token(user)
@@ -158,11 +167,15 @@ async def approve_pin_login(data: dict):
         {"pin": manager_pin, "status": "active", "role": {"$in": ["owner", "manager"]}})
     if not manager:
         raise HTTPException(status_code=401, detail="Invalid manager/owner PIN")
+    if manager.get("businessId") != staff.get("businessId"):
+        raise HTTPException(status_code=403, detail="Manager must belong to the same business")
 
     today_iso = datetime.now(timezone.utc).date().isoformat()
     await db.roster_overrides.update_one(
-        {"staffId": staff["id"], "date": today_iso},
+        {"staffId": staff["id"], "date": today_iso,
+         **tenant_scope_filter(staff.get("businessId"))},
         {"$set": {"staffId": staff["id"], "staffName": staff["name"], "date": today_iso,
+                   "businessId": staff.get("businessId"),
                    "approvedBy": manager["id"], "approvedByName": manager["name"],
                    "approvedAt": datetime.now(timezone.utc).isoformat()}},
         upsert=True,
@@ -184,7 +197,7 @@ async def approve_pin_login(data: dict):
     return {"user": staff, "token": token}
 
 @router.post("/auth/staff/{staff_id}/set-pin")
-async def set_staff_pin(staff_id: str, data: dict, _: dict = Depends(require_owner)):
+async def set_staff_pin(staff_id: str, data: dict, user: dict = Depends(require_owner)):
     """Owner assigns a PIN to staff member"""
     pin = str(data.get("pin", ""))
     if not pin or len(pin) < 2 or len(pin) > 4 or not pin.isdigit():
@@ -192,17 +205,22 @@ async def set_staff_pin(staff_id: str, data: dict, _: dict = Depends(require_own
     existing = await db.auth_users.find_one({"pin": pin, "id": {"$ne": staff_id}})
     if existing:
         raise HTTPException(status_code=400, detail="PIN already in use by another staff member")
-    await db.auth_users.update_one({"id": staff_id}, {"$set": {"pin": pin}})
+    result = await db.auth_users.update_one(
+        {"id": staff_id, **tenant_scope_filter(user.get("businessId"))}, {"$set": {"pin": pin}})
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Staff member not found")
     return {"message": f"PIN set for staff member"}
 
 # ============ TIMECARDS — CLOCK IN/OUT ============
 @router.post("/staff/clock-in")
 async def clock_in(user: dict = Depends(get_user)):
     if user["role"] not in ("owner", "manager"):
-        if not await _is_rostered_now(user["id"]) and not await _has_roster_override_today(user["id"]):
+        if (not await _is_rostered_now(user["id"], business_id=user.get("businessId"))
+                and not await _has_roster_override_today(user["id"], user.get("businessId"))):
             raise HTTPException(status_code=403,
                                  detail="Not rostered right now — ask a manager or owner to approve at login")
-    active = await db.timecards.find_one({"staffId": user["id"], "clockOut": None}, {"_id": 0})
+    scope = tenant_scope_filter(user.get("businessId"))
+    active = await db.timecards.find_one({"staffId": user["id"], "clockOut": None, **scope}, {"_id": 0})
     if active:
         raise HTTPException(status_code=400, detail="Already clocked in")
     tc = {
@@ -212,6 +230,7 @@ async def clock_in(user: dict = Depends(get_user)):
         "clockOut": None, "breakMinutes": 0, "hoursWorked": 0,
         "payRate": user.get("payRate", 0),
         "salaryType": user.get("salaryType", "hourly"),
+        "businessId": user.get("businessId"),
     }
     await db.timecards.insert_one(tc)
     tc.pop("_id", None)
@@ -219,7 +238,8 @@ async def clock_in(user: dict = Depends(get_user)):
 
 @router.post("/staff/clock-out")
 async def clock_out(data: dict, user: dict = Depends(get_user)):
-    tc = await db.timecards.find_one({"staffId": user["id"], "clockOut": None})
+    scope = tenant_scope_filter(user.get("businessId"))
+    tc = await db.timecards.find_one({"staffId": user["id"], "clockOut": None, **scope})
     if not tc:
         raise HTTPException(status_code=400, detail="Not clocked in")
     now = datetime.now(timezone.utc)
@@ -229,7 +249,7 @@ async def clock_out(data: dict, user: dict = Depends(get_user)):
     break_mins = int(data.get("breakMinutes", 0))
     hours = (now - clock_in_time).total_seconds() / 3600 - (break_mins / 60)
     hours = max(hours, 0)
-    await db.timecards.update_one({"id": tc["id"]}, {"$set": {
+    await db.timecards.update_one({"id": tc["id"], **scope}, {"$set": {
         "clockOut": now.isoformat(), "breakMinutes": break_mins,
         "hoursWorked": round(hours, 2),
     }})
@@ -240,7 +260,10 @@ async def clock_out(data: dict, user: dict = Depends(get_user)):
 
 @router.get("/staff/my-status")
 async def my_clock_status(user: dict = Depends(get_user)):
-    active = await db.timecards.find_one({"staffId": user["id"], "clockOut": None}, {"_id": 0})
+    active = await db.timecards.find_one({
+        "staffId": user["id"], "clockOut": None,
+        **tenant_scope_filter(user.get("businessId")),
+    }, {"_id": 0})
     return {"clockedIn": active is not None, "currentShift": active}
 
 
@@ -250,16 +273,18 @@ _POS_SESSION_ALLOWED_MINUTES = {0, 2, 5, 10}
 
 
 @router.get("/settings/pos-session")
-async def get_pos_session_settings(_: dict = Depends(get_user)):
-    s = await db.settings.find_one({"key": "pos_session"}, {"_id": 0})
+async def get_pos_session_settings(user: dict = Depends(get_user)):
+    from services.tenant_settings import get_setting
+    value = await get_setting("pos_session", user.get("businessId"))
     cfg = dict(POS_SESSION_DEFAULTS)
-    if s and isinstance(s.get("value"), dict):
-        cfg.update({k: v for k, v in s["value"].items() if v is not None})
+    if isinstance(value, dict):
+        cfg.update({k: v for k, v in value.items() if v is not None})
     return cfg
 
 
 @router.post("/settings/pos-session")
-async def save_pos_session_settings(data: dict, _: dict = Depends(require_owner)):
+async def save_pos_session_settings(data: dict, user: dict = Depends(require_owner)):
+    from services.tenant_settings import set_setting
     try:
         timeout = int(data.get("timeoutMinutes", 0))
     except (TypeError, ValueError):
@@ -267,16 +292,14 @@ async def save_pos_session_settings(data: dict, _: dict = Depends(require_owner)
     if timeout not in _POS_SESSION_ALLOWED_MINUTES:
         raise HTTPException(status_code=400, detail="timeoutMinutes must be one of 0 (stay logged in), 2, 5, 10")
     cfg = {"timeoutMinutes": timeout}
-    await db.settings.update_one(
-        {"key": "pos_session"}, {"$set": {"key": "pos_session", "value": cfg}}, upsert=True
-    )
+    await set_setting("pos_session", cfg, user.get("businessId"))
     return cfg
 
 @router.get("/staff/timecards")
 async def get_timecards( staff_id: str = None, period: str = "week", user: dict = Depends(get_user)):
     if user["role"] not in ("owner", "manager"):
         staff_id = user["id"]
-    query = {}
+    query = tenant_scope_filter(user.get("businessId"))
     if staff_id:
         query["staffId"] = staff_id
     cards = await db.timecards.find(query, {"_id": 0}).sort("clockIn", -1).to_list(5000)
@@ -288,7 +311,8 @@ async def edit_timecard(timecard_id: str, data: dict, user: dict = Depends(requi
     break, etc. Self-service clock-in/out never lets this happen automatically,
     so this is the only path to correct it after the fact. Keeps the original
     values + who/when it was edited for audit."""
-    existing = await db.timecards.find_one({"id": timecard_id}, {"_id": 0})
+    scope = tenant_scope_filter(user.get("businessId"))
+    existing = await db.timecards.find_one({"id": timecard_id, **scope}, {"_id": 0})
     if not existing:
         raise HTTPException(status_code=404, detail="Timecard not found")
 
@@ -321,7 +345,8 @@ async def edit_timecard(timecard_id: str, data: dict, user: dict = Depends(requi
     if existing.get("originalValues"):
         update["originalValues"] = existing["originalValues"]
 
-    result = await db.timecards.find_one_and_update({"id": timecard_id}, {"$set": update}, return_document=True)
+    result = await db.timecards.find_one_and_update(
+        {"id": timecard_id, **scope}, {"$set": update}, return_document=True)
     result.pop("_id", None)
     return result
 
@@ -330,7 +355,7 @@ async def edit_timecard(timecard_id: str, data: dict, user: dict = Depends(requi
 async def get_roster( week_start: str = None, user: dict = Depends(get_user)):
     # Owner/manager see the full roster; everyone else only sees their own
     # shifts — same scoping rule GET /staff/timecards already uses.
-    query = {}
+    query = tenant_scope_filter(user.get("businessId"))
     if week_start:
         query["weekStart"] = week_start
     if user["role"] not in ("owner", "manager"):
@@ -339,8 +364,9 @@ async def get_roster( week_start: str = None, user: dict = Depends(get_user)):
     return shifts
 
 @router.post("/staff/roster")
-async def create_roster_shift(data: dict, _: dict = Depends(require_owner_or_manager)):
-    conflict = await _blackout_conflict(data.get("staffId"), data.get("date"), data.get("weekStart"))
+async def create_roster_shift(data: dict, user: dict = Depends(require_owner_or_manager)):
+    conflict = await _blackout_conflict(
+        data.get("staffId"), data.get("date"), data.get("weekStart"), user.get("businessId"))
     if conflict and not data.get("overrideBlackout"):
         raise HTTPException(status_code=409, detail=conflict)
     shift = {
@@ -352,6 +378,7 @@ async def create_roster_shift(data: dict, _: dict = Depends(require_owner_or_man
         "createdAt": datetime.now(timezone.utc).isoformat(),
         "blackoutOverridden": bool(conflict),
         "blackoutOverrideReason": conflict,
+        "businessId": user.get("businessId"),
     }
     await db.roster_shifts.insert_one(shift)
     shift.pop("_id", None)
@@ -363,21 +390,23 @@ async def create_roster_shift(data: dict, _: dict = Depends(require_owner_or_man
     return shift
 
 @router.put("/staff/roster/{shift_id}")
-async def update_roster_shift(shift_id: str, data: dict, _: dict = Depends(require_owner_or_manager)):
-    existing = await db.roster_shifts.find_one({"id": shift_id}, {"_id": 0})
+async def update_roster_shift(shift_id: str, data: dict, user: dict = Depends(require_owner_or_manager)):
+    scope = tenant_scope_filter(user.get("businessId"))
+    existing = await db.roster_shifts.find_one({"id": shift_id, **scope}, {"_id": 0})
     if not existing:
         raise HTTPException(status_code=404, detail="Shift not found")
     staff_id = data.get("staffId", existing.get("staffId"))
     day = data.get("date", existing.get("date"))
     week_start = data.get("weekStart", existing.get("weekStart"))
-    conflict = await _blackout_conflict(staff_id, day, week_start)
+    conflict = await _blackout_conflict(staff_id, day, week_start, user.get("businessId"))
     if conflict and not data.get("overrideBlackout"):
         raise HTTPException(status_code=409, detail=conflict)
     allowed = {"date", "startTime", "endTime", "role", "notes", "staffId", "staffName", "weekStart"}
     update = {k: v for k, v in data.items() if k in allowed}
     update["blackoutOverridden"] = bool(conflict)
     update["blackoutOverrideReason"] = conflict
-    result = await db.roster_shifts.find_one_and_update({"id": shift_id}, {"$set": update}, return_document=True)
+    result = await db.roster_shifts.find_one_and_update(
+        {"id": shift_id, **scope}, {"$set": update}, return_document=True)
     result.pop("_id", None)
     try:
         from services import realtime
@@ -387,8 +416,9 @@ async def update_roster_shift(shift_id: str, data: dict, _: dict = Depends(requi
     return result
 
 @router.delete("/staff/roster/{shift_id}")
-async def delete_roster_shift(shift_id: str, _: dict = Depends(require_owner_or_manager)):
-    await db.roster_shifts.delete_one({"id": shift_id})
+async def delete_roster_shift(shift_id: str, user: dict = Depends(require_owner_or_manager)):
+    await db.roster_shifts.delete_one(
+        {"id": shift_id, **tenant_scope_filter(user.get("businessId"))})
     return {"message": "Shift deleted"}
 
 # ============ TIME OFF / LEAVE REQUESTS ============
@@ -403,7 +433,9 @@ async def request_time_off(data: TimeOffRequestCreate, user: dict = Depends(get_
     if data.endDate < data.startDate:
         raise HTTPException(status_code=400, detail="End date must be on or after start date")
     target_id = data.staffId if (data.staffId and user["role"] in ("owner", "manager")) else user["id"]
-    target = user if target_id == user["id"] else await db.auth_users.find_one({"id": target_id}, {"_id": 0})
+    scope = tenant_scope_filter(user.get("businessId"))
+    target = user if target_id == user["id"] else await db.auth_users.find_one(
+        {"id": target_id, **scope}, {"_id": 0})
     if not target:
         raise HTTPException(status_code=404, detail="Staff member not found")
     doc = {
@@ -412,6 +444,7 @@ async def request_time_off(data: TimeOffRequestCreate, user: dict = Depends(get_
         "startDate": data.startDate, "endDate": data.endDate, "reason": data.reason,
         "status": "pending", "approvedBy": None, "notes": None,
         "createdAt": datetime.now(timezone.utc).isoformat(),
+        "businessId": user.get("businessId"),
     }
     await db.time_off_requests.insert_one(dict(doc))
     doc.pop("_id", None)
@@ -419,7 +452,7 @@ async def request_time_off(data: TimeOffRequestCreate, user: dict = Depends(get_
 
 @router.get("/staff/time-off")
 async def list_time_off(staff_id: str = None, status: str = None, user: dict = Depends(get_user)):
-    query = {}
+    query = tenant_scope_filter(user.get("businessId"))
     if user["role"] not in ("owner", "manager"):
         query["userId"] = user["id"]
     elif staff_id:
@@ -432,14 +465,16 @@ async def list_time_off(staff_id: str = None, status: str = None, user: dict = D
 @router.post("/staff/time-off/{request_id}/approve")
 async def approve_time_off(request_id: str, user: dict = Depends(require_owner_or_manager)):
     result = await db.time_off_requests.find_one_and_update(
-        {"id": request_id}, {"$set": {"status": "approved", "approvedBy": user["name"]}}, return_document=True)
+        {"id": request_id, **tenant_scope_filter(user.get("businessId"))},
+        {"$set": {"status": "approved", "approvedBy": user["name"]}}, return_document=True)
     if not result:
         raise HTTPException(status_code=404, detail="Request not found")
     result.pop("_id", None)
     # Surface any already-scheduled shifts that now conflict with the leave —
     # approving doesn't auto-remove them, the owner/manager decides.
     conflicts = []
-    async for shift in db.roster_shifts.find({"staffId": result["userId"]}, {"_id": 0}):
+    async for shift in db.roster_shifts.find({
+        "staffId": result["userId"], **tenant_scope_filter(user.get("businessId"))}, {"_id": 0}):
         shift_date = _resolve_shift_date(shift.get("date", ""), shift.get("weekStart"))
         if shift_date and result["startDate"] <= shift_date <= result["endDate"]:
             conflicts.append(shift)
@@ -449,7 +484,7 @@ async def approve_time_off(request_id: str, user: dict = Depends(require_owner_o
 @router.post("/staff/time-off/{request_id}/reject")
 async def reject_time_off(request_id: str, data: dict, user: dict = Depends(require_owner_or_manager)):
     result = await db.time_off_requests.find_one_and_update(
-        {"id": request_id},
+        {"id": request_id, **tenant_scope_filter(user.get("businessId"))},
         {"$set": {"status": "denied", "approvedBy": user["name"], "notes": data.get("notes")}},
         return_document=True)
     if not result:
@@ -459,7 +494,8 @@ async def reject_time_off(request_id: str, data: dict, user: dict = Depends(requ
 
 @router.delete("/staff/time-off/{request_id}")
 async def cancel_time_off(request_id: str, user: dict = Depends(get_user)):
-    existing = await db.time_off_requests.find_one({"id": request_id}, {"_id": 0})
+    scope = tenant_scope_filter(user.get("businessId"))
+    existing = await db.time_off_requests.find_one({"id": request_id, **scope}, {"_id": 0})
     if not existing:
         raise HTTPException(status_code=404, detail="Request not found")
     is_owner_of_request = existing["userId"] == user["id"]
@@ -467,12 +503,12 @@ async def cancel_time_off(request_id: str, user: dict = Depends(get_user)):
         raise HTTPException(status_code=403, detail="Not your request")
     if existing["status"] != "pending" and user["role"] not in ("owner", "manager"):
         raise HTTPException(status_code=400, detail="Only pending requests can be cancelled")
-    await db.time_off_requests.delete_one({"id": request_id})
+    await db.time_off_requests.delete_one({"id": request_id, **scope})
     return {"message": "Request cancelled"}
 
 # ============ PAYRUN ============
 @router.get("/payrun/calculate")
-async def calculate_payrun( period: str = "week", _: dict = Depends(require_owner)):
+async def calculate_payrun(period: str = "week", user: dict = Depends(require_owner)):
 
     now = datetime.now(timezone.utc)
     if period == "week":
@@ -489,8 +525,12 @@ async def calculate_payrun( period: str = "week", _: dict = Depends(require_owne
     else:
         start = (now - timedelta(days=7))
 
-    staff = await db.auth_users.find({"role": {"$ne": "owner"}, "status": "active"}, {"_id": 0, "password_hash": 0}).to_list(100)
-    timecards = await db.timecards.find({"clockOut": {"$ne": None}}, {"_id": 0}).to_list(50000)
+    scope = tenant_scope_filter(user.get("businessId"))
+    staff = await db.auth_users.find(
+        {"role": {"$ne": "owner"}, "status": "active", **scope},
+        {"_id": 0, "password_hash": 0}).to_list(100)
+    timecards = await db.timecards.find(
+        {"clockOut": {"$ne": None}, **scope}, {"_id": 0}).to_list(50000)
 
     payroll = []
     total_gross = 0
@@ -539,6 +579,7 @@ async def process_payrun(data: dict, user: dict = Depends(require_owner)):
         "staffPayroll": data.get("staffPayroll", []),
         "totals": data.get("totals", {}),
         "status": "processed",
+        "businessId": user.get("businessId"),
         "processedAt": datetime.now(timezone.utc).isoformat(),
     }
     await db.payruns_simple.insert_one(payrun)
@@ -571,16 +612,16 @@ async def process_payrun(data: dict, user: dict = Depends(require_owner)):
 
 @router.get("/payrun/history")
 async def get_payrun_history(_: dict = Depends(require_owner)):
-    runs = await db.payruns_simple.find({}, {"_id": 0}).sort("processedAt", -1).to_list(100)
+    runs = await db.payruns_simple.find(tenant_scope_filter(), {"_id": 0}).sort("processedAt", -1).to_list(100)
     return runs
 
 # ============ STAFF REPORTS ============
 @router.get("/staff/reports")
 async def get_staff_reports( period: str = "week", _: dict = Depends(require_owner_or_manager)):
 
-    staff = await db.auth_users.find({"status": "active"}, {"_id": 0, "password_hash": 0}).to_list(100)
-    timecards = await db.timecards.find({}, {"_id": 0}).to_list(50000)
-    payruns = await db.payruns_simple.find({}, {"_id": 0}).to_list(100)
+    staff = await db.auth_users.find({"status": "active", **tenant_scope_filter()}, {"_id": 0, "password_hash": 0}).to_list(100)
+    timecards = await db.timecards.find(tenant_scope_filter(), {"_id": 0}).to_list(50000)
+    payruns = await db.payruns_simple.find(tenant_scope_filter(), {"_id": 0}).to_list(100)
 
     staff_stats = []
     for s in staff:
@@ -618,19 +659,17 @@ async def get_staff_reports( period: str = "week", _: dict = Depends(require_own
 
 # ============ RECEIPT SETTINGS ============
 @router.get("/receipt/settings")
-async def get_receipt_settings():
-    s = await db.settings.find_one({"key": "receipt_config"}, {"_id": 0})
-    return s.get("value", {}) if s else {
+async def get_receipt_settings(user: dict = Depends(get_user)):
+    from services.tenant_settings import get_setting
+    value = await get_setting("receipt_config", user.get("businessId"))
+    return value or {
         "logoUrl": "", "showPaymentQR": True, "showSocialQR": True,
         "showPromoQR": True, "socialMediaUrl": "", "promoText": "",
         "businessName": "NUA", "businessAddress": "", "businessPhone": "",
     }
 
 @router.post("/receipt/settings")
-async def save_receipt_settings(data: dict, _: dict = Depends(require_owner_or_manager)):
-    await db.settings.update_one(
-        {"key": "receipt_config"},
-        {"$set": {"key": "receipt_config", "value": data}},
-        upsert=True
-    )
+async def save_receipt_settings(data: dict, user: dict = Depends(require_owner_or_manager)):
+    from services.tenant_settings import set_setting
+    await set_setting("receipt_config", data, user.get("businessId"))
     return {"message": "Receipt settings saved"}

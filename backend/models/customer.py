@@ -4,6 +4,7 @@ from datetime import datetime
 import uuid
 
 class Customer(BaseModel):
+    businessId: Optional[str] = None
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     name: str
     email: EmailStr

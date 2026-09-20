@@ -63,7 +63,14 @@ class LicenseEnforcementMiddleware(BaseHTTPMiddleware):
         if os.environ.get("LICENSE_ENFORCEMENT_ENABLED", "false").lower() != "true":
             return await call_next(request)
 
-        path = request.url.path
+        # scope["path"], not request.url.path — request.url is rebuilt from
+        # the raw, unvalidated Host header (PYSEC-2026-161), so a crafted
+        # Host header could steer a route in/out of these prefix checks
+        # (e.g. slip past BLOCKED_WHEN_SUSPENDED_PREFIXES). scope["path"] is
+        # what FastAPI's router actually dispatches on and isn't header-
+        # derived — see server.py's RequireAuthMiddleware for the full
+        # writeup and a reproduced exploit against the equivalent bug there.
+        path = request.scope["path"]
         method = request.method.upper()
 
         # Allowlist

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   Search, Plus, Minus, Trash2, User, CreditCard, Banknote, Smartphone,
   ShoppingCart, QrCode, SplitSquareHorizontal, X, Check, ChevronLeft, Copy, DollarSign,
@@ -49,6 +49,13 @@ const POSTerminal = () => {
   const [promotions, setPromotions] = useState([]);
   const [customers, setCustomers] = useState([]);
   const [loading, setLoading] = useState(false);
+  // Per-cart idempotency keys for handleStripeCheckout/handleCryptoCheckout
+  // — persisted across a manual retry of the same cart so the backend can
+  // dedup and avoid creating a second live checkout session (see
+  // services/payment_idempotency.py), and regenerated when the total
+  // actually changes so a genuinely different cart isn't deduped away.
+  const stripeIdemRef = useRef({ key: null, total: null });
+  const cryptoIdemRef = useRef({ key: null, total: null });
   const [trainingMode, setTrainingMode] = useState(false);
   // Cart / staff side-panel tabs — the second tab surfaces the logged-in
   // staff member's own quick actions: cash drawer, discounts, comp/void,
@@ -1095,6 +1102,20 @@ const POSTerminal = () => {
     setLoading(true);
     let holdTabId = null;
     try {
+      // Reused across a manual retry of the exact same cart (a double-click,
+      // or clicking Pay again after a dropped response) so the backend can
+      // dedup and return the original checkout session instead of creating
+      // a second live one — see services/payment_idempotency.py. Keyed off
+      // the total, not just generated once per mount, so a genuinely
+      // different cart after a failed attempt gets its own fresh key.
+      if (stripeIdemRef.current.total !== totalNum) {
+        stripeIdemRef.current = {
+          total: totalNum,
+          key: (typeof crypto !== 'undefined' && crypto.randomUUID)
+            ? crypto.randomUUID() : `sc-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+        };
+      }
+
       const holdRes = await v15API.createTab({
         name: `Card (Stripe) — ${new Date().toLocaleTimeString()}`,
         cart, selectedCustomer, tableNumber: orderType === 'dine-in' ? tableNumber : null,
@@ -1105,6 +1126,7 @@ const POSTerminal = () => {
       const res = await stripeAPI.createCheckout({
         originUrl: window.location.origin,
         amount: totalNum,
+        idempotencyKey: stripeIdemRef.current.key,
         heldTabId: holdTabId,
         sale: {
           items: cart.map(item => toTxItem(item, true)),
@@ -1142,6 +1164,15 @@ const POSTerminal = () => {
     setLoading(true);
     let holdTabId = null;
     try {
+      // Same double-click/retry dedup as handleStripeCheckout above.
+      if (cryptoIdemRef.current.total !== totalNum) {
+        cryptoIdemRef.current = {
+          total: totalNum,
+          key: (typeof crypto !== 'undefined' && crypto.randomUUID)
+            ? crypto.randomUUID() : `cc-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+        };
+      }
+
       const holdRes = await v15API.createTab({
         name: `Crypto — ${new Date().toLocaleTimeString()}`,
         cart, selectedCustomer, tableNumber: orderType === 'dine-in' ? tableNumber : null,
@@ -1152,6 +1183,7 @@ const POSTerminal = () => {
       const res = await cryptoAPI.createCheckout({
         originUrl: window.location.origin,
         amount: totalNum,
+        idempotencyKey: cryptoIdemRef.current.key,
         heldTabId: holdTabId,
         sale: {
           items: cart.map(item => toTxItem(item, true)),
@@ -2535,7 +2567,7 @@ const POSTerminal = () => {
 
       <SplitBillLinkDialog
         open={splitLinkOpen} onClose={() => setSplitLinkOpen(false)}
-        tableNumber={tableNumber}
+        tableNumber={tableNumber} businessId={user?.businessId}
       />
 
       {/* QR / UPI scan dialog stacked on top of the split dialog. Nothing is

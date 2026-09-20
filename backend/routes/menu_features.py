@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends
 from deps import require_owner_or_manager
 from database import db
+from middleware.actor_context import tenant_scope_filter
 from datetime import datetime, timezone
 from difflib import SequenceMatcher
 from typing import Any, Dict, List
@@ -9,12 +10,12 @@ import uuid, os, base64
 router = APIRouter()
 
 
-async def _existing_categories() -> List[Dict[str, Any]]:
-    return await db.categories.find({}, {"_id": 0}).to_list(200)
+async def _existing_categories(business_id: str = None) -> List[Dict[str, Any]]:
+    return await db.categories.find(tenant_scope_filter(business_id), {"_id": 0}).to_list(200)
 
 
-async def _existing_modifiers() -> List[Dict[str, Any]]:
-    return await db.modifiers.find({}, {"_id": 0}).to_list(500)
+async def _existing_modifiers(business_id: str = None) -> List[Dict[str, Any]]:
+    return await db.modifiers.find(tenant_scope_filter(business_id), {"_id": 0}).to_list(500)
 
 
 def _fuzzy_match_category(proposed: str, cats: List[Dict[str, Any]]) -> Dict[str, Any] | None:
@@ -119,7 +120,7 @@ async def _run_vision_extraction(file_data: str, file_type: str) -> Dict[str, An
 
 # ============ AI MENU IMPORT — PREVIEW (no DB writes) ============
 @router.post("/menu/ai-preview")
-async def ai_menu_preview(data: dict, _: dict = Depends(require_owner_or_manager)):
+async def ai_menu_preview(data: dict, user: dict = Depends(require_owner_or_manager)):
     """Extract menu items from image/PDF, enrich with fuzzy-matched existing
     categories + suggested modifiers. **Does not write to the DB** — the UI
     shows a review table and calls /menu/ai-commit once the owner is happy.
@@ -129,8 +130,9 @@ async def ai_menu_preview(data: dict, _: dict = Depends(require_owner_or_manager
     if not raw_items:
         return {"items": [], "count": 0, "message": result.get("message") or "No menu items detected. Try a clearer image.", "rawResponse": result.get("rawResponse")}
 
-    cats = await _existing_categories()
-    mods = await _existing_modifiers()
+    biz = user.get("businessId")
+    cats = await _existing_categories(biz)
+    mods = await _existing_modifiers(biz)
 
     proposed: List[Dict[str, Any]] = []
     for item in raw_items:
@@ -151,7 +153,10 @@ async def ai_menu_preview(data: dict, _: dict = Depends(require_owner_or_manager
         matched_cat_id = matched.get("id") if matched else None
         suggested_mod_ids = _suggest_modifiers(matched_cat_name, mods)
         # Check if a same-name product already exists (helps UI mark duplicates)
-        existing = await db.products.find_one({"name": name}, {"_id": 0, "id": 1})
+        # — scoped to this business's own catalogue, so another business's
+        # product of the same name never gets treated as "already exists".
+        existing = await db.products.find_one(
+            {"name": name, **tenant_scope_filter(biz)}, {"_id": 0, "id": 1})
         proposed.append({
             "tempId": str(uuid.uuid4()),
             "name": name,
@@ -180,13 +185,14 @@ async def ai_menu_preview(data: dict, _: dict = Depends(require_owner_or_manager
 
 # ============ AI MENU IMPORT — COMMIT (reviewed items → DB) ============
 @router.post("/menu/ai-commit")
-async def ai_menu_commit(data: dict, _: dict = Depends(require_owner_or_manager)):
+async def ai_menu_commit(data: dict, user: dict = Depends(require_owner_or_manager)):
     """Persist reviewed items to /products. Expects
     { items: [ { name, category, categoryId?, price, cost, description?, modifierIds?, skipIfDuplicate? } ] }
     Skips rows where `name` is blank or (if `skipIfDuplicate`) an item with the
     same name already exists.
     """
     from services.entity_service import stamped_insert
+    biz = user.get("businessId")
     items = data.get("items") or []
     created: List[Dict[str, Any]] = []
     skipped: List[Dict[str, Any]] = []
@@ -195,7 +201,7 @@ async def ai_menu_commit(data: dict, _: dict = Depends(require_owner_or_manager)
         if not name:
             skipped.append({"reason": "empty name", "item": it}); continue
         if it.get("skipIfDuplicate"):
-            dup = await db.products.find_one({"name": name}, {"_id": 0, "id": 1})
+            dup = await db.products.find_one({"name": name, **tenant_scope_filter(biz)}, {"_id": 0, "id": 1})
             if dup:
                 skipped.append({"reason": "duplicate", "name": name}); continue
         try:
@@ -239,15 +245,16 @@ async def ai_menu_commit(data: dict, _: dict = Depends(require_owner_or_manager)
 
 # ============ AI MENU IMPORT (LEGACY one-shot — kept for compat) ============
 @router.post("/menu/ai-import")
-async def ai_import_menu(data: dict, _: dict = Depends(require_owner_or_manager)):
+async def ai_import_menu(data: dict, user: dict = Depends(require_owner_or_manager)):
     """Backwards-compatible one-shot endpoint that extracts AND writes in one
     call. New UIs should prefer /menu/ai-preview → /menu/ai-commit."""
     result = await _run_vision_extraction(data.get("fileData", "") or "", (data.get("fileType") or "image").lower())
     raw_items = result.get("items") or []
     if not raw_items:
         return {"items": [], "count": 0, "message": result.get("message") or "No items detected"}
-    cats = await _existing_categories()
-    mods = await _existing_modifiers()
+    biz = user.get("businessId")
+    cats = await _existing_categories(biz)
+    mods = await _existing_modifiers(biz)
     from services.entity_service import stamped_insert
     created = []
     for item in raw_items:
@@ -276,7 +283,7 @@ async def ai_import_menu(data: dict, _: dict = Depends(require_owner_or_manager)
 
 # ============ PRICE ADJUSTMENT (Bulk) ============
 @router.post("/menu/price-adjust")
-async def bulk_price_adjust(data: dict, _: dict = Depends(require_owner_or_manager)):
+async def bulk_price_adjust(data: dict, user: dict = Depends(require_owner_or_manager)):
     """Adjust prices by category with inflation/percentage"""
 
     category = data.get("category")  # None = all categories
@@ -284,7 +291,12 @@ async def bulk_price_adjust(data: dict, _: dict = Depends(require_owner_or_manag
     amount = float(data.get("amount", 0))  # e.g. 5 for 5% or $5
     direction = data.get("direction", "increase")  # increase or decrease
 
-    query = {"category": category} if category else {}
+    # Scoped to the caller's own business — without this, "adjust all Wine
+    # prices" (or, worse, an empty category = "all products") repriced
+    # every business's matching products on the deployment, not just this
+    # business's own.
+    biz_scope = tenant_scope_filter(user.get("businessId"))
+    query = {"category": category, **biz_scope} if category else biz_scope
     products = await db.products.find(query, {"_id": 0}).to_list(10000)
 
     updated = []
@@ -298,16 +310,22 @@ async def bulk_price_adjust(data: dict, _: dict = Depends(require_owner_or_manag
         new_price = old_price + change if direction == "increase" else old_price - change
         new_price = max(round(new_price, 2), 0.01)
 
-        await db.products.update_one({"id": p["id"]}, {"$set": {"price": new_price, "updatedAt": datetime.now(timezone.utc).isoformat()}})
+        # Re-applies the same scope as a defense-in-depth check, not just an
+        # id match — belt-and-braces against this list ever including a
+        # product this business doesn't own.
+        await db.products.update_one(
+            {"id": p["id"], **biz_scope},
+            {"$set": {"price": new_price, "updatedAt": datetime.now(timezone.utc).isoformat()}})
         updated.append({"id": p["id"], "name": p["name"], "oldPrice": old_price, "newPrice": new_price})
 
     return {"updated": len(updated), "items": updated, "message": f"Adjusted {len(updated)} items by {amount}{'%' if adjustment_type == 'percentage' else '$'} {direction}"}
 
 # ============ WHAT-IF SIMULATOR (Enhanced with Quantity) ============
 @router.post("/analytics/what-if-advanced")
-async def what_if_advanced(data: dict, _: dict = Depends(require_owner_or_manager)):
+async def what_if_advanced(data: dict, user: dict = Depends(require_owner_or_manager)):
     """Enhanced what-if with manual quantity projections"""
 
+    biz_scope = tenant_scope_filter(user.get("businessId"))
     changes = data.get("changes", [])
     results = []
     total_current_revenue = 0
@@ -317,7 +335,7 @@ async def what_if_advanced(data: dict, _: dict = Depends(require_owner_or_manage
 
     for c in changes:
         pid = c.get("productId")
-        product = await db.products.find_one({"id": pid}, {"_id": 0})
+        product = await db.products.find_one({"id": pid, **biz_scope}, {"_id": 0})
         if not product:
             continue
 
@@ -335,7 +353,7 @@ async def what_if_advanced(data: dict, _: dict = Depends(require_owner_or_manage
             projected_profit = (new_price - new_cost) * projected_qty
         else:
             # Fallback to historical average (from transactions)
-            txns = await db.transactions.find({}, {"_id": 0, "items": 1}).to_list(10000)
+            txns = await db.transactions.find(biz_scope, {"_id": 0, "items": 1}).to_list(10000)
             qty_sold = 0
             for t in txns:
                 for item in t.get("items", []):

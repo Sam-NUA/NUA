@@ -76,7 +76,7 @@ async def _llm_json(session_id: str, system: str, user_text: str):
 async def list_vouchers(user: dict = Depends(get_user)):
     if user["role"] not in ("owner", "manager", "cashier"):
         raise HTTPException(status_code=403, detail="Staff only")
-    rows = await db.commerce_vouchers.find({}, {"_id": 0}).sort("createdAt", -1).to_list(500)
+    rows = await db.commerce_vouchers.find(tenant_scope_filter(user.get("businessId")), {"_id": 0}).sort("createdAt", -1).to_list(500)
     return rows
 
 
@@ -103,6 +103,7 @@ async def create_voucher(data: dict, user: dict = Depends(require_owner_or_manag
         **codes,
         "createdAt": _iso(_now()),
         "createdBy": user["id"],
+        "businessId": user.get("businessId"),
     }
     await db.commerce_vouchers.insert_one(v); v.pop("_id", None)
 
@@ -128,6 +129,7 @@ async def create_voucher(data: dict, user: dict = Depends(require_owner_or_manag
             "message": data.get("message", ""),
             "status": "pending_activation",
             "createdAt": _iso(_now()), "createdBy": user["id"],
+            "businessId": user.get("businessId"),
         }
         await db.gift_cards.insert_one(card); card.pop("_id", None)
         v["giftCard"] = card
@@ -135,19 +137,21 @@ async def create_voucher(data: dict, user: dict = Depends(require_owner_or_manag
 
 
 @router.patch("/vouchers/{vid}")
-async def update_voucher(vid: str, data: dict, _: dict = Depends(require_owner_or_manager)):
+async def update_voucher(vid: str, data: dict, user: dict = Depends(require_owner_or_manager)):
     # Never let the caller rewrite the code or usage counter
     forbidden = {"id", "manualCode", "barcode", "usedCount", "createdAt", "createdBy"}
     update = {k: v for k, v in data.items() if k not in forbidden}
     update["updatedAt"] = _iso(_now())
-    r = await db.commerce_vouchers.update_one({"id": vid}, {"$set": update})
+    r = await db.commerce_vouchers.update_one(
+        {"id": vid, **tenant_scope_filter(user.get("businessId"))}, {"$set": update})
     if r.matched_count == 0: raise HTTPException(status_code=404, detail="Voucher not found")
     return {"updated": True}
 
 
 @router.delete("/vouchers/{vid}")
-async def delete_voucher(vid: str, _: dict = Depends(require_owner)):
-    r = await db.commerce_vouchers.delete_one({"id": vid})
+async def delete_voucher(vid: str, user: dict = Depends(require_owner)):
+    r = await db.commerce_vouchers.delete_one(
+        {"id": vid, **tenant_scope_filter(user.get("businessId"))})
     if r.deleted_count == 0: raise HTTPException(status_code=404, detail="Not found")
     return {"deleted": True}
 
@@ -189,10 +193,11 @@ def _voucher_compute(v: dict, cart_items: list) -> dict:
 
 
 @router.post("/vouchers/{code}/apply")
-async def apply_voucher(code: str, data: dict, _: dict = Depends(get_user)):
+async def apply_voucher(code: str, data: dict, user: dict = Depends(get_user)):
     """Cashier scans/types a code → server validates + returns discount to apply."""
     v = await db.commerce_vouchers.find_one(
-        {"$or": [{"manualCode": code.upper()}, {"barcode": code.upper()}, {"id": code}]},
+        {"$or": [{"manualCode": code.upper()}, {"barcode": code.upper()}, {"id": code}],
+         **tenant_scope_filter(user.get("businessId"))},
         {"_id": 0},
     )
     if not v: raise HTTPException(status_code=404, detail="Code not found")
@@ -215,21 +220,52 @@ async def record_redemption(vid: str, data: dict, user: dict = Depends(get_user)
     succeed), and no duplicate guard — a retried request (or the same
     double-click-protection gap points redemption had) would double-count."""
     tx_id = data.get("txId")
+    business_id = user.get("businessId")
+    if not tx_id:
+        raise HTTPException(status_code=400, detail="txId required for idempotent redemption")
     if tx_id:
-        existing = await db.voucher_redemptions.find_one({"voucherId": vid, "txId": tx_id}, {"_id": 0, "id": 1})
+        existing = await db.voucher_redemptions.find_one(
+            {"voucherId": vid, "txId": tx_id, **tenant_scope_filter(business_id)},
+            {"_id": 0, "id": 1})
         if existing:
             return {"recorded": True, "duplicate": True}
-    v = await db.commerce_vouchers.find_one({"id": vid}, {"_id": 0})
+    # One conditional database operation owns the redemption. This prevents
+    # simultaneous terminals from both consuming the final use and makes a
+    # retry with the same transaction id a harmless duplicate.
+    from pymongo import ReturnDocument
+    claim_filter = {
+        "id": vid,
+        **tenant_scope_filter(business_id),
+        "active": {"$ne": False},
+        "redemptionTxIds": {"$ne": tx_id},
+        "$or": [
+            {"maxUses": {"$exists": False}},
+            {"maxUses": 0},
+            {"$expr": {"$lt": [{"$ifNull": ["$usedCount", 0]}, "$maxUses"]}},
+        ],
+    }
+    v = await db.commerce_vouchers.find_one_and_update(
+        claim_filter,
+        {"$inc": {"usedCount": 1}, "$addToSet": {"redemptionTxIds": tx_id}},
+        return_document=ReturnDocument.AFTER,
+    )
     if not v:
-        raise HTTPException(status_code=404, detail="Voucher not found")
-    if v.get("maxUses", 0) and v.get("usedCount", 0) >= v["maxUses"]:
-        raise HTTPException(status_code=400, detail="Voucher has reached max redemptions")
-    await db.commerce_vouchers.update_one({"id": vid}, {"$inc": {"usedCount": 1}})
+        existing = await db.voucher_redemptions.find_one(
+            {"voucherId": vid, "txId": tx_id, **tenant_scope_filter(business_id)},
+            {"_id": 0, "id": 1})
+        if existing:
+            return {"recorded": True, "duplicate": True}
+        owned = await db.commerce_vouchers.find_one(
+            {"id": vid, **tenant_scope_filter(business_id)}, {"_id": 0, "id": 1})
+        if not owned:
+            raise HTTPException(status_code=404, detail="Voucher not found")
+        raise HTTPException(status_code=409, detail="Voucher is exhausted or already being redeemed")
     await db.voucher_redemptions.insert_one({
         "id": _uid("RED"), "voucherId": vid,
         "txId": tx_id, "customerId": data.get("customerId"),
         "amount": float(data.get("amount", 0)),
         "createdAt": _iso(_now()), "createdBy": user["id"],
+        "businessId": business_id,
     })
     return {"recorded": True}
 
@@ -377,11 +413,13 @@ async def update_sub_plan(plan_id: str, data: dict, user: dict = Depends(get_use
     update = {k: v for k, v in data.items() if k not in forbidden}
     # If the plan doesn't yet have a barcode, mint one (legacy plans)
     if "manualCode" not in update:
-        existing = await db.subscription_plans.find_one({"id": plan_id}, {"_id": 0})
+        existing = await db.subscription_plans.find_one(
+            {"id": plan_id, **tenant_scope_filter(user.get("businessId"))}, {"_id": 0})
         if existing and not existing.get("manualCode"):
             update.update(_new_code("SUB"))
     update["updatedAt"] = _iso(_now())
-    r = await db.subscription_plans.update_one({"id": plan_id}, {"$set": update})
+    r = await db.subscription_plans.update_one(
+        {"id": plan_id, **tenant_scope_filter(user.get("businessId"))}, {"$set": update})
     if r.matched_count == 0: raise HTTPException(status_code=404, detail="Plan not found")
     return {"updated": True}
 
@@ -389,7 +427,8 @@ async def update_sub_plan(plan_id: str, data: dict, user: dict = Depends(get_use
 @router.delete("/subscriptions/plans/{plan_id}")
 async def delete_sub_plan(plan_id: str, user: dict = Depends(get_user)):
     if user["role"] != "owner": raise HTTPException(status_code=403, detail="Owner only")
-    r = await db.subscription_plans.delete_one({"id": plan_id})
+    r = await db.subscription_plans.delete_one(
+        {"id": plan_id, **tenant_scope_filter(user.get("businessId"))})
     if r.deleted_count == 0: raise HTTPException(status_code=404, detail="Plan not found")
     return {"deleted": True}
 
@@ -398,8 +437,8 @@ async def delete_sub_plan(plan_id: str, user: dict = Depends(get_user)):
 # GIFT CARDS — sell online + at counter + assign to customer
 # ============================================================================
 @router.get("/gift-cards")
-async def list_gift_cards( status: Optional[str] = None, _: dict = Depends(get_user)):
-    q = {}
+async def list_gift_cards(status: Optional[str] = None, user: dict = Depends(get_user)):
+    q = tenant_scope_filter(user.get("businessId"))
     if status: q["status"] = status
     rows = await db.gift_cards.find(q, {"_id": 0}).sort("createdAt", -1).to_list(500)
     return rows
@@ -439,6 +478,7 @@ async def sell_gift_card(data: dict, user: dict = Depends(get_user)):
         "message": data.get("message", ""),
         "status": status,
         "createdAt": _iso(_now()), "createdBy": user["id"],
+        "businessId": user.get("businessId"),
     }
     await db.gift_cards.insert_one(card); card.pop("_id", None)
     if status == "active":
@@ -458,8 +498,11 @@ async def assign_gift_card(code_or_id: str, data: dict, user: dict = Depends(get
         raise HTTPException(status_code=403, detail="Staff only")
     customer_id = data.get("customerId")
     if not customer_id: raise HTTPException(status_code=400, detail="customerId required")
+    scope = tenant_scope_filter(user.get("businessId"))
+    if not await db.customers.find_one({"id": customer_id, **scope}, {"_id": 1}):
+        raise HTTPException(status_code=404, detail="Customer not found")
     r = await db.gift_cards.update_one(
-        {"$or": [{"code": code_or_id.upper()}, {"barcode": code_or_id.upper()}, {"id": code_or_id}]},
+        {"$or": [{"code": code_or_id.upper()}, {"barcode": code_or_id.upper()}, {"id": code_or_id}], **scope},
         {"$set": {"customerId": customer_id, "assignedAt": _iso(_now()), "assignedBy": user["id"]}},
     )
     if r.matched_count == 0: raise HTTPException(status_code=404, detail="Card not found")
@@ -467,10 +510,11 @@ async def assign_gift_card(code_or_id: str, data: dict, user: dict = Depends(get
 
 
 @router.get("/gift-cards/lookup/{code}")
-async def lookup_gift_card(code: str):
+async def lookup_gift_card(code: str, user: dict = Depends(get_user)):
     """Lookup by barcode or manual code — used by POS scan flow."""
     card = await db.gift_cards.find_one(
-        {"$or": [{"code": code.upper()}, {"barcode": code.upper()}, {"id": code}]},
+        {"$or": [{"code": code.upper()}, {"barcode": code.upper()}, {"id": code}],
+         **tenant_scope_filter(user.get("businessId"))},
         {"_id": 0},
     )
     if not card: raise HTTPException(status_code=404, detail="Card not found")
@@ -482,13 +526,15 @@ async def lookup_gift_card(code: str):
 
 
 @router.get("/gift-cards/{code}/transactions")
-async def gift_card_transactions(code: str, _: dict = Depends(get_user)):
+async def gift_card_transactions(code: str, user: dict = Depends(get_user)):
+    scope = tenant_scope_filter(user.get("businessId"))
     card = await db.gift_cards.find_one(
-        {"$or": [{"code": code.upper()}, {"barcode": code.upper()}, {"id": code}]},
+        {"$or": [{"code": code.upper()}, {"barcode": code.upper()}, {"id": code}], **scope},
         {"_id": 0, "id": 1},
     )
     if not card: raise HTTPException(status_code=404, detail="Card not found")
-    rows = await db.gift_card_transactions.find({"giftCardId": card["id"]}, {"_id": 0}).sort("createdAt", 1).to_list(500)
+    rows = await db.gift_card_transactions.find(
+        {"giftCardId": card["id"], **scope}, {"_id": 0}).sort("createdAt", 1).to_list(500)
     return rows
 
 
@@ -505,6 +551,7 @@ async def _record_gift_txn(card: dict, txn_type: str, amount: float, balance_bef
         "ref": ref,                # tx/order id or note
         "createdAt": _iso(_now()),
         "createdBy": user_id,
+        "businessId": card.get("businessId"),
     }
     await db.gift_card_transactions.insert_one(txn); txn.pop("_id", None)
     return txn
@@ -517,8 +564,9 @@ async def activate_gift_card(code: str, data: dict, user: dict = Depends(get_use
     already-active card just no-ops with the current state."""
     if user["role"] not in ("owner", "manager", "cashier"):
         raise HTTPException(status_code=403, detail="Staff only")
+    scope = tenant_scope_filter(user.get("businessId"))
     card = await db.gift_cards.find_one(
-        {"$or": [{"code": code.upper()}, {"barcode": code.upper()}, {"id": code}]},
+        {"$or": [{"code": code.upper()}, {"barcode": code.upper()}, {"id": code}], **scope},
         {"_id": 0},
     )
     if not card: raise HTTPException(status_code=404, detail="Card not found")
@@ -529,19 +577,25 @@ async def activate_gift_card(code: str, data: dict, user: dict = Depends(get_use
     initial = float(card.get("initialBalance") or card.get("originalAmount") or card.get("amount") or 0)
     bonus = float(card.get("bonus", 0))
     starting = round(initial + bonus, 2)
-    await db.gift_cards.update_one(
-        {"id": card["id"]},
+    activated = await db.gift_cards.find_one_and_update(
+        {"id": card["id"], "status": {"$in": ["pending_activation", None]}, **scope},
         {"$set": {"status": "active", "currentBalance": starting,
                   "initialBalance": initial,
                   "activatedAt": _iso(_now()), "activatedBy": user["id"],
                   "activationTxId": data.get("transactionId")}},
+        return_document=True,
     )
-    txn = await _record_gift_txn(card, "activate", starting, 0.0, starting,
+    if not activated:
+        current = await db.gift_cards.find_one({"id": card["id"], **scope}, {"_id": 0})
+        if current and current.get("status") == "active":
+            return {"activated": False, "alreadyActive": True, "card": current}
+        raise HTTPException(status_code=409, detail="Card activation state changed; retry")
+    txn = await _record_gift_txn(activated, "activate", starting, 0.0, starting,
                                  user["id"], data.get("transactionId"))
-    card = await db.gift_cards.find_one({"id": card["id"]}, {"_id": 0})
-    await _post_gift_card_sale_accounting(card)
-    await _emit_gift_card_sold(card)
-    return {"activated": True, "card": card, "transaction": txn}
+    activated.pop("_id", None)
+    await _post_gift_card_sale_accounting(activated)
+    await _emit_gift_card_sold(activated)
+    return {"activated": True, "card": activated, "transaction": txn}
 
 
 @router.post("/gift-cards/{code}/redeem")
@@ -553,28 +607,36 @@ async def redeem_gift_card_partial(code: str, data: dict, user: dict = Depends(g
     amount = float(data.get("amount", 0))
     if amount <= 0:
         raise HTTPException(status_code=400, detail="amount must be > 0")
+    transaction_id = data.get("transactionId")
+    if not transaction_id:
+        raise HTTPException(status_code=400, detail="transactionId required for idempotent redemption")
     upper = code.upper()
+    scope = tenant_scope_filter(user.get("businessId"))
     # Atomic deduction — guarantees no double-spend even under concurrency.
     card = await db.gift_cards.find_one_and_update(
         {"$or": [{"code": upper}, {"barcode": upper}, {"id": code}],
-         "status": "active", "currentBalance": {"$gte": amount}},
-        {"$inc": {"currentBalance": -amount}},
+         "status": "active", "currentBalance": {"$gte": amount},
+         "redemptionTxIds": {"$ne": transaction_id}, **scope},
+        {"$inc": {"currentBalance": -amount}, "$addToSet": {"redemptionTxIds": transaction_id}},
         return_document=False,
     )
     if not card:
         exists = await db.gift_cards.find_one(
-            {"$or": [{"code": upper}, {"barcode": upper}, {"id": code}]}, {"_id": 0})
+            {"$or": [{"code": upper}, {"barcode": upper}, {"id": code}], **scope}, {"_id": 0})
         if not exists: raise HTTPException(status_code=404, detail="Card not found")
+        if transaction_id in (exists.get("redemptionTxIds") or []):
+            return {"redeemed": 0, "newBalance": exists.get("currentBalance", 0), "duplicate": True}
         if exists.get("status") != "active":
             raise HTTPException(status_code=400, detail=f"Card is {exists.get('status')}")
         raise HTTPException(status_code=400, detail=f"Insufficient balance (${exists.get('currentBalance', 0):.2f})")
     balance_before = float(card.get("currentBalance", 0))
     balance_after = round(balance_before - amount, 2)
     if balance_after <= 0.001:
-        await db.gift_cards.update_one({"id": card["id"]}, {"$set": {"status": "depleted", "depletedAt": _iso(_now())}})
-    txn = await _record_gift_txn({"id": card["id"], "code": card.get("code")}, "redeem",
+        await db.gift_cards.update_one(
+            {"id": card["id"], **scope}, {"$set": {"status": "depleted", "depletedAt": _iso(_now())}})
+    txn = await _record_gift_txn(card, "redeem",
                                  amount, balance_before, balance_after,
-                                 user["id"], data.get("transactionId"))
+                                 user["id"], transaction_id)
     try:
         from services.accounting_service import auto_post_voucher_redeem
         await auto_post_voucher_redeem({"id": txn["id"], "amount": amount, "timestamp": txn["createdAt"]})
@@ -636,12 +698,14 @@ async def edit_gift_card(code: str, data: dict, user: dict = Depends(require_own
     update["updatedAt"] = _iso(_now())
     update["updatedBy"] = user["id"]
     r = await db.gift_cards.update_one(
-        {"$or": [{"code": code.upper()}, {"barcode": code.upper()}, {"id": code}]},
+        {"$or": [{"code": code.upper()}, {"barcode": code.upper()}, {"id": code}],
+         **tenant_scope_filter(user.get("businessId"))},
         {"$set": update},
     )
     if r.matched_count == 0: raise HTTPException(status_code=404, detail="Card not found")
     card = await db.gift_cards.find_one(
-        {"$or": [{"code": code.upper()}, {"barcode": code.upper()}, {"id": code}]}, {"_id": 0})
+        {"$or": [{"code": code.upper()}, {"barcode": code.upper()}, {"id": code}],
+         **tenant_scope_filter(user.get("businessId"))}, {"_id": 0})
     return card
 
 
@@ -652,15 +716,16 @@ async def reload_gift_card(code: str, data: dict, user: dict = Depends(require_o
     if amount <= 0:
         raise HTTPException(status_code=400, detail="amount must be > 0")
     upper = code.upper()
+    scope = tenant_scope_filter(user.get("businessId"))
     card = await db.gift_cards.find_one_and_update(
         {"$or": [{"code": upper}, {"barcode": upper}, {"id": code}],
-         "status": {"$in": ["active", "depleted"]}},
+         "status": {"$in": ["active", "depleted"]}, **scope},
         {"$inc": {"currentBalance": amount}, "$set": {"status": "active"}},
         return_document=True,
     )
     if not card:
         exists = await db.gift_cards.find_one(
-            {"$or": [{"code": upper}, {"barcode": upper}, {"id": code}]}, {"_id": 0})
+            {"$or": [{"code": upper}, {"barcode": upper}, {"id": code}], **scope}, {"_id": 0})
         if not exists: raise HTTPException(status_code=404, detail="Card not found")
         raise HTTPException(status_code=400, detail=f"Card is {exists.get('status')} — cannot reload")
     balance_before = float(card.get("currentBalance", amount)) - amount
@@ -687,13 +752,14 @@ async def stop_gift_card(code: str, data: dict, user: dict = Depends(require_own
     without touching its balance, so a lost/stolen/disputed card can be
     stopped and later reactivated without losing the remaining value."""
     upper = code.upper()
+    scope = tenant_scope_filter(user.get("businessId"))
     card = await db.gift_cards.find_one(
-        {"$or": [{"code": upper}, {"barcode": upper}, {"id": code}]}, {"_id": 0})
+        {"$or": [{"code": upper}, {"barcode": upper}, {"id": code}], **scope}, {"_id": 0})
     if not card: raise HTTPException(status_code=404, detail="Card not found")
     if card.get("status") not in ("active", "pending_activation"):
         raise HTTPException(status_code=400, detail=f"Card is already {card.get('status')}")
     await db.gift_cards.update_one(
-        {"id": card["id"]},
+        {"id": card["id"], **scope},
         {"$set": {"status": "stopped", "stoppedAt": _iso(_now()), "stoppedBy": user["id"],
                   "stopReason": data.get("reason", ""), "statusBeforeStop": card.get("status")}},
     )
@@ -711,14 +777,15 @@ async def stop_gift_card(code: str, data: dict, user: dict = Depends(require_own
 async def reactivate_gift_card(code: str, user: dict = Depends(require_owner_or_manager)):
     """Owner/manager undoes a stop, restoring the card's prior status."""
     upper = code.upper()
+    scope = tenant_scope_filter(user.get("businessId"))
     card = await db.gift_cards.find_one(
-        {"$or": [{"code": upper}, {"barcode": upper}, {"id": code}]}, {"_id": 0})
+        {"$or": [{"code": upper}, {"barcode": upper}, {"id": code}], **scope}, {"_id": 0})
     if not card: raise HTTPException(status_code=404, detail="Card not found")
     if card.get("status") != "stopped":
         raise HTTPException(status_code=400, detail="Card is not stopped")
     restored = card.get("statusBeforeStop") or "active"
     await db.gift_cards.update_one(
-        {"id": card["id"]},
+        {"id": card["id"], **scope},
         {"$set": {"status": restored, "reactivatedAt": _iso(_now()), "reactivatedBy": user["id"]}},
     )
     await _record_gift_txn(card, "reactivate", 0, card.get("currentBalance", 0), card.get("currentBalance", 0),
@@ -732,8 +799,9 @@ async def resend_gift_card(code: str, data: dict, user: dict = Depends(require_o
     recipient on file, or an explicit override address (e.g. the customer
     lost the original email and wants it re-sent to a different inbox)."""
     upper = code.upper()
+    scope = tenant_scope_filter(user.get("businessId"))
     card = await db.gift_cards.find_one(
-        {"$or": [{"code": upper}, {"barcode": upper}, {"id": code}]}, {"_id": 0})
+        {"$or": [{"code": upper}, {"barcode": upper}, {"id": code}], **scope}, {"_id": 0})
     if not card: raise HTTPException(status_code=404, detail="Card not found")
     to = (data.get("email") or card.get("recipientEmail") or card.get("purchaserEmail") or "").strip()
     if not to:
@@ -749,7 +817,7 @@ async def resend_gift_card(code: str, data: dict, user: dict = Depends(require_o
     )
     receipt = await send_email(to, "Your NUA gift card", body)
     await db.gift_cards.update_one(
-        {"id": card["id"]},
+        {"id": card["id"], **scope},
         {"$push": {"resendLog": {"to": to, "at": _iso(_now()), "by": user["id"], "delivered": receipt.get("delivered", False)}}},
     )
     return {"sent": receipt.get("delivered", False), "to": to, "reason": receipt.get("reason")}
@@ -759,8 +827,8 @@ async def resend_gift_card(code: str, data: dict, user: dict = Depends(require_o
 # EVENTS & EXPERIENCES — bookable + AI marketing preview
 # ============================================================================
 @router.get("/events")
-async def list_events( upcomingOnly: bool = False, _: dict = Depends(get_user)):
-    q = {}
+async def list_events(upcomingOnly: bool = False, user: dict = Depends(get_user)):
+    q = tenant_scope_filter(user.get("businessId"))
     if upcomingOnly:
         q["date"] = {"$gte": _now().date().isoformat()}
     rows = await db.events.find(q, {"_id": 0}).sort("date", 1).to_list(200)
@@ -784,16 +852,18 @@ async def create_event(data: dict, user: dict = Depends(require_owner_or_manager
         "termsAndConditions": data.get("termsAndConditions", ""),
         "active": True,
         "createdAt": _iso(_now()), "createdBy": user["id"],
+        "businessId": user.get("businessId"),
     }
     await db.events.insert_one(ev); ev.pop("_id", None)
     return ev
 
 
 @router.patch("/events/{eid}")
-async def update_event(eid: str, data: dict, _: dict = Depends(require_owner_or_manager)):
+async def update_event(eid: str, data: dict, user: dict = Depends(require_owner_or_manager)):
     update = {k: v for k, v in data.items() if k not in {"id", "createdAt", "bookings"}}
     update["updatedAt"] = _iso(_now())
-    r = await db.events.update_one({"id": eid}, {"$set": update})
+    r = await db.events.update_one(
+        {"id": eid, **tenant_scope_filter(user.get("businessId"))}, {"$set": update})
     if r.matched_count == 0: raise HTTPException(status_code=404, detail="Event not found")
     return {"updated": True}
 
@@ -801,14 +871,15 @@ async def update_event(eid: str, data: dict, _: dict = Depends(require_owner_or_
 @router.delete("/events/{eid}")
 async def delete_event(eid: str, user: dict = Depends(get_user)):
     if user["role"] != "owner": raise HTTPException(status_code=403, detail="Owner only")
-    r = await db.events.delete_one({"id": eid})
+    r = await db.events.delete_one({"id": eid, **tenant_scope_filter(user.get("businessId"))})
     if r.deleted_count == 0: raise HTTPException(status_code=404, detail="Not found")
     return {"deleted": True}
 
 
 @router.post("/events/{eid}/book")
 async def book_event(eid: str, data: dict, user: dict = Depends(get_user)):
-    ev = await db.events.find_one({"id": eid}, {"_id": 0})
+    scope = tenant_scope_filter(user.get("businessId"))
+    ev = await db.events.find_one({"id": eid, **scope}, {"_id": 0})
     if not ev: raise HTTPException(status_code=404, detail="Event not found")
     party = int(data.get("partySize", 1))
     booked = sum(int(b.get("partySize", 0)) for b in ev.get("bookings", []))
@@ -822,7 +893,12 @@ async def book_event(eid: str, data: dict, user: dict = Depends(get_user)):
         "customerId": data.get("customerId"),
         "createdAt": _iso(_now()), "createdBy": user["id"],
     }
-    await db.events.update_one({"id": eid}, {"$push": {"bookings": booking}})
+    result = await db.events.update_one(
+        {"id": eid, "bookings": ev.get("bookings", []), **scope},
+        {"$push": {"bookings": booking}},
+    )
+    if result.modified_count != 1:
+        raise HTTPException(status_code=409, detail="Event capacity changed; retry booking")
     return booking
 
 
@@ -831,8 +907,8 @@ async def event_ai_preview(data: dict, _: dict = Depends(require_owner_or_manage
     """Owner asks: 'given this date, what should we promote?' LLM looks at events
     on that date + the day-of-week + loyalty tiers and drafts marketing copy."""
     date = data.get("date") or _now().date().isoformat()
-    events = await db.events.find({"date": date}, {"_id": 0}).to_list(20)
-    tiers = await db.loyalty_tiers.find({}, {"_id": 0}).to_list(10)
+    events = await db.events.find({"date": date, **tenant_scope_filter()}, {"_id": 0}).to_list(20)
+    tiers = await db.loyalty_tiers.find(tenant_scope_filter(), {"_id": 0}).to_list(10)
     sys_msg = (
         "You are a restaurant marketing director. Given the date, scheduled events, "
         "and loyalty tiers, draft promotional copy for an email + SMS that combines "
@@ -849,8 +925,9 @@ async def event_ai_preview(data: dict, _: dict = Depends(require_owner_or_manage
 # STAFF AVAILABILITY (normal days + blackout periods)
 # ============================================================================
 @router.get("/staff/{staff_id}/availability")
-async def get_availability(staff_id: str, _: dict = Depends(get_user)):
-    a = await db.staff_availability.find_one({"staffId": staff_id}, {"_id": 0})
+async def get_availability(staff_id: str, user: dict = Depends(get_user)):
+    a = await db.staff_availability.find_one(
+        {"staffId": staff_id, **tenant_scope_filter(user.get("businessId"))}, {"_id": 0})
     return a or {"staffId": staff_id, "weeklyAvailable": [], "blackoutDates": []}
 
 
@@ -862,8 +939,11 @@ async def set_availability(staff_id: str, data: dict, user: dict = Depends(requi
         "blackoutDates": data.get("blackoutDates", []),         # [{"from":"YYYY-MM-DD","to":"YYYY-MM-DD","reason":"holiday"}]
         "preferredHours": data.get("preferredHours", {}),       # {"Mon": "09:00-17:00"}
         "updatedAt": _iso(_now()), "updatedBy": user["id"],
+        "businessId": user.get("businessId"),
     }
-    await db.staff_availability.update_one({"staffId": staff_id}, {"$set": doc}, upsert=True)
+    await db.staff_availability.update_one(
+        {"staffId": staff_id, **tenant_scope_filter(user.get("businessId"))},
+        {"$set": doc}, upsert=True)
     return {"updated": True, "availability": doc}
 
 
@@ -871,9 +951,9 @@ async def set_availability(staff_id: str, data: dict, user: dict = Depends(requi
 # ROSTER — clear all + integrity on staff delete
 # ============================================================================
 @router.post("/roster/clear-all")
-async def roster_clear_all(data: dict, _: dict = Depends(require_owner_or_manager)):
+async def roster_clear_all(data: dict, user: dict = Depends(require_owner_or_manager)):
     week = data.get("week")  # optional: "YYYY-WW" or date range
-    q = {}
+    q = tenant_scope_filter(user.get("businessId"))
     if week:
         q["week"] = week
     res = await db.roster_shifts.delete_many(q)
@@ -881,14 +961,18 @@ async def roster_clear_all(data: dict, _: dict = Depends(require_owner_or_manage
 
 
 @router.post("/roster/sync-staff")
-async def sync_roster_staff(_: dict = Depends(require_owner_or_manager)):
+async def sync_roster_staff(user: dict = Depends(require_owner_or_manager)):
     """Audit + clean: remove shifts referencing deleted staff, dedupe simultaneous
     overlapping shifts of the same person on the same day. Idempotent."""
-    staff_ids = {s["id"] for s in await db.auth_users.find({"role": {"$in": ["cashier", "barista", "kitchen", "manager"]}}, {"_id": 0, "id": 1}).to_list(2000)}
+    scope = tenant_scope_filter(user.get("businessId"))
+    staff_ids = {s["id"] for s in await db.auth_users.find(
+        {"role": {"$in": ["cashier", "barista", "kitchen", "manager"]}, **scope},
+        {"_id": 0, "id": 1}).to_list(2000)}
     # Drop orphans
-    orphans = await db.roster_shifts.delete_many({"staff_id": {"$nin": list(staff_ids)}})
+    orphans = await db.roster_shifts.delete_many({"staff_id": {"$nin": list(staff_ids)}, **scope})
     # Dedupe by (staff_id, date, start, end)
     pipeline = [
+        {"$match": scope},
         {"$group": {"_id": {"staff_id": "$staff_id", "date": "$date", "start": "$start", "end": "$end"},
                     "ids": {"$push": "$id"}, "n": {"$sum": 1}}},
         {"$match": {"n": {"$gt": 1}}},
@@ -898,7 +982,7 @@ async def sync_roster_staff(_: dict = Depends(require_owner_or_manager)):
     for d in dupes:
         keep, *kill = d["ids"]
         if kill:
-            r = await db.roster_shifts.delete_many({"id": {"$in": kill}})
+            r = await db.roster_shifts.delete_many({"id": {"$in": kill}, **scope})
             dropped += r.deleted_count
     return {"orphansRemoved": orphans.deleted_count, "duplicatesRemoved": dropped}
 
@@ -924,7 +1008,9 @@ async def cfd_push(data: dict, user: dict = Depends(get_user)):
         "cashier": user.get("name"),
         "businessId": user.get("businessId"),
     }
-    await db.cfd_live.update_one({"terminalId": terminal_id}, {"$set": doc}, upsert=True)
+    await db.cfd_live.update_one(
+        {"terminalId": terminal_id, **tenant_scope_filter(user.get("businessId"))},
+        {"$set": doc}, upsert=True)
     return {"pushed": True}
 
 
@@ -967,7 +1053,9 @@ async def cfd_enriched(request: Request, terminalId: Optional[str] = None, user:
     if not live:
         live = await db.cfd_live.find_one(tenant_filter, {"_id": 0}, sort=[("updatedAt", -1)])
     if not live:
-        tab = await db.pos_tabs.find_one({"status": {"$in": ["open", "active", None]}}, {"_id": 0}, sort=[("createdAt", -1)])
+        tab = await db.pos_tabs.find_one(
+            {"status": {"$in": ["open", "active", None]}, **tenant_filter},
+            {"_id": 0}, sort=[("createdAt", -1)])
         live = {
             "cart": (tab or {}).get("cart") or [],
             "selectedCustomer": (tab or {}).get("selectedCustomer"),
@@ -977,7 +1065,8 @@ async def cfd_enriched(request: Request, terminalId: Optional[str] = None, user:
     customer = live.get("selectedCustomer")
     cart = live.get("cart") or []
     subtotal = sum(float(i.get("price", 0)) * int(i.get("quantity", 1)) for i in cart)
-    cfg = await db.loyalty_config.find_one({}, {"_id": 0}) or {}
+    from services.tenant_settings import get_scoped_singleton
+    cfg = await get_scoped_singleton(db.loyalty_config, {"id": "default"}, user.get("businessId")) or {}
     earn_rate = float(cfg.get("earnRate", 1))
     points_earned = int(subtotal * earn_rate) if customer else 0
     points_missed = 0 if customer else int(subtotal * earn_rate)
@@ -1022,7 +1111,7 @@ async def cfd_enriched(request: Request, terminalId: Optional[str] = None, user:
 # ═════════════════════════════════════════════════════════════════════════
 @router.get("/promotions/bundle-suggestions")
 async def bundle_suggestions(days: int = 30, min_support: int = 5, top: int = 8,
-                              _: dict = Depends(get_user)):
+                              user: dict = Depends(get_user)):
     """Scan recent transactions, find item combos that appear together most
     often, and propose bundle prices at the intersection of "guests already
     do this" and "we still make margin".
@@ -1036,11 +1125,12 @@ async def bundle_suggestions(days: int = 30, min_support: int = 5, top: int = 8,
     """
     since = (_now() - timedelta(days=days)).isoformat()
     txs = await db.transactions.find(
-        {"createdAt": {"$gte": since}, "status": {"$in": ["completed", "paid", "closed"]}},
+        {"createdAt": {"$gte": since}, "status": {"$in": ["completed", "paid", "closed"]},
+         **tenant_scope_filter(user.get("businessId"))},
         {"_id": 0, "items": 1, "total": 1},
     ).to_list(20000)
 
-    prods = await db.products.find({}, {"_id": 0}).to_list(5000)
+    prods = await db.products.find(tenant_scope_filter(), {"_id": 0}).to_list(5000)
     by_id = {p.get("id"): p for p in prods}
 
     def _margin_floor(pids):

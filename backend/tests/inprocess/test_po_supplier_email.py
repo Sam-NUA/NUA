@@ -53,7 +53,7 @@ def test_sending_a_po_with_only_a_supplier_name_string_still_resolves(client, ow
     from database import db
     import asyncio
     po_id = f"PO-{uuid.uuid4().hex[:8].upper()}"
-    asyncio.get_event_loop().run_until_complete(db.purchase_orders.insert_one({
+    asyncio.get_event_loop().run_until_complete(db.purchase_orders.insert_one({"businessId": "default",
         "id": po_id, "supplier": supplier_name,
         "items": [{"productId": "p2", "productName": "Auto Widget", "orderQty": 20, "unitCost": 3}],
         "totalCost": 60, "status": "draft",
@@ -70,7 +70,7 @@ def test_sending_a_po_with_no_resolvable_supplier_is_honest_about_it(client, own
     from database import db
     import asyncio
     po_id = f"PO-{uuid.uuid4().hex[:8].upper()}"
-    asyncio.get_event_loop().run_until_complete(db.purchase_orders.insert_one({
+    asyncio.get_event_loop().run_until_complete(db.purchase_orders.insert_one({"businessId": "default",
         "id": po_id, "supplier": f"Nonexistent Supplier {uuid.uuid4()}",
         "items": [], "totalCost": 0, "status": "draft",
     }))
@@ -89,7 +89,7 @@ def test_other_actions_do_not_carry_an_email_result(client, owner_headers):
     from database import db
     import asyncio
     po_id = f"PO-{uuid.uuid4().hex[:8].upper()}"
-    asyncio.get_event_loop().run_until_complete(db.purchase_orders.insert_one({
+    asyncio.get_event_loop().run_until_complete(db.purchase_orders.insert_one({"businessId": "default",
         "id": po_id, "supplier": "Irrelevant", "items": [], "totalCost": 0, "status": "draft",
     }))
 

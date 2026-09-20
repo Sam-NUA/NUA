@@ -14,6 +14,7 @@ import uuid
 from datetime import datetime
 from typing import Optional
 from database import db
+from middleware.actor_context import tenant_scope_filter, get_actor_context
 
 
 def _digits(s: Optional[str]) -> str:
@@ -21,16 +22,27 @@ def _digits(s: Optional[str]) -> str:
 
 
 async def find_matching_customer(*, name: Optional[str] = None, phone: Optional[str] = None,
-                                   email: Optional[str] = None) -> Optional[dict]:
+                                   email: Optional[str] = None,
+                                   business_id: Optional[str] = None) -> Optional[dict]:
     """Best-effort match against db.customers, most-confident signal first.
 
     Phone/email are checked before name because first names collide
     constantly ("John") — matching on those first would misattribute a
     stranger's booking to an existing customer's history.
+
+    Scoped to the caller's own business (default: whichever business the
+    current request's JWT belongs to) so a returning-guest match can never
+    pull in — and leak the profile, allergies, VIP status and history of —
+    another business's customer. Missing business context matches no customers.
     """
+    if business_id is None:
+        business_id = get_actor_context().get("businessId")
+    scope = tenant_scope_filter(business_id)
+
     if email:
         row = await db.customers.find_one(
-            {"email": {"$regex": f"^{re.escape(email.strip())}$", "$options": "i"}}, {"_id": 0})
+            {"$and": [scope, {"email": {"$regex": f"^{re.escape(email.strip())}$", "$options": "i"}}]},
+            {"_id": 0})
         if row:
             return row
 
@@ -40,14 +52,15 @@ async def find_matching_customer(*, name: Optional[str] = None, phone: Optional[
         # without a country code / leading 0 still matches how it was
         # originally entered into the CRM.
         tail = phone_digits[-8:]
-        candidates = await db.customers.find({}, {"_id": 0}).to_list(5000)
+        candidates = await db.customers.find(scope, {"_id": 0}).to_list(5000)
         for row in candidates:
             if _digits(row.get("phone")).endswith(tail):
                 return row
 
     if name and name.strip():
         row = await db.customers.find_one(
-            {"name": {"$regex": re.escape(name.strip()), "$options": "i"}}, {"_id": 0})
+            {"$and": [scope, {"name": {"$regex": re.escape(name.strip()), "$options": "i"}}]},
+            {"_id": 0})
         if row:
             return row
 
@@ -78,7 +91,8 @@ def guest_context(customer: dict) -> str:
 
 
 async def find_or_create_customer_by_phone(phone: str, *, name: str = "Guest",
-                                             tag: str = "guest") -> dict:
+                                             tag: str = "guest",
+                                             business_id: Optional[str] = None) -> dict:
     """Resolves an existing db.customers record by phone, or creates a
     minimal real one — used by guest self-checkout flows (bill splitting)
     where a phone is all that's verified.
@@ -93,8 +107,16 @@ async def find_or_create_customer_by_phone(phone: str, *, name: str = "Guest",
     separate identity_customers collection — create_transaction's loyalty
     math reads/writes db.customers, so that's the record that actually
     needs to exist for a split-bill payment to earn points.
+
+    business_id must be supplied by the caller (the guest's own split/
+    table already resolved one) and is stamped on a newly created record —
+    previously omitted entirely, so every guest-checkout customer created
+    this way had no businessId at all, regardless of which business's
+    table they paid from.
     """
-    existing = await find_matching_customer(phone=phone)
+    if not business_id:
+        raise ValueError("business_id is required to create a customer")
+    existing = await find_matching_customer(phone=phone, business_id=business_id)
     if existing:
         return existing
     doc = {
@@ -102,7 +124,7 @@ async def find_or_create_customer_by_phone(phone: str, *, name: str = "Guest",
         "membershipTier": "Bronze", "totalSpent": 0.0, "visits": 0, "points": 0,
         "joinDate": datetime.utcnow().isoformat(), "tags": [tag],
         "isVip": False, "notes": "", "noShowCount": 0, "avgSpendPerVisit": 0.0,
-        "storeCredit": 0.0,
+        "storeCredit": 0.0, "businessId": business_id,
     }
     await db.customers.insert_one(dict(doc))
     doc.pop("_id", None)

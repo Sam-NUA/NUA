@@ -8,6 +8,8 @@ import { Search, CornerDownLeft, Package } from 'lucide-react';
  * Global command bar — Ctrl/⌘+K anywhere. Type what you want:
  * a page ("roster", "end of day"), or a product name (jumps to Item Library).
  * Faster than the sidebar for anyone who already knows what they're after.
+ * See VoiceCommandButton.jsx for the always-visible mic equivalent of this
+ * (same idea, spoken instead of typed).
  */
 const DESTINATIONS = [
   { label: 'Today', path: '/today', keywords: 'home overview pulse alerts briefing vips 86', roles: ['owner', 'manager', 'cashier', 'kitchen'] },

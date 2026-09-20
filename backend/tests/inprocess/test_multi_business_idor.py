@@ -86,3 +86,50 @@ def test_default_business_is_not_reachable_by_an_unrelated_owner(client):
     unrelated_headers = _headers_for(unrelated_id, business_id="BIZ-UNRELATED")
     assert req(client, "GET", "/api/business/default", headers=unrelated_headers).status_code == 404
     assert req(client, "GET", "/api/business/default/summary", headers=unrelated_headers).status_code == 404
+
+
+def test_export_of_a_collection_with_zero_of_your_own_docs_does_not_leak_every_business(client, owner_headers):
+    """export_business_data used to re-query with NO filter at all whenever
+    a business genuinely had zero docs in some collection — a brand-new
+    business with no vouchers yet, say — handing the exporting owner every
+    OTHER business's data in that collection too. Found during the Trust
+    Release final readiness audit.
+
+    Doesn't assert an exact zero count for the new business — this suite's
+    shared DB can carry incidental untagged voucher rows from unrelated
+    tests, which tenant_scope_filter's own (separate, intentional)
+    fail-open-to-untagged-legacy-data rule legitimately counts everywhere.
+    The actual invariant this test guards is narrower and unaffected by
+    that: a voucher explicitly tagged to a SPECIFIC OTHER, real business
+    must never appear in a brand-new business's export."""
+    from database import db
+    import asyncio
+    import uuid
+
+    other_biz_id = f"ZZZ-EXPORT-LEAK-SOURCE-{uuid.uuid4().hex[:8]}"
+    leak_voucher_id = f"ZZZ-EXPORT-LEAK-VOUCHER-{uuid.uuid4().hex[:8]}"
+
+    async def _seed():
+        await db.vouchers.insert_one({
+            "id": leak_voucher_id, "code": leak_voucher_id, "label": "Other biz voucher",
+            "valueType": "amount", "value": 10.0, "status": "active", "businessId": other_biz_id,
+        })
+    asyncio.get_event_loop().run_until_complete(_seed())
+    try:
+        r = req(client, "POST", "/api/business/create", headers=owner_headers,
+                 json={"name": "ZZZ Brand New Biz With No Vouchers"})
+        assert r.status_code == 200, r.text
+        biz = r.json()
+
+        export = req(client, "GET", f"/api/business/{biz['id']}/export", headers=owner_headers,
+                      params={"collection": "vouchers"})
+        assert export.status_code == 200, export.text
+        vouchers = export.json()["vouchers"]
+        assert all(v.get("id") != leak_voucher_id for v in vouchers["data"]), (
+            "a voucher explicitly tagged to a specific OTHER business must never appear in "
+            "this brand-new business's export, even when this business itself has zero "
+            "vouchers of its own"
+        )
+    finally:
+        asyncio.get_event_loop().run_until_complete(
+            db.vouchers.delete_many({"id": leak_voucher_id}))

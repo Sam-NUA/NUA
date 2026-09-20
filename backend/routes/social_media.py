@@ -18,6 +18,7 @@ import logging
 
 from database import db
 from deps import get_user, require_owner_or_manager
+from middleware.actor_context import tenant_scope_filter, tenant_owns_strict
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -63,12 +64,12 @@ class AIGenerateIn(BaseModel):
 
 # ============ ACCOUNT CRUD ============
 @router.get("/social/accounts")
-async def list_accounts(_: dict = Depends(get_user)):
+async def list_accounts(user: dict = Depends(get_user)):
     # Only return rows that match the new schema. Legacy docs from older
     # modules (channel_menus / v25) lived in the same collection and had a
     # different shape — they would render as empty cards in the UI.
     accounts = await db.social_accounts.find(
-        {"tokenStatus": {"$exists": True}},
+        {"tokenStatus": {"$exists": True}, **tenant_scope_filter(user.get("businessId"))},
         {"_id": 0},
     ).to_list(50)
     return accounts
@@ -81,7 +82,8 @@ async def connect_account(body: AccountConnectIn, user: dict = Depends(require_o
     handle = body.handle.strip().lstrip("@")
     if not handle:
         raise HTTPException(400, "Handle is required")
-    existing = await db.social_accounts.find_one({"platform": body.platform, "handle": handle})
+    existing = await db.social_accounts.find_one(
+        {"platform": body.platform, "handle": handle, **tenant_scope_filter(user.get("businessId"))})
     if existing:
         raise HTTPException(409, "This handle is already connected on that platform")
     doc = {
@@ -94,6 +96,7 @@ async def connect_account(body: AccountConnectIn, user: dict = Depends(require_o
         "tokenStatus": "mock_active",
         "connectedAt": datetime.now(timezone.utc).isoformat(),
         "connectedBy": user.get("email"),
+        "businessId": user.get("businessId"),
     }
     await db.social_accounts.insert_one(doc)
     doc.pop("_id", None)
@@ -101,8 +104,11 @@ async def connect_account(body: AccountConnectIn, user: dict = Depends(require_o
 
 
 @router.delete("/social/accounts/{account_id}")
-async def disconnect_account(account_id: str, _: dict = Depends(require_owner_or_manager)):
-    res = await db.social_accounts.delete_one({"id": account_id})
+async def disconnect_account(account_id: str, user: dict = Depends(require_owner_or_manager)):
+    guard = await db.social_accounts.find_one({"$and": [{"id": account_id}, tenant_scope_filter(user.get("businessId"))]}, {"_id": 0, "id": 1, "businessId": 1})
+    if guard is None or not tenant_owns_strict(guard.get("businessId"), user.get("businessId")):
+        raise HTTPException(404, "Account not found")
+    res = await db.social_accounts.delete_one({"$and": [{"id": account_id}, tenant_scope_filter(user.get("businessId"))]})
     if res.deleted_count == 0:
         raise HTTPException(404, "Account not found")
     return {"deleted": True}
@@ -110,8 +116,8 @@ async def disconnect_account(account_id: str, _: dict = Depends(require_owner_or
 
 # ============ POSTS ============
 @router.get("/social/posts")
-async def list_posts(status: Optional[str] = None, platform: Optional[str] = None, _: dict = Depends(get_user)):
-    q: dict = {}
+async def list_posts(status: Optional[str] = None, platform: Optional[str] = None, user: dict = Depends(get_user)):
+    q: dict = tenant_scope_filter(user.get("businessId"))
     if status:
         q["status"] = status
     if platform:
@@ -130,7 +136,8 @@ async def create_post(body: SocialPostIn, user: dict = Depends(require_owner_or_
     if body.status and body.status not in ("draft", "scheduled", "published", "failed"):
         raise HTTPException(400, "status must be draft | scheduled | published | failed")
     # Must have a connected account for that platform
-    if not await db.social_accounts.find_one({"platform": body.platform}):
+    if not await db.social_accounts.find_one(
+            {"platform": body.platform, **tenant_scope_filter(user.get("businessId"))}):
         raise HTTPException(400, f"No connected {body.platform} account — connect one first")
     doc = {
         "id": str(uuid.uuid4()),
@@ -138,6 +145,7 @@ async def create_post(body: SocialPostIn, user: dict = Depends(require_owner_or_
         "status": body.status or "draft",
         "createdBy": user.get("email"),
         "createdAt": datetime.now(timezone.utc).isoformat(),
+        "businessId": user.get("businessId"),
     }
     await db.social_posts.insert_one(doc)
     doc.pop("_id", None)
@@ -152,8 +160,8 @@ async def duplicate_post(post_id: str, body: Optional[dict] = None, user: dict =
     high-performing caption without re-running AI.
     """
     body = body or {}
-    src = await db.social_posts.find_one({"id": post_id}, {"_id": 0})
-    if not src:
+    src = await db.social_posts.find_one({"$and": [{"id": post_id}, tenant_scope_filter(user.get("businessId"))]}, {"_id": 0})
+    if not src or not tenant_owns_strict(src.get("businessId"), user.get("businessId")):
         raise HTTPException(404, "Post not found")
     new_status = body.get("status", "draft")
     if new_status not in ("draft", "scheduled"):
@@ -190,10 +198,13 @@ async def duplicate_post(post_id: str, body: Optional[dict] = None, user: dict =
 
 
 @router.patch("/social/posts/{post_id}")
-async def update_post(post_id: str, body: dict, _: dict = Depends(require_owner_or_manager)):
+async def update_post(post_id: str, body: dict, user: dict = Depends(require_owner_or_manager)):
     """Patch an existing post — used by the calendar's drag-to-reschedule
     flow. Only a small, explicit set of fields is mutable; status is
     validated against the same allow-list as create_post."""
+    guard = await db.social_posts.find_one({"$and": [{"id": post_id}, tenant_scope_filter(user.get("businessId"))]}, {"_id": 0, "id": 1, "businessId": 1})
+    if guard is None or not tenant_owns_strict(guard.get("businessId"), user.get("businessId")):
+        raise HTTPException(404, "Post not found")
     allowed = {"caption", "hashtags", "imageUrl", "scheduledFor", "status", "postType"}
     update = {k: v for k, v in body.items() if k in allowed}
     if "status" in update and update["status"] not in ("draft", "scheduled", "published", "failed"):
@@ -202,31 +213,34 @@ async def update_post(post_id: str, body: dict, _: dict = Depends(require_owner_
         raise HTTPException(400, "postType must be post | story | reel")
     if not update:
         raise HTTPException(400, "Nothing to update")
-    res = await db.social_posts.update_one({"id": post_id}, {"$set": update})
+    res = await db.social_posts.update_one({"$and": [{"id": post_id}, tenant_scope_filter(user.get("businessId"))]}, {"$set": update})
     if res.matched_count == 0:
         raise HTTPException(404, "Post not found")
-    return await db.social_posts.find_one({"id": post_id}, {"_id": 0})
+    return await db.social_posts.find_one({"$and": [{"id": post_id}, tenant_scope_filter(user.get("businessId"))]}, {"_id": 0})
 
 
 @router.delete("/social/posts/{post_id}")
-async def delete_post(post_id: str, _: dict = Depends(require_owner_or_manager)):
-    res = await db.social_posts.delete_one({"id": post_id})
+async def delete_post(post_id: str, user: dict = Depends(require_owner_or_manager)):
+    guard = await db.social_posts.find_one({"$and": [{"id": post_id}, tenant_scope_filter(user.get("businessId"))]}, {"_id": 0, "id": 1, "businessId": 1})
+    if guard is None or not tenant_owns_strict(guard.get("businessId"), user.get("businessId")):
+        raise HTTPException(404, "Post not found")
+    res = await db.social_posts.delete_one({"$and": [{"id": post_id}, tenant_scope_filter(user.get("businessId"))]})
     if res.deleted_count == 0:
         raise HTTPException(404, "Post not found")
     return {"deleted": True}
 
 
 @router.post("/social/posts/{post_id}/publish")
-async def publish_post(post_id: str, _: dict = Depends(require_owner_or_manager)):
+async def publish_post(post_id: str, user: dict = Depends(require_owner_or_manager)):
     """Marks a post as published. Real cross-posting to Meta/TikTok/X is
     deferred until per-platform OAuth is wired — this endpoint flips the
     status flag and stamps publishedAt so the UI flow works end-to-end."""
-    post = await db.social_posts.find_one({"id": post_id}, {"_id": 0})
-    if not post:
+    post = await db.social_posts.find_one({"$and": [{"id": post_id}, tenant_scope_filter(user.get("businessId"))]}, {"_id": 0})
+    if not post or not tenant_owns_strict(post.get("businessId"), user.get("businessId")):
         raise HTTPException(404, "Post not found")
     now = datetime.now(timezone.utc).isoformat()
     await db.social_posts.update_one(
-        {"id": post_id},
+        {"$and": [{"id": post_id}, tenant_scope_filter(user.get("businessId"))]},
         {"$set": {"status": "published", "publishedAt": now, "publishProvider": "stub"}},
     )
     logger.info("Social publish (stub) → post=%s platform=%s", post_id, post.get("platform"))
@@ -235,11 +249,12 @@ async def publish_post(post_id: str, _: dict = Depends(require_owner_or_manager)
 
 # ============ AI CONTENT GENERATION ============
 @router.post("/social/ai-generate")
-async def ai_generate(body: AIGenerateIn, _: dict = Depends(require_owner_or_manager)):
+async def ai_generate(body: AIGenerateIn, user: dict = Depends(require_owner_or_manager)):
     """Generates caption + hashtags + a one-line image alt for a product,
     promotion or general special. Returns ONE generation per platform
     requested. Falls back to a templated copy when the LLM key is missing
     or upstream errors, so the UX never hits a dead end."""
+    biz_scope = tenant_scope_filter(user.get("businessId"))
     # 1. Resolve the source content
     subject_label = ""
     subject_detail = ""
@@ -247,7 +262,7 @@ async def ai_generate(body: AIGenerateIn, _: dict = Depends(require_owner_or_man
     if body.sourceType == "product":
         if not body.sourceId:
             raise HTTPException(400, "sourceId is required for product generation")
-        p = await db.products.find_one({"id": body.sourceId}, {"_id": 0})
+        p = await db.products.find_one({"id": body.sourceId, **biz_scope}, {"_id": 0})
         if not p:
             raise HTTPException(404, "Product not found")
         subject_label = p.get("name", "our latest dish")
@@ -259,7 +274,7 @@ async def ai_generate(body: AIGenerateIn, _: dict = Depends(require_owner_or_man
     elif body.sourceType == "promotion":
         if not body.sourceId:
             raise HTTPException(400, "sourceId is required for promotion generation")
-        promo = await db.promotions.find_one({"id": body.sourceId}, {"_id": 0})
+        promo = await db.promotions.find_one({"id": body.sourceId, **biz_scope}, {"_id": 0})
         if not promo:
             raise HTTPException(404, "Promotion not found")
         subject_label = promo.get("name", "our latest deal")
@@ -400,7 +415,7 @@ PLATFORM_TIME_BANDS = {
 
 
 @router.get("/social/best-times")
-async def best_times(_: dict = Depends(get_user)):
+async def best_times(user: dict = Depends(get_user)):
     """Suggest a 'best time to post' (local HH:MM) per platform, derived from
     your own POS peak-hour analytics. Falls back to the platform's safety
     band when the restaurant has no transactions yet.
@@ -408,16 +423,16 @@ async def best_times(_: dict = Depends(get_user)):
     Returns:
       [{platform, recommendedHour, recommendedTime, sampleSize, source}]
     """
-    return await _compute_best_times()
+    return await _compute_best_times(user.get("businessId"))
 
 
-async def _compute_best_times() -> list:
+async def _compute_best_times(business_id: Optional[str] = None) -> list:
     """Internal — same calculation as /social/best-times, callable from
     the AI weekly-plan flow so each platform's posts get scheduled at
     that channel's own optimal hour."""
     since = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
     pipeline = [
-        {"$match": {"timestamp": {"$gte": since}}},
+        {"$match": {"timestamp": {"$gte": since}, **tenant_scope_filter(business_id)}},
         {"$unwind": "$items"},
         {
             "$group": {
@@ -521,10 +536,11 @@ async def ai_weekly_plan(body: WeeklyPlanIn, background_tasks: BackgroundTasks,
     # If owner asked for per-platform best times, mine the POS analytics once
     # up front and build a `{platform: hour}` map. Falls back to `postTime`
     # silently when the analytics return nothing useful.
+    biz = user.get("businessId")
     best_time_map: dict = {}
     if body.useBestTimes:
         try:
-            for row in await _compute_best_times():
+            for row in await _compute_best_times(biz):
                 best_time_map[row["platform"]] = int(row["recommendedHour"])
         except Exception as exc:
             logger.warning("best-times computation failed (%s) — falling back to fixed postTime", exc)
@@ -533,7 +549,7 @@ async def ai_weekly_plan(body: WeeklyPlanIn, background_tasks: BackgroundTasks,
     # 1. Pick the platforms — default to all connected accounts. Be specific
     # about WHY the request fails so the UI can give an actionable nudge.
     connected_accounts = await db.social_accounts.find(
-        {"tokenStatus": {"$exists": True}}, {"_id": 0, "platform": 1},
+        {"tokenStatus": {"$exists": True}, **tenant_scope_filter(biz)}, {"_id": 0, "platform": 1},
     ).to_list(50)
     connected_keys = sorted({a["platform"] for a in connected_accounts})
     if not connected_keys:
@@ -567,7 +583,7 @@ async def ai_weekly_plan(body: WeeklyPlanIn, background_tasks: BackgroundTasks,
     # when there aren't enough transactions to mine.
     since = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
     pipeline = [
-        {"$match": {"timestamp": {"$gte": since}}},
+        {"$match": {"timestamp": {"$gte": since}, **tenant_scope_filter(biz)}},
         {"$unwind": "$items"},
         {"$group": {"_id": "$items.productId", "qty": {"$sum": "$items.quantity"}}},
         {"$sort": {"qty": -1}}, {"$limit": 7},
@@ -579,19 +595,19 @@ async def ai_weekly_plan(body: WeeklyPlanIn, background_tasks: BackgroundTasks,
         top_ids = []
     if not top_ids:
         fallback = await db.products.find(
-            {"eightySixed": {"$ne": True}}, {"_id": 0, "id": 1},
+            {"eightySixed": {"$ne": True}, **tenant_scope_filter(biz)}, {"_id": 0, "id": 1},
         ).to_list(7)
         top_ids = [p["id"] for p in fallback]
     products_for_plan = []
     for pid in top_ids:
-        p = await db.products.find_one({"id": pid}, {"_id": 0})
+        p = await db.products.find_one({"id": pid, **tenant_scope_filter(biz)}, {"_id": 0})
         if p:
             products_for_plan.append(p)
     if not products_for_plan:
         raise HTTPException(400, "No products available to seed a plan — add a product or run a sale first")
 
     # 3. Active promotions
-    promos = await db.promotions.find({"active": True}, {"_id": 0}).to_list(10)
+    promos = await db.promotions.find({"active": True, **tenant_scope_filter(biz)}, {"_id": 0}).to_list(10)
 
     # 4. If we're persisting, wipe any leftover auto-plan posts in the upcoming
     # window so re-runs don't pile up duplicates. Preview (save=false) MUST NOT
@@ -602,6 +618,7 @@ async def ai_weekly_plan(body: WeeklyPlanIn, background_tasks: BackgroundTasks,
             "autoPlanRun": True,
             "status": "scheduled",
             "scheduledFor": {"$gte": datetime.now(timezone.utc).isoformat(), "$lte": window_end},
+            **tenant_scope_filter(biz),
         })
 
     # 5. Walk N days × P platforms, alternating the source type. The plan-day
@@ -671,6 +688,7 @@ async def ai_weekly_plan(body: WeeklyPlanIn, background_tasks: BackgroundTasks,
             "createdBy": user.get("email"),
             "createdAt": datetime.now(timezone.utc).isoformat(),
             "updatedAt": datetime.now(timezone.utc).isoformat(),
+            "businessId": biz,
         })
         background_tasks.add_task(
             _run_weekly_plan_job,
@@ -678,6 +696,7 @@ async def ai_weekly_plan(body: WeeklyPlanIn, background_tasks: BackgroundTasks,
             tone=tone, created_by=user.get("email"),
             best_time_map=best_time_map,
             fallback_hour=target_hour, fallback_minute=target_min,
+            business_id=biz,
         )
         return {
             "planId": plan_id,
@@ -725,7 +744,8 @@ async def ai_weekly_plan(body: WeeklyPlanIn, background_tasks: BackgroundTasks,
 async def _run_weekly_plan_job(*, plan_id: str, plan_days: list, platforms: list,
                                 tone: str, created_by: Optional[str],
                                 best_time_map: Optional[dict] = None,
-                                fallback_hour: int = 12, fallback_minute: int = 0):
+                                fallback_hour: int = 12, fallback_minute: int = 0,
+                                business_id: Optional[str] = None):
     """Background worker for `ai-weekly-plan`. Streams progress into
     `social_plan_jobs` so the UI can render a progress bar without holding
     the HTTP connection open. Idempotent against partial failures: each post
@@ -769,6 +789,7 @@ async def _run_weekly_plan_job(*, plan_id: str, plan_days: list, platforms: list
                     "isFallback": bool(gen.get("isFallback")),
                     "createdBy": created_by,
                     "createdAt": datetime.now(timezone.utc).isoformat(),
+                    "businessId": business_id,
                 }
                 await db.social_posts.insert_one(doc)
                 completed += 1
@@ -801,9 +822,9 @@ async def _run_weekly_plan_job(*, plan_id: str, plan_days: list, platforms: list
 
 
 @router.get("/social/plan-jobs/{plan_id}")
-async def get_plan_job(plan_id: str, _: dict = Depends(get_user)):
+async def get_plan_job(plan_id: str, user: dict = Depends(get_user)):
     """Poll progress for an in-flight or completed weekly plan."""
-    job = await db.social_plan_jobs.find_one({"planId": plan_id}, {"_id": 0})
-    if not job:
+    job = await db.social_plan_jobs.find_one({"$and": [{"planId": plan_id}, tenant_scope_filter(user.get("businessId"))]}, {"_id": 0})
+    if not job or not tenant_owns_strict(job.get("businessId"), user.get("businessId")):
         raise HTTPException(404, "Plan job not found")
     return job

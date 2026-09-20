@@ -5,7 +5,7 @@ cohort retention, booking heatmap, 2FA, GDPR.
 from fastapi import APIRouter, HTTPException, Depends
 from deps import get_user, require_owner, require_owner_or_manager, require_permission
 from database import db
-from middleware.actor_context import tenant_scope_filter
+from middleware.actor_context import tenant_scope_filter, tenant_owns
 from routes.gamification import compute_staff_performance
 from datetime import datetime, timezone, timedelta
 import logging
@@ -27,16 +27,16 @@ async def get_dock_badges(_: dict = Depends(get_user)):
     today = now.date().isoformat()
     badges = {}
     # Bookings: new today
-    new_bookings = await db.reservations.count_documents({"createdAt": {"$gte": today}})
+    new_bookings = await db.reservations.count_documents({"createdAt": {"$gte": today}, **tenant_scope_filter()})
     if new_bookings: badges["reservations"] = new_bookings
     # Kitchen: orders firing > 10 min
-    stale = await db.kitchen_orders.count_documents({"status": {"$in": ["preparing", "fired"]}, "firedAt": {"$lte": ten_min_ago}})
+    stale = await db.kitchen_orders.count_documents({"status": {"$in": ["preparing", "fired"]}, "firedAt": {"$lte": ten_min_ago}, **tenant_scope_filter()})
     if stale: badges["kitchen"] = stale
     # POS: open tabs
-    open_tabs = await db.pos_tabs.count_documents({"status": "open"})
+    open_tabs = await db.pos_tabs.count_documents({"status": "open", **tenant_scope_filter()})
     if open_tabs: badges["pos"] = open_tabs
     # Waitlist
-    wl = await db.waitlist.count_documents({"status": "waiting"})
+    wl = await db.waitlist.count_documents({"status": "waiting", **tenant_scope_filter()})
     if wl: badges["waitlist"] = wl
     return badges
 
@@ -46,7 +46,9 @@ async def get_dock_badges(_: dict = Depends(get_user)):
 # =============================================================================
 @router.get("/pos/tabs")
 async def get_tabs(_: dict = Depends(get_user)):
-    tabs = await db.pos_tabs.find({"status": "open"}, {"_id": 0}).sort("createdAt", -1).to_list(200)
+    tabs = await db.pos_tabs.find(
+        {"status": "open", **tenant_scope_filter(_.get("businessId"))}, {"_id": 0}
+    ).sort("createdAt", -1).to_list(200)
     return tabs
 
 @router.post("/pos/tabs")
@@ -73,6 +75,7 @@ async def create_tab(data: dict, user: dict = Depends(get_user)):
         "checkoutProvider": data.get("checkoutProvider"),
         "checkoutSessionId": data.get("checkoutSessionId"),
         "status": "open",
+        "businessId": user.get("businessId"),
         "createdBy": user["id"],
         "createdByName": user["name"],
         "createdAt": datetime.now(timezone.utc).isoformat(),
@@ -82,8 +85,8 @@ async def create_tab(data: dict, user: dict = Depends(get_user)):
     return tab
 
 @router.delete("/pos/tabs/{tab_id}")
-async def delete_tab(tab_id: str, _: dict = Depends(get_user)):
-    await db.pos_tabs.delete_one({"id": tab_id})
+async def delete_tab(tab_id: str, user: dict = Depends(get_user)):
+    await db.pos_tabs.delete_one({"id": tab_id, **tenant_scope_filter(user.get("businessId"))})
     return {"message": "Tab closed"}
 
 
@@ -95,9 +98,10 @@ async def update_tab(tab_id: str, data: dict, _: dict = Depends(get_user)):
     patch = {k: v for k, v in data.items() if k in allowed}
     if not patch:
         raise HTTPException(status_code=400, detail="No updatable fields provided")
-    before = await db.pos_tabs.find_one({"id": tab_id}, {"_id": 0})
+    scope = tenant_scope_filter(_.get("businessId"))
+    before = await db.pos_tabs.find_one({"id": tab_id, **scope}, {"_id": 0})
     result = await db.pos_tabs.find_one_and_update(
-        {"id": tab_id}, {"$set": patch}, return_document=True,
+        {"id": tab_id, **scope}, {"$set": patch}, return_document=True,
     )
     if not result:
         raise HTTPException(status_code=404, detail="Tab not found")
@@ -125,14 +129,15 @@ async def merge_tabs(tab_id: str, data: dict, _: dict = Depends(get_user)):
     other_id = data.get("otherTabId")
     if not other_id or other_id == tab_id:
         raise HTTPException(status_code=400, detail="A different otherTabId is required")
-    primary = await db.pos_tabs.find_one({"id": tab_id}, {"_id": 0})
-    other = await db.pos_tabs.find_one({"id": other_id}, {"_id": 0})
+    scope = tenant_scope_filter(_.get("businessId"))
+    primary = await db.pos_tabs.find_one({"id": tab_id, **scope}, {"_id": 0})
+    other = await db.pos_tabs.find_one({"id": other_id, **scope}, {"_id": 0})
     if not primary or not other:
         raise HTTPException(status_code=404, detail="Tab not found")
     merged_cart = (primary.get("cart") or []) + (other.get("cart") or [])
-    await db.pos_tabs.update_one({"id": tab_id}, {"$set": {"cart": merged_cart}})
-    await db.pos_tabs.delete_one({"id": other_id})
-    result = await db.pos_tabs.find_one({"id": tab_id}, {"_id": 0})
+    await db.pos_tabs.update_one({"id": tab_id, **scope}, {"$set": {"cart": merged_cart}})
+    await db.pos_tabs.delete_one({"id": other_id, **scope})
+    result = await db.pos_tabs.find_one({"id": tab_id, **scope}, {"_id": 0})
 
     # Two tables joined into one check: the absorbed table's kitchen ticket
     # moves onto the surviving table too, or the kitchen keeps cooking for a
@@ -157,7 +162,8 @@ async def split_tab(tab_id: str, data: dict, user: dict = Depends(get_user)):
     ways = int(data.get("ways", 2))
     if ways < 2 or ways > 6:
         raise HTTPException(status_code=400, detail="ways must be between 2 and 6")
-    tab = await db.pos_tabs.find_one({"id": tab_id}, {"_id": 0})
+    scope = tenant_scope_filter(user.get("businessId"))
+    tab = await db.pos_tabs.find_one({"id": tab_id, **scope}, {"_id": 0})
     if not tab:
         raise HTTPException(status_code=404, detail="Tab not found")
     cart = tab.get("cart") or []
@@ -181,6 +187,7 @@ async def split_tab(tab_id: str, data: dict, user: dict = Depends(get_user)):
             "serverId": tab.get("serverId"),
             "note": tab.get("note"),
             "status": "open",
+            "businessId": user.get("businessId"),
             "createdBy": user["id"],
             "createdByName": user["name"],
             "createdAt": datetime.now(timezone.utc).isoformat(),
@@ -189,7 +196,7 @@ async def split_tab(tab_id: str, data: dict, user: dict = Depends(get_user)):
         await db.pos_tabs.insert_one(new_tab)
         new_tab.pop("_id", None)
         new_tabs.append(new_tab)
-    await db.pos_tabs.delete_one({"id": tab_id})
+    await db.pos_tabs.delete_one({"id": tab_id, **scope})
     return {"tabs": new_tabs}
 
 
@@ -238,13 +245,14 @@ async def list_drawer_events(user: dict = Depends(require_owner_or_manager)):
 # VARIANT MATRIX (size × milk × temp)
 # =============================================================================
 @router.put("/products/{product_id}/variants")
-async def set_variants(product_id: str, data: dict, _: dict = Depends(require_owner_or_manager)):
+async def set_variants(product_id: str, data: dict, user: dict = Depends(require_owner_or_manager)):
     # data: { axes: [{name:"Size", values:["S","M","L"]}, ...], matrix: {"S|Whole":12.0, ...} }
     await db.products.update_one(
-        {"id": product_id},
+        {"id": product_id, **tenant_scope_filter(user.get("businessId"))},
         {"$set": {"variants": {"axes": data.get("axes", []), "matrix": data.get("matrix", {})}}},
     )
-    p = await db.products.find_one({"id": product_id}, {"_id": 0})
+    p = await db.products.find_one(
+        {"id": product_id, **tenant_scope_filter(user.get("businessId"))}, {"_id": 0})
     return p
 
 
@@ -252,7 +260,7 @@ async def set_variants(product_id: str, data: dict, _: dict = Depends(require_ow
 # BULK CSV IMPORT for Items
 # =============================================================================
 @router.post("/items/bulk-import")
-async def bulk_import(data: dict, _: dict = Depends(require_owner_or_manager)):
+async def bulk_import(data: dict, user: dict = Depends(require_owner_or_manager)):
     rows = data.get("rows", [])  # list of {name, category, price, cost, stock, description}
     created = 0
     for row in rows:
@@ -267,6 +275,7 @@ async def bulk_import(data: dict, _: dict = Depends(require_owner_or_manager)):
             "description": row.get("description", ""),
             "image": row.get("image", ""),
             "active": True,
+            "businessId": user.get("businessId"),
             "createdAt": datetime.now(timezone.utc).isoformat(),
         }
         await db.products.insert_one(prod)
@@ -283,6 +292,7 @@ async def voice_order(data: dict, _: dict = Depends(get_user)):
     mime = data.get("mime", "audio/webm")
     if not audio_b64:
         raise HTTPException(status_code=400, detail="audioBase64 required")
+    tmp_path = None
     try:
         from openai import OpenAI
         import tempfile
@@ -294,15 +304,23 @@ async def voice_order(data: dict, _: dict = Depends(get_user)):
         )
         audio_bytes = base64.b64decode(audio_b64.split(",", 1)[-1])
         ext = ".webm" if "webm" in mime else ".mp3" if "mp3" in mime else ".wav"
-        with tempfile.NamedTemporaryFile(suffix=ext, delete=False) as tmp:
+        # Raw guest audio is not retained by default — used to be written
+        # with delete=False and never cleaned up (found during the Trust
+        # Release final readiness audit), leaving every voice-order clip on
+        # local disk indefinitely. The `finally` block below deletes it on
+        # every path, success or failure, and it's still only ever a local
+        # temp file used for exactly one transcription call, never persisted
+        # to the database or object storage.
+        fd, tmp_path = tempfile.mkstemp(suffix=ext)
+        with os.fdopen(fd, "wb") as tmp:
             tmp.write(audio_bytes)
             tmp.flush()
-            with open(tmp.name, "rb") as af:
-                tr = client.audio.transcriptions.create(model="whisper-1", file=af)
+        with open(tmp_path, "rb") as af:
+            tr = client.audio.transcriptions.create(model="whisper-1", file=af)
         transcript = tr.text if hasattr(tr, "text") else str(tr)
 
         # Match transcript words to products
-        products = await db.products.find({}, {"_id": 0, "id": 1, "name": 1, "price": 1}).to_list(1000)
+        products = await db.products.find(tenant_scope_filter(), {"_id": 0, "id": 1, "name": 1, "price": 1}).to_list(1000)
         suggestions = []
         words = transcript.lower()
         for p in products:
@@ -318,6 +336,12 @@ async def voice_order(data: dict, _: dict = Depends(get_user)):
         return {"transcript": transcript, "suggestions": suggestions}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Voice transcription failed: {str(e)[:200]}")
+    finally:
+        if tmp_path:
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
 
 
 # =============================================================================
@@ -325,7 +349,7 @@ async def voice_order(data: dict, _: dict = Depends(get_user)):
 # =============================================================================
 @router.get("/analytics/inventory-anomalies")
 async def inventory_anomalies(_: dict = Depends(require_owner_or_manager)):
-    products = await db.products.find({}, {"_id": 0}).to_list(1000)
+    products = await db.products.find(tenant_scope_filter(), {"_id": 0}).to_list(1000)
     seven_days_ago = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
     anomalies = []
     for p in products:
@@ -559,11 +583,13 @@ async def auto_roster(data: dict, _: dict = Depends(require_owner_or_manager)):
 
 
 @router.post("/staff/roster/commit-auto")
-async def commit_auto_roster(data: dict, _: dict = Depends(require_owner_or_manager)):
+async def commit_auto_roster(data: dict, user: dict = Depends(require_owner_or_manager)):
     shifts = data.get("shifts", [])
     inserted = 0
     for s in shifts:
-        shift = {**s, "id": f"SHIFT-{str(uuid.uuid4())[:8].upper()}", "createdAt": datetime.now(timezone.utc).isoformat()}
+        shift = {**s, "id": f"SHIFT-{str(uuid.uuid4())[:8].upper()}",
+                 "businessId": user.get("businessId"),
+                 "createdAt": datetime.now(timezone.utc).isoformat()}
         shift.pop("aiGenerated", None)
         await db.roster_shifts.insert_one(shift)
         inserted += 1
@@ -576,9 +602,12 @@ async def commit_auto_roster(data: dict, _: dict = Depends(require_owner_or_mana
 @router.get("/staff/shift-swaps")
 async def get_swaps(user: dict = Depends(get_user)):
     if user["role"] in ("owner", "manager"):
-        swaps = await db.shift_swaps.find({}, {"_id": 0}).sort("createdAt", -1).to_list(200)
+        swaps = await db.shift_swaps.find(tenant_scope_filter(user.get("businessId")), {"_id": 0}).sort("createdAt", -1).to_list(200)
     else:
-        swaps = await db.shift_swaps.find({"$or": [{"requestedBy": user["id"]}, {"targetStaffId": user["id"]}]}, {"_id": 0}).to_list(200)
+        swaps = await db.shift_swaps.find({
+            "$or": [{"requestedBy": user["id"]}, {"targetStaffId": user["id"]}],
+            **tenant_scope_filter(user.get("businessId")),
+        }, {"_id": 0}).to_list(200)
     return swaps
 
 @router.post("/staff/shift-swaps")
@@ -592,6 +621,7 @@ async def create_swap(data: dict, user: dict = Depends(get_user)):
         "targetStaffName": data.get("targetStaffName"),
         "reason": data.get("reason", ""),
         "status": "pending",
+        "businessId": user.get("businessId"),
         "createdAt": datetime.now(timezone.utc).isoformat(),
     }
     await db.shift_swaps.insert_one(swap)
@@ -600,19 +630,23 @@ async def create_swap(data: dict, user: dict = Depends(get_user)):
 
 @router.post("/staff/shift-swaps/{swap_id}/approve")
 async def approve_swap(swap_id: str, user: dict = Depends(require_owner_or_manager)):
-    swap = await db.shift_swaps.find_one({"id": swap_id})
+    scope = tenant_scope_filter(user.get("businessId"))
+    swap = await db.shift_swaps.find_one({"id": swap_id, **scope})
     if not swap: raise HTTPException(status_code=404, detail="not found")
     # Reassign the shift
     await db.roster_shifts.update_one(
-        {"id": swap["shiftId"]},
+        {"id": swap["shiftId"], **scope},
         {"$set": {"staffId": swap["targetStaffId"], "staffName": swap["targetStaffName"]}},
     )
-    await db.shift_swaps.update_one({"id": swap_id}, {"$set": {"status": "approved", "approvedAt": datetime.now(timezone.utc).isoformat(), "approvedBy": user["id"]}})
+    await db.shift_swaps.update_one({"id": swap_id, **scope}, {"$set": {"status": "approved", "approvedAt": datetime.now(timezone.utc).isoformat(), "approvedBy": user["id"]}})
     return {"message": "Swap approved & shift reassigned"}
 
 @router.post("/staff/shift-swaps/{swap_id}/reject")
-async def reject_swap(swap_id: str, _: dict = Depends(require_owner_or_manager)):
-    await db.shift_swaps.update_one({"id": swap_id}, {"$set": {"status": "rejected", "rejectedAt": datetime.now(timezone.utc).isoformat()}})
+async def reject_swap(swap_id: str, user: dict = Depends(require_owner_or_manager)):
+    await db.shift_swaps.update_one(
+        {"id": swap_id, **tenant_scope_filter(user.get("businessId"))},
+        {"$set": {"status": "rejected", "rejectedAt": datetime.now(timezone.utc).isoformat()}},
+    )
     return {"message": "Swap rejected"}
 
 
@@ -621,7 +655,7 @@ async def reject_swap(swap_id: str, _: dict = Depends(require_owner_or_manager))
 # =============================================================================
 @router.get("/analytics/booking-heatmap")
 async def booking_heatmap(_: dict = Depends(require_owner_or_manager)):
-    res = await db.reservations.find({}, {"_id": 0, "date": 1, "time": 1, "partySize": 1}).to_list(5000)
+    res = await db.reservations.find(tenant_scope_filter(), {"_id": 0, "date": 1, "time": 1, "partySize": 1}).to_list(5000)
     # heatmap[dow][hour] = total guests
     DOW = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun']
     heat = {d: {h: 0 for h in range(9, 23)} for d in DOW}
@@ -643,8 +677,8 @@ async def booking_heatmap(_: dict = Depends(require_owner_or_manager)):
 # =============================================================================
 @router.get("/analytics/cohort-retention")
 async def cohort_retention(_: dict = Depends(require_owner_or_manager)):
-    customers = await db.customers.find({}, {"_id": 0, "id": 1, "createdAt": 1}).to_list(5000)
-    tx = await db.transactions.find({}, {"_id": 0, "customerId": 1, "createdAt": 1}).to_list(20000)
+    customers = await db.customers.find({**tenant_scope_filter(), }, {"_id": 0, "id": 1, "createdAt": 1}).to_list(5000)
+    tx = await db.transactions.find(tenant_scope_filter(), {"_id": 0, "customerId": 1, "createdAt": 1}).to_list(20000)
     # Group customers by month of first signup
     cohorts = {}
     for c in customers:
@@ -678,7 +712,8 @@ async def cohort_retention(_: dict = Depends(require_owner_or_manager)):
 @router.get("/auth/2fa/status")
 async def status_2fa(user: dict = Depends(get_user)):
     from services import two_factor
-    fresh = await db.auth_users.find_one({"id": user["id"]}, {"_id": 0}) or {}
+    fresh = await db.auth_users.find_one(
+        {"id": user["id"], **tenant_scope_filter(user.get("businessId"))}, {"_id": 0}) or {}
     pol = await two_factor.policy()
     return {
         "enabled": bool(fresh.get("twoFactorEnabled")),
@@ -719,7 +754,8 @@ async def disable_2fa(data: dict, user: dict = Depends(get_user)):
     owner's account."""
     from routes.auth import verify_password
     from services import two_factor
-    fresh = await db.auth_users.find_one({"id": user["id"]})
+    fresh = await db.auth_users.find_one(
+        {"id": user["id"], **tenant_scope_filter(user.get("businessId"))})
     if not verify_password(data.get("password", ""), (fresh or {}).get("password_hash", "")):
         raise HTTPException(status_code=403, detail="Enter your password to turn off two-factor")
     pol = await two_factor.policy()
@@ -735,7 +771,8 @@ async def disable_2fa(data: dict, user: dict = Depends(get_user)):
 async def regen_recovery_codes(data: dict, user: dict = Depends(get_user)):
     from routes.auth import verify_password
     from services import two_factor
-    fresh = await db.auth_users.find_one({"id": user["id"]})
+    fresh = await db.auth_users.find_one(
+        {"id": user["id"], **tenant_scope_filter(user.get("businessId"))})
     if not verify_password(data.get("password", ""), (fresh or {}).get("password_hash", "")):
         raise HTTPException(status_code=403, detail="Enter your password to generate new codes")
     if not (fresh or {}).get("twoFactorEnabled"):
@@ -755,7 +792,7 @@ async def revoke_trusted_device(device_id: str, user: dict = Depends(get_user)):
 async def get_2fa_policy(_: dict = Depends(require_owner_or_manager)):
     from services import two_factor
     pol = await two_factor.policy()
-    staff = await db.auth_users.find({}, {"_id": 0, "id": 1, "name": 1, "email": 1,
+    staff = await db.auth_users.find(tenant_scope_filter(), {"_id": 0, "id": 1, "name": 1, "email": 1,
                                           "role": 1, "twoFactorEnabled": 1}).to_list(200)
     pol["staff"] = [s for s in staff if s.get("role") in pol["roles"]]
     return pol
@@ -765,34 +802,114 @@ async def get_2fa_policy(_: dict = Depends(require_owner_or_manager)):
 async def save_2fa_policy(data: dict, _: dict = Depends(require_owner)):
     """Only the owner can decide the venue needs a second factor."""
     from services import two_factor
-    return await two_factor.set_policy(bool(data.get("required")), data.get("roles"))
+    return await two_factor.set_policy(bool(data.get("required")), data.get("roles"), _.get("businessId"))
 
 
 # =============================================================================
 # GDPR — data export & erase
 # =============================================================================
 @router.get("/customers/{customer_id}/gdpr-export")
-async def gdpr_export(customer_id: str, _: dict = Depends(require_owner_or_manager)):
-    customer = await db.customers.find_one({"id": customer_id}, {"_id": 0})
-    if not customer: raise HTTPException(status_code=404, detail="not found")
+async def gdpr_export(customer_id: str, user: dict = Depends(require_owner_or_manager)):
+    """Every place this session's own work (Trust Release remediation)
+    added a NEW guest-identifiable data store — loyalty_ledger (customerId),
+    db.voice_calls (phone, transcript), db.bill_splits/db.split_tabs
+    (claimedByPhone/guestPhone) — landed with no path into this export at
+    all, so a GDPR Article 15 access request would silently omit them.
+    Also fixed here: the customer lookup had no tenant check whatsoever —
+    any owner/manager of ANY business could export another business's
+    customer's full personal data by customer_id alone."""
+    customer = await db.customers.find_one({**tenant_scope_filter(user.get("businessId")), "id": customer_id}, {"_id": 0})
+    if not customer or not tenant_owns(customer.get("businessId"), user.get("businessId")):
+        raise HTTPException(status_code=404, detail="not found")
+    business_id = user.get("businessId")
     tx = await db.transactions.find({"customerId": customer_id}, {"_id": 0}).to_list(5000)
     res = await db.reservations.find({"customerId": customer_id}, {"_id": 0}).to_list(1000)
     feedback = await db.feedback.find({"customerId": customer_id}, {"_id": 0}).to_list(500)
+    loyalty_history = await db.loyalty_ledger.find({"customerId": customer_id}, {"_id": 0}).to_list(2000)
+
+    phone = customer.get("phone")
+    voice_calls, split_lines_claimed, guest_tabs = [], [], []
+    if phone:
+        voice_calls = await db.voice_calls.find(
+            {"phone": phone, "businessId": business_id}, {"_id": 0}
+        ).to_list(500)
+        splits = await db.bill_splits.find(
+            {"businessId": business_id, "$or": [
+                {"lines.claimedByPhone": phone}, {"equalParts.claimedByPhone": phone},
+            ]}, {"_id": 0},
+        ).to_list(500)
+        for split in splits:
+            claimed_lines = [l for l in split.get("lines", []) if l.get("claimedByPhone") == phone]
+            claimed_slots = [p for p in split.get("equalParts", []) if p.get("claimedByPhone") == phone]
+            if claimed_lines or claimed_slots:
+                split_lines_claimed.append({
+                    "splitId": split["id"], "tableNumber": split.get("tableNumber"),
+                    "lines": claimed_lines, "equalParts": claimed_slots,
+                })
+        # split_tabs itself carries no businessId (see services/split_payment.py) —
+        # guestPhone alone isn't tenant-exclusive, so tabs are additionally
+        # filtered to ones whose OWNING split belongs to this business,
+        # rather than exporting another business's guest's tab data just
+        # because they happen to share a phone number.
+        own_split_ids = {s["id"] for s in
+                          await db.bill_splits.find({"businessId": business_id}, {"_id": 0, "id": 1}).to_list(2000)}
+        candidate_tabs = await db.split_tabs.find({"guestPhone": phone}, {"_id": 0}).to_list(500)
+        guest_tabs = [t for t in candidate_tabs if t.get("splitId") in own_split_ids]
+
     return {
         "exportedAt": datetime.now(timezone.utc).isoformat(),
         "customer": customer,
         "transactions": tx,
         "reservations": res,
         "feedback": feedback,
+        "loyaltyHistory": loyalty_history,
+        "voiceCalls": voice_calls,
+        "billSplitClaims": split_lines_claimed,
+        "guestTabs": guest_tabs,
         "noticeText": "This export contains all personal data we hold on you in accordance with GDPR Article 15.",
     }
 
 @router.delete("/customers/{customer_id}/gdpr-erase")
 async def gdpr_erase(customer_id: str, user: dict = Depends(require_owner)):
+    existing = await db.customers.find_one({**tenant_scope_filter(user.get("businessId")), "id": customer_id}, {"_id": 0, "businessId": 1, "phone": 1})
+    if not existing or not tenant_owns(existing.get("businessId"), user.get("businessId")):
+        raise HTTPException(status_code=404, detail="not found")
     # Anonymize rather than hard-delete to preserve financial records
     anon = {"name": "[REDACTED]", "email": "redacted@nua.local", "phone": "[REDACTED]", "notes": "", "erasedAt": datetime.now(timezone.utc).isoformat(), "erasedBy": user["id"]}
-    await db.customers.update_one({"id": customer_id}, {"$set": anon})
+    await db.customers.update_one({**tenant_scope_filter(user.get("businessId")), "id": customer_id}, {"$set": anon})
     await db.feedback.update_many({"customerId": customer_id}, {"$set": {"customerName": "[REDACTED]"}})
+
+    phone = existing.get("phone")
+    business_id = user.get("businessId")
+    if phone:
+        await db.voice_calls.update_many(
+            {"phone": phone, "businessId": business_id}, {"$set": {"phone": "[REDACTED]"}})
+
+        # Redacted line-by-line in Python rather than a single array-filter
+        # update — mongomock (this codebase's fast in-process test double,
+        # see tests/inprocess/conftest.py) doesn't implement MongoDB's
+        # array-filter updates at all, which would make this path
+        # untestable; a real production MongoDB supports both equally well.
+        own_splits = await db.bill_splits.find({"businessId": business_id}, {"_id": 0}).to_list(2000)
+        for split in own_splits:
+            changed = False
+            for l in split.get("lines", []):
+                if l.get("claimedByPhone") == phone:
+                    l["claimedByPhone"] = "[REDACTED]"
+                    changed = True
+            for p in split.get("equalParts", []):
+                if p.get("claimedByPhone") == phone:
+                    p["claimedByPhone"] = "[REDACTED]"
+                    changed = True
+            if changed:
+                await db.bill_splits.update_one(
+                    {"id": split["id"]},
+                    {"$set": {"lines": split["lines"], "equalParts": split["equalParts"]}})
+
+        own_split_ids = [s["id"] for s in own_splits]
+        await db.split_tabs.update_many(
+            {"guestPhone": phone, "splitId": {"$in": own_split_ids}},
+            {"$set": {"guestPhone": "[REDACTED]"}})
     return {"message": "Customer data anonymized (financial records preserved per regulation)"}
 
 

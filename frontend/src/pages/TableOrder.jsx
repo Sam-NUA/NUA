@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { useParams } from 'react-router-dom';
+import { useParams, useSearchParams } from 'react-router-dom';
 import { ShoppingCart, Plus, Minus, Send, Clock, ChefHat, Check, Utensils, ArrowLeft } from 'lucide-react';
 import { Button } from '../components/ui/button';
 import { Card, CardContent } from '../components/ui/card';
@@ -15,6 +15,8 @@ function itemDescription(item, lang) { return item?.translations?.[lang]?.descri
 
 export default function TableOrder() {
   const { tableId } = useParams();
+  const [searchParams] = useSearchParams();
+  const business = searchParams.get("business") || undefined;
   const { lang, setLang, t, dir, languages } = useLanguage('nua_table_lang');
   const STATUS_MAP = {
     new: { label: t('tableOrder.statusNew'), icon: Clock, color: 'bg-blue-500' },
@@ -32,16 +34,16 @@ export default function TableOrder() {
   const [selectedCategory, setSelectedCategory] = useState(null);
 
   useEffect(() => {
-    tableOrderAPI.getMenu(tableId).then(r => {
+    tableOrderAPI.getMenu(tableId, business).then(r => {
       setMenu(r.data);
       if (r.data.categories?.length) setSelectedCategory(r.data.categories[0].name);
     }).catch(() => toast.error(t('tableOrder.menuLoadFailed')));
     pollOrders();
-  }, [tableId]);
+  }, [tableId, business]);
 
   const pollOrders = useCallback(() => {
-    tableOrderAPI.getOrders(tableId).then(r => setActiveOrders(r.data)).catch(() => {});
-  }, [tableId]);
+    tableOrderAPI.getOrders(tableId, business).then(r => setActiveOrders(r.data)).catch(() => {});
+  }, [tableId, business]);
 
   useEffect(() => {
     const interval = setInterval(pollOrders, 8000);
@@ -71,7 +73,7 @@ export default function TableOrder() {
         items: cart.map(c => ({ productId: c.id, quantity: c.quantity })),
         customerName: customerName || 'Guest',
         notes,
-      });
+      }, business);
       toast.success(res.data.message || t('tableOrder.orderPlaced'));
       setCart([]);
       setNotes('');

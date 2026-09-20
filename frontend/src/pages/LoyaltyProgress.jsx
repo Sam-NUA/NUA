@@ -12,7 +12,7 @@ import { toast } from 'sonner';
 import {
   Award, RefreshCw, Sparkles, Coffee, Heart, Trophy, DollarSign, Crown, Sunrise,
   Wine, Users, Gift, Search, Plus, Trash2, Lock, CheckCircle2, Target, UserPlus,
-  AlertTriangle, Wallet,
+  AlertTriangle, Wallet, TrendingUp,
 } from 'lucide-react';
 
 const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
@@ -83,18 +83,21 @@ function LeaderboardPanel() {
 
 function ReportsPanel() {
   const [liability, setLiability] = React.useState(null);
+  const [roi, setRoi] = React.useState(null);
   const [flags, setFlags] = React.useState(null);
   const [locked, setLocked] = React.useState(null);
   const [loading, setLoading] = React.useState(false);
   const load = React.useCallback(async () => {
     setLoading(true);
     try {
-      const [l, f, lk] = await Promise.all([
+      const [l, r, f, lk] = await Promise.all([
         axios.get(`${API}/loyalty/reports/liability`, { headers: H() }),
+        axios.get(`${API}/loyalty/reports/roi`, { headers: H() }),
         axios.get(`${API}/loyalty/reports/fraud-flags`, { headers: H() }),
         axios.get(`${API}/loyalty/reports/locked-accounts`, { headers: H() }),
       ]);
       setLiability(l.data);
+      setRoi(r.data);
       setFlags(f.data);
       setLocked(lk.data);
     } catch { toast.error('Failed to load loyalty reports'); }
@@ -161,6 +164,48 @@ function ReportsPanel() {
               </div>
             ))}
           </div>
+        )}
+      </CardContent></Card>
+
+      <Card><CardContent className="p-5">
+        <h3 className="font-semibold flex items-center gap-2 mb-1"><TrendingUp size={16} className="text-emerald-600" /> Loyalty ROI</h3>
+        <p className="text-xs text-slate-500 mb-4">{roi?.methodology || 'What the program has actually paid out in redemptions, vs. how much more engaged members spend on average — a directional signal, not a certified figure.'}</p>
+        {roi && (
+          <>
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 mb-4">
+              <div className="text-center p-3 rounded border bg-slate-50">
+                <p className="text-2xl font-bold" data-testid="roi-program-cost">${roi.programCost.toLocaleString()}</p>
+                <p className="text-[11px] text-slate-500 uppercase tracking-wide">Redeemed (cost)</p>
+              </div>
+              <div className="text-center p-3 rounded border bg-slate-50">
+                <p className="text-2xl font-bold" data-testid="roi-incremental-spend">${roi.estimatedIncrementalSpend.toLocaleString()}</p>
+                <p className="text-[11px] text-slate-500 uppercase tracking-wide">Est. incremental spend</p>
+              </div>
+              <div className="text-center p-3 rounded border bg-slate-50">
+                <p className="text-2xl font-bold" data-testid="roi-multiple">{roi.roiMultiple == null ? '—' : `${roi.roiMultiple}×`}</p>
+                <p className="text-[11px] text-slate-500 uppercase tracking-wide">ROI multiple</p>
+              </div>
+              <div className="text-center p-3 rounded border bg-slate-50">
+                <p className="text-2xl font-bold">{roi.engagedCustomers.toLocaleString()}</p>
+                <p className="text-[11px] text-slate-500 uppercase tracking-wide">Engaged members</p>
+              </div>
+            </div>
+            <div className="flex justify-between text-xs text-slate-500 mb-3 px-1">
+              <span>Avg spend, engaged: <strong className="text-slate-700">${roi.avgSpendEngaged.toLocaleString()}</strong></span>
+              <span>Avg spend, never engaged: <strong className="text-slate-700">${roi.avgSpendNeverEngaged.toLocaleString()}</strong></span>
+            </div>
+            {roi.byTier?.length > 0 && (
+              <div className="space-y-1">
+                <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-1">By tier</p>
+                {roi.byTier.map(t => (
+                  <div key={t.tier} className="flex justify-between text-sm py-1 border-b last:border-0" data-testid={`roi-tier-${t.tier}`}>
+                    <span>{t.tier} <span className="text-slate-400">({t.customerCount})</span></span>
+                    <span className="text-slate-500">${t.avgSpend.toLocaleString()} avg spend · {t.avgVisits} avg visits</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </>
         )}
       </CardContent></Card>
 

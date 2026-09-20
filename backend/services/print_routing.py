@@ -14,6 +14,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from database import db
+from middleware.actor_context import tenant_scope_filter
 
 DEFAULT_PRINT_ROUTING: Dict[str, Any] = {
     "enabled": True,
@@ -53,9 +54,15 @@ DEFAULT_PRINT_ROUTING: Dict[str, Any] = {
 }
 
 
-async def load_config() -> Dict[str, Any]:
-    s = await db.settings.find_one({"key": "print_routing"}, {"_id": 0})
-    cfg = copy.deepcopy(s["value"]) if (s and s.get("value")) else copy.deepcopy(DEFAULT_PRINT_ROUTING)
+async def load_config(business_id: Optional[str] = None) -> Dict[str, Any]:
+    """Defaults `business_id` from the request's actor context (same
+    pattern as notification_service.send()/rules_engine.emit_event()) so
+    the many existing callers here don't each need editing — this used to
+    be one config shared by every business on the deployment; see
+    services/tenant_settings.py."""
+    from services.tenant_settings import get_setting
+    value = await get_setting("print_routing", business_id)
+    cfg = copy.deepcopy(value) if value else copy.deepcopy(DEFAULT_PRINT_ROUTING)
     routes = cfg.get("routes")
     if isinstance(routes, dict):
         cfg["routes"] = [
@@ -83,7 +90,7 @@ async def stations_for(items: List[dict]) -> List[str]:
     routes = config.get("routes", [])
     group_routes = config.get("groupRoutes") or DEFAULT_PRINT_ROUTING["groupRoutes"]
     default_printer = config.get("defaultPrinter", "Kitchen Printer")
-    cat_docs = await db.categories.find({}, {"_id": 0, "name": 1, "group": 1}).to_list(500)
+    cat_docs = await db.categories.find(tenant_scope_filter(), {"_id": 0, "name": 1, "group": 1}).to_list(500)
     cat_group = {c.get("name", "").lower(): (c.get("group") or "") for c in cat_docs}
 
     out: List[str] = []
@@ -103,7 +110,8 @@ async def stations_for(items: List[dict]) -> List[str]:
 
 async def route_and_queue(items: List[dict], order_id: Optional[str] = None,
                           table_number: Optional[str] = None,
-                          extra: Optional[Dict[str, Any]] = None) -> List[dict]:
+                          extra: Optional[Dict[str, Any]] = None,
+                          business_id: Optional[str] = None) -> List[dict]:
     """Split items across station printers and queue one docket per station.
 
     Every docket carries the full section list and per-section detail, so each
@@ -111,13 +119,15 @@ async def route_and_queue(items: List[dict], order_id: Optional[str] = None,
     going out with them and from where.
     """
     order_id = order_id or f"ORD-{str(uuid.uuid4())[:8].upper()}"
-    config = await load_config()
+    scope = tenant_scope_filter(business_id)
+    resolved_business_id = scope["businessId"]
+    config = await load_config(resolved_business_id)
     routes = config.get("routes", [])
     group_routes = config.get("groupRoutes") or DEFAULT_PRINT_ROUTING["groupRoutes"]
     default_printer = config.get("defaultPrinter", "Kitchen Printer")
     default_priority = config.get("defaultPriority", 2)
 
-    cat_docs = await db.categories.find({}, {"_id": 0, "name": 1, "group": 1}).to_list(500)
+    cat_docs = await db.categories.find(scope, {"_id": 0, "name": 1, "group": 1}).to_list(500)
     cat_group = {c.get("name", "").lower(): (c.get("group") or "") for c in cat_docs}
 
     def _route_for(cat: str):
@@ -163,6 +173,7 @@ async def route_and_queue(items: List[dict], order_id: Optional[str] = None,
             "items": job["items"], "status": "queued",
             "orderStations": order_stations,
             "orderSections": order_sections,
+            "businessId": resolved_business_id,
             "createdAt": datetime.now(timezone.utc).isoformat(),
             **(extra or {}),
         }
@@ -190,12 +201,13 @@ async def _auto_print(record: dict) -> None:
     can't double-send the same ticket.
     """
     from services import escpos
-    target = await escpos.printer_target(record["printer"])
+    scope = tenant_scope_filter(record.get("businessId"))
+    target = await escpos.printer_target(record["printer"], record.get("businessId"))
     if not target or not target.get("enabled", True):
         return
 
     claimed = await db.print_jobs.find_one_and_update(
-        {"id": record["id"], "status": "queued"},
+        {"id": record["id"], "status": "queued", **scope},
         {"$set": {"status": "printing"}}, return_document=True,
     )
     if not claimed:
@@ -213,7 +225,7 @@ async def _auto_print(record: dict) -> None:
     result = await escpos.send(target["host"], payload, port=target.get("port", 9100))
     if result.get("ok"):
         await db.print_jobs.update_one(
-            {"id": record["id"]},
+            {"id": record["id"], **scope},
             {"$set": {"status": "printed", "printedAt": datetime.now(timezone.utc).isoformat(),
                       "printedVia": f"escpos://{target['host']}:{target.get('port', 9100)}"}},
         )
@@ -222,4 +234,5 @@ async def _auto_print(record: dict) -> None:
         # up as "queued" (visible in the print-routing queue, retryable via
         # /escpos) instead of stuck in "printing" forever.
         await db.print_jobs.update_one(
-            {"id": record["id"]}, {"$set": {"status": "queued", "lastError": result.get("error")}})
+            {"id": record["id"], **scope},
+            {"$set": {"status": "queued", "lastError": result.get("error")}})

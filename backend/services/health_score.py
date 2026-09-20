@@ -5,9 +5,10 @@ Each sub-score is a deterministic function of live data, capped 0-100.
 The overall score is the weighted mean; weights are env-configurable.
 """
 from __future__ import annotations
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 from datetime import datetime, timezone, timedelta
 from database import db
+from middleware.actor_context import tenant_scope_filter
 import os
 import logging
 
@@ -25,12 +26,12 @@ def _clamp(x: float) -> float:
     return max(0.0, min(100.0, x))
 
 
-async def _score_revenue() -> Dict[str, Any]:
+async def _score_revenue(biz: dict) -> Dict[str, Any]:
     now = datetime.now(timezone.utc)
     seven = (now - timedelta(days=7)).isoformat()
     prev_seven = (now - timedelta(days=14)).isoformat()
-    recent = await db.transactions.find({"timestamp": {"$gte": seven}}, {"total": 1}).to_list(20000)
-    prev = await db.transactions.find({"timestamp": {"$gte": prev_seven, "$lt": seven}}, {"total": 1}).to_list(20000)
+    recent = await db.transactions.find({"timestamp": {"$gte": seven}, **biz}, {"total": 1}).to_list(20000)
+    prev = await db.transactions.find({"timestamp": {"$gte": prev_seven, "$lt": seven}, **biz}, {"total": 1}).to_list(20000)
     r_new = sum(float(t.get("total") or 0) for t in recent)
     r_prev = sum(float(t.get("total") or 0) for t in prev)
     if r_prev == 0:
@@ -42,7 +43,10 @@ async def _score_revenue() -> Dict[str, Any]:
     return {"score": round(score, 1), "current": round(r_new, 2), "previous": round(r_prev, 2)}
 
 
-async def _score_profit() -> Dict[str, Any]:
+async def _score_profit(biz: dict) -> Dict[str, Any]:
+    # profit_and_loss() now scopes itself via the request's actor context
+    # (services/accounting_service.py), so no business_id needs threading
+    # through here explicitly.
     try:
         from services.accounting_service import profit_and_loss
         d = datetime.now(timezone.utc).date()
@@ -58,12 +62,12 @@ async def _score_profit() -> Dict[str, Any]:
         return {"score": 50.0, "error": str(e)}
 
 
-async def _score_labour() -> Dict[str, Any]:
+async def _score_labour(biz: dict) -> Dict[str, Any]:
     seven = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
-    txns = await db.transactions.find({"timestamp": {"$gte": seven}}, {"total": 1}).to_list(20000)
+    txns = await db.transactions.find({"timestamp": {"$gte": seven}, **biz}, {"total": 1}).to_list(20000)
     revenue = sum(float(t.get("total") or 0) for t in txns) or 1
-    pay = await db.payroll_runs.find({}, {"gross": 1}).sort("payDate", -1).limit(2).to_list(2) \
-        if await db.payroll_runs.count_documents({}) else []
+    pay = await db.payroll_runs.find(biz, {"gross": 1}).sort("payDate", -1).limit(2).to_list(2) \
+        if await db.payroll_runs.count_documents(biz) else []
     wages = sum(float(r.get("gross") or 0) for r in pay)
     ratio = (wages / revenue) if revenue else 0
     # Target 25-30%. Under 25 = 100, 30 = 70, 40 = 30, 50+ = 10
@@ -74,8 +78,8 @@ async def _score_labour() -> Dict[str, Any]:
     return {"score": round(_clamp(score), 1), "ratioPct": round(ratio * 100, 1)}
 
 
-async def _score_food_cost() -> Dict[str, Any]:
-    products = await db.products.find({}, {"cost": 1, "price": 1}).to_list(2000)
+async def _score_food_cost(biz: dict) -> Dict[str, Any]:
+    products = await db.products.find(biz, {"cost": 1, "price": 1}).to_list(2000)
     margins = []
     for p in products:
         c = float(p.get("cost") or 0); pr = float(p.get("price") or 0)
@@ -89,11 +93,11 @@ async def _score_food_cost() -> Dict[str, Any]:
     return {"score": round(score, 1), "avgMarginPct": round(avg * 100, 1)}
 
 
-async def _score_csat() -> Dict[str, Any]:
-    if await db.reviews.count_documents({}) == 0:
+async def _score_csat(biz: dict) -> Dict[str, Any]:
+    if await db.reviews.count_documents(biz) == 0:
         return {"score": 70.0, "note": "no reviews data"}
     since = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
-    reviews = await db.reviews.find({"createdAt": {"$gte": since}}, {"rating": 1}).to_list(1000)
+    reviews = await db.reviews.find({"createdAt": {"$gte": since}, **biz}, {"rating": 1}).to_list(1000)
     if not reviews:
         return {"score": 70.0}
     avg = sum(float(r.get("rating") or 0) for r in reviews) / len(reviews)
@@ -101,8 +105,8 @@ async def _score_csat() -> Dict[str, Any]:
     return {"score": round(score, 1), "avgRating": round(avg, 2), "count": len(reviews)}
 
 
-async def _score_inventory() -> Dict[str, Any]:
-    products = await db.products.find({}, {"stock": 1, "lowStockThreshold": 1, "parLevel": 1}).to_list(2000)
+async def _score_inventory(biz: dict) -> Dict[str, Any]:
+    products = await db.products.find(biz, {"stock": 1, "lowStockThreshold": 1, "parLevel": 1}).to_list(2000)
     if not products:
         return {"score": 60.0, "reason": "no products"}
     low = 0
@@ -117,7 +121,8 @@ async def _score_inventory() -> Dict[str, Any]:
     return {"score": round(score, 1), "outOfStock": out, "lowStock": low, "total": len(products)}
 
 
-async def _score_cash_flow() -> Dict[str, Any]:
+async def _score_cash_flow(biz: dict) -> Dict[str, Any]:
+    # Same actor-context self-scoping as _score_profit above.
     try:
         from services.accounting_service import cash_flow, balance_sheet
         d = datetime.now(timezone.utc).date()
@@ -133,31 +138,31 @@ async def _score_cash_flow() -> Dict[str, Any]:
         return {"score": 50.0, "error": str(e)}
 
 
-async def _score_compliance() -> Dict[str, Any]:
+async def _score_compliance(biz: dict) -> Dict[str, Any]:
     """Rough compliance signal — count of open critical/high compliance-ish insights."""
     q = {"resolvedAt": None,
          "category": {"$in": ["theft", "fraud", "burnout", "waste"]},
-         "severity": {"$in": ["high", "warning"]}}
+         "severity": {"$in": ["high", "warning"]}, **biz}
     n = await db.ash_insights.count_documents(q)
     score = _clamp(100 - (n * 8))
     return {"score": round(score, 1), "openRisks": n}
 
 
-async def _score_equipment() -> Dict[str, Any]:
-    if await db.devices.count_documents({}) == 0:
+async def _score_equipment(biz: dict) -> Dict[str, Any]:
+    if await db.devices.count_documents(biz) == 0:
         return {"score": 80.0, "note": "no devices tracked"}
-    total = await db.devices.count_documents({})
-    healthy = await db.devices.count_documents({"status": {"$in": ["online", "healthy", "ok"]}})
+    total = await db.devices.count_documents(biz)
+    healthy = await db.devices.count_documents({"status": {"$in": ["online", "healthy", "ok"]}, **biz})
     score = _clamp((healthy / max(1, total)) * 100)
     return {"score": round(score, 1), "healthy": healthy, "total": total}
 
 
-async def _score_ai_confidence() -> Dict[str, Any]:
+async def _score_ai_confidence(biz: dict) -> Dict[str, Any]:
     """How much of Ash's output has been actioned lately? Rejected? Left open?"""
-    total = await db.ash_insights.count_documents({})
-    resolved = await db.ash_insights.count_documents({"resolvedAt": {"$ne": None}})
-    rejected = await db.approvals.count_documents({"status": "rejected"})
-    approved = await db.approvals.count_documents({"status": "approved"})
+    total = await db.ash_insights.count_documents(biz)
+    resolved = await db.ash_insights.count_documents({"resolvedAt": {"$ne": None}, **biz})
+    rejected = await db.approvals.count_documents({"status": "rejected", **biz})
+    approved = await db.approvals.count_documents({"status": "approved", **biz})
     resolution_ratio = (resolved / total) if total else 0.7
     trust = (approved / max(1, approved + rejected))
     score = _clamp(50 + (resolution_ratio * 25) + (trust * 25))
@@ -178,14 +183,18 @@ SUBSCORES: Dict[str, tuple] = {
 }
 
 
-async def compute_health() -> Dict[str, Any]:
+async def compute_health(business_id: Optional[str] = None) -> Dict[str, Any]:
+    if business_id is None:
+        from middleware.actor_context import get_actor_context
+        business_id = get_actor_context().get("businessId")
+    biz = tenant_scope_filter(business_id)
     results: Dict[str, Any] = {}
     total_weight = 0.0
     weighted = 0.0
     for key, (fn, default_w) in SUBSCORES.items():
         w = _weight(key, default_w)
         try:
-            sub = await fn()
+            sub = await fn(biz)
         except Exception as e:
             sub = {"score": 50.0, "error": str(e)}
         results[key] = {**sub, "weight": w}

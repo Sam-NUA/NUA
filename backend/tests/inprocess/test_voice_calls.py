@@ -138,7 +138,7 @@ def test_create_call_places_a_real_call_and_stores_the_doc(client, owner_headers
     monkeypatch.setattr(rvc.vc, "place_call", fake_place_call)
 
     loop = asyncio.get_event_loop()
-    loop.run_until_complete(db.customers.insert_one({
+    loop.run_until_complete(db.customers.insert_one({"businessId": "default",
         "id": "CUST-VOICE-1", "name": "Priya Singh", "email": "priya@example.com",
         "phone": "+61412345678", "isVip": True,
     }))
@@ -177,7 +177,7 @@ def test_twiml_endpoint_says_the_opening_message_when_signed(client, monkeypatch
     monkeypatch.setattr(rvc.vc, "validate_signature", lambda *a, **kw: True)
 
     loop = asyncio.get_event_loop()
-    loop.run_until_complete(db.voice_calls.insert_one({
+    loop.run_until_complete(db.voice_calls.insert_one({"businessId": "default",
         "id": "CALL-TWIML-1", "openingMessage": "Hi Sam, this is NUA calling to confirm your booking.",
         "status": "ringing", "transcript": [], "turns": 0,
     }))
@@ -198,7 +198,7 @@ def test_gather_endpoint_confirms_and_ends_the_call(client, monkeypatch):
     monkeypatch.setattr(rvc.vc, "validate_signature", lambda *a, **kw: True)
 
     loop = asyncio.get_event_loop()
-    loop.run_until_complete(db.voice_calls.insert_one({
+    loop.run_until_complete(db.voice_calls.insert_one({"businessId": "default",
         "id": "CALL-GATHER-1", "openingMessage": "Confirm?", "status": "in_progress",
         "transcript": [], "turns": 0,
     }))
@@ -225,7 +225,7 @@ def test_gather_endpoint_asks_again_when_unclear_then_gives_up(client, monkeypat
     monkeypatch.setattr(rvc.vc, "validate_signature", lambda *a, **kw: True)
 
     loop = asyncio.get_event_loop()
-    loop.run_until_complete(db.voice_calls.insert_one({
+    loop.run_until_complete(db.voice_calls.insert_one({"businessId": "default",
         "id": "CALL-UNCLEAR-1", "openingMessage": "Confirm?", "status": "in_progress",
         "transcript": [], "turns": 0,
     }))
@@ -257,7 +257,7 @@ def test_status_endpoint_marks_unreachable_on_no_answer(client, monkeypatch):
     monkeypatch.setattr(rvc.vc, "validate_signature", lambda *a, **kw: True)
 
     loop = asyncio.get_event_loop()
-    loop.run_until_complete(db.voice_calls.insert_one({"id": "CALL-STATUS-1", "status": "ringing"}))
+    loop.run_until_complete(db.voice_calls.insert_one({"businessId": "default", "id": "CALL-STATUS-1", "status": "ringing"}))
     try:
         r = client.post("/api/voice/status/CALL-STATUS-1", data={"CallStatus": "no-answer"})
         assert r.status_code == 200

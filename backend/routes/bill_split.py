@@ -10,9 +10,10 @@ loyalty points a payment earns — are tied to a real phone number, not
 "whoever tapped first."
 """
 from __future__ import annotations
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 from fastapi import APIRouter, HTTPException, Request, Depends, WebSocket, WebSocketDisconnect
 from database import db
+from deps import get_user
 from services import bill_split, split_group, split_payment, split_loyalty, split_realtime
 from routes.guest_session import get_guest_session
 import logging
@@ -28,6 +29,7 @@ def _public_view(split: dict) -> dict:
     not by whose number."""
     return {
         "id": split["id"], "tableNumber": split["tableNumber"], "status": split["status"],
+        "businessId": split.get("businessId"),
         "mode": split.get("mode"),
         "lines": [
             {"id": l["id"], "productName": l["productName"], "category": l.get("category"),
@@ -41,18 +43,35 @@ def _public_view(split: dict) -> dict:
     }
 
 
+async def _require_business_id(business: Optional[str]) -> str:
+    """The QR code a table's split link is printed from must carry
+    `?business=<slug-or-id>` — unlike table_ordering.py's menu/order QR
+    codes, this one gates money changing hands, so an absent or
+    unresolvable business is refused outright (400) rather than silently
+    falling back to an unscoped, cross-tenant-poolable lookup."""
+    from routes.online_orders import _resolve_business_id
+    if not business:
+        raise HTTPException(status_code=400, detail="A valid business must be specified for bill splitting")
+    business_id = await _resolve_business_id(business)
+    if not business_id:
+        raise HTTPException(status_code=400, detail="A valid business must be specified for bill splitting")
+    return business_id
+
+
 @router.get("/table/{table_number}/split")
-async def get_split(table_number: str):
+async def get_split(table_number: str, business: Optional[str] = None):
+    business_id = await _require_business_id(business)
     try:
-        split = await bill_split.get_or_create_split(table_number)
+        split = await bill_split.get_or_create_split(table_number, business_id)
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
     return _public_view(split)
 
 
 @router.post("/table/{table_number}/split/mode")
-async def choose_mode(table_number: str, data: dict):
-    split = await bill_split.get_or_create_split(table_number)
+async def choose_mode(table_number: str, data: dict, business: Optional[str] = None):
+    business_id = await _require_business_id(business)
+    split = await bill_split.get_or_create_split(table_number, business_id)
     try:
         updated = await bill_split.set_mode(
             split["id"], data.get("mode"), data.get("equalCount"),
@@ -139,7 +158,8 @@ async def checkout(split_id: str, data: dict, http_request: Request, session: di
     # the loyalty points this payment earns via create_transaction land on
     # an actual account instead of evaporating with an anonymous sale.
     from services.customer_match import find_or_create_customer_by_phone
-    customer = await find_or_create_customer_by_phone(session["phone"], tag="split_bill")
+    customer = await find_or_create_customer_by_phone(
+        session["phone"], tag="split_bill", business_id=split.get("businessId"))
 
     sale = {
         "items": items, "paymentMethod": "Card" if provider == "stripe" else "Crypto",
@@ -147,7 +167,8 @@ async def checkout(split_id: str, data: dict, http_request: Request, session: di
         "orderType": "dine_in", "tableNumber": split["tableNumber"],
         "customerId": customer["id"], "tipAmount": tip_amount,
     }
-    guest_cashier = {"id": f"guest:{session['phone']}", "name": "Guest self-checkout", "role": "guest"}
+    guest_cashier = {"id": f"guest:{session['phone']}", "name": "Guest self-checkout", "role": "guest",
+                      "businessId": split.get("businessId")}
     checkout_data = {
         "amount": charge_amount, "orderId": split_id,
         "originUrl": data.get("originUrl") or str(http_request.base_url).rstrip("/"),
@@ -170,7 +191,7 @@ async def checkout(split_id: str, data: dict, http_request: Request, session: di
     amount = payload.get("amount", 0)
     points = await split_loyalty.calculate_loyalty_points(amount)
     await split_loyalty.award_loyalty_points(customer["id"], points, split_id, "guest_split_payment")
-    await realtime_mgr.broadcast_payment(split_id, session["phone"], amount)
+    await realtime_mgr.broadcast_payment(split_id, amount)
 
     return response
 
@@ -183,8 +204,15 @@ async def checkout(split_id: str, data: dict, http_request: Request, session: di
 async def create_group(split_id: str, session: dict = Depends(get_guest_session)):
     """Create a group split (current guest is organizer)."""
     group = await split_group.create_split_group(split_id, session["phone"])
+    if group is None:
+        raise HTTPException(status_code=404, detail="Split not found")
     await split_group.sync_group_to_split(split_id)
-    await realtime_mgr.broadcast_update(split_id, "group_created", group)
+    # Redacted the same way get_group_status redacts for a non-participant —
+    # this websocket has no authentication at all (see
+    # websocket_split_updates's own docstring), so organizerPhone/
+    # participants (a phone list) must never go out on it.
+    public_group = {k: v for k, v in group.items() if k not in ("organizerPhone", "participants")}
+    await realtime_mgr.broadcast_update(split_id, "group_created", public_group)
     return group
 
 
@@ -199,7 +227,7 @@ async def send_invite(split_id: str, data: dict, session: dict = Depends(get_gue
     if not result.get("success"):
         raise HTTPException(status_code=400, detail=result.get("error"))
 
-    await realtime_mgr.broadcast_group_invite(split_id, invite_phone)
+    await realtime_mgr.broadcast_group_invite(split_id)
     return result
 
 
@@ -215,18 +243,29 @@ async def accept_group_invite(split_id: str, data: dict, session: dict = Depends
         raise HTTPException(status_code=400, detail=result.get("error"))
 
     await split_group.sync_group_to_split(split_id)
-    await realtime_mgr.broadcast_update(split_id, "guest_joined_group", {
-        "guestPhone": session["phone"]
-    })
+    # No guestPhone in the broadcast — this websocket has no authentication
+    # at all (see websocket_split_updates's own docstring).
+    await realtime_mgr.broadcast_update(split_id, "guest_joined_group", {})
     return result
 
 
 @router.get("/table/split/{split_id}/group/status")
-async def get_group_status(split_id: str):
-    """Get group coordination status."""
+async def get_group_status(split_id: str, session: dict = Depends(get_guest_session)):
+    """Get group coordination status.
+
+    Every sibling guest endpoint on this split requires a verified guest
+    session — this one didn't require any credential at all, and its
+    response includes organizerPhone and every participant's phone
+    number. Now requires a verified session, and only returns phone
+    numbers to a caller who is actually a participant of THIS group;
+    anyone else with a valid session elsewhere gets a phone-redacted
+    summary instead of an outright 403, since knowing a group exists and
+    its size isn't itself sensitive the way the phone list is."""
     status = await split_group.get_group_status(split_id)
     if not status:
         raise HTTPException(status_code=404, detail="No group for this split")
+    if session["phone"] not in (status.get("participants") or []):
+        return {k: v for k, v in status.items() if k not in ("organizerPhone", "participants")}
     return status
 
 
@@ -236,29 +275,47 @@ async def get_group_status(split_id: str):
 
 @router.post("/table/split/{split_id}/partial-checkout")
 async def partial_checkout(split_id: str, data: dict, session: dict = Depends(get_guest_session)):
-    """Guest pays partial amount, remainder goes on tab."""
+    """Guest states an intent to pay part of their share now, with the
+    remainder going on a tab staff collects later.
+
+    This used to call record_partial_payment(..., method="card", ...)
+    immediately, marking the requested amount "paid" with no payment
+    processor anywhere in the path — no Stripe/Coinbase session, no
+    charge, no verification of any kind. A guest's own unverified POST
+    body became a real "already collected" entry on the venue's own
+    staff dashboard (routes/bill_split.py's active-splits/staff-status,
+    services/split_group.py). Wiring this specific flow into a real
+    payment provider (a genuinely new capability, not a fix of existing
+    behavior) is out of scope for this pass; until it exists, the tab
+    records the guest's stated intent only — staff must actually collect
+    and confirm the amount via POST .../staff-process-tab (already the
+    "a real payment was physically collected" path, see its own
+    docstring) before it counts as paid.
+    """
     amount = data.get("amount", 0)
     if not amount or amount <= 0:
         raise HTTPException(status_code=400, detail="amount must be > 0")
 
-    # Create guest tab
     line_ids = data.get("lineIds", [])
     slot_index = data.get("slotIndex")
     total_amount = data.get("totalAmount", amount)
 
     tab = await split_payment.create_guest_tab(split_id, session["phone"], total_amount, line_ids, slot_index)
 
-    # Record partial payment
-    payment_result = await split_payment.record_partial_payment(tab["id"], amount, "card", split_id)
-
-    await realtime_mgr.broadcast_payment(split_id, session["phone"], amount)
+    # No guestPhone in the broadcast — this websocket has no authentication
+    # at all (see websocket_split_updates's own docstring).
+    await realtime_mgr.broadcast_update(split_id, "guest_intends_partial_payment", {
+        "tabId": tab["id"], "intendedAmount": amount,
+    })
 
     return {
-        "success": payment_result.get("success"),
+        "success": True,
         "tabId": tab["id"],
-        "paidAmount": payment_result.get("paidAmount"),
-        "remainingBalance": payment_result.get("remainingBalance"),
-        "status": payment_result.get("status"),
+        "intendedAmount": amount,
+        "paidAmount": tab["paidAmount"],
+        "remainingBalance": tab["remainingBalance"],
+        "status": tab["status"],
+        "message": "Recorded — a staff member will collect and confirm this payment.",
     }
 
 
@@ -270,18 +327,52 @@ async def get_guest_tabs(split_id: str, session: dict = Depends(get_guest_sessio
 
 
 @router.post("/table/split/{split_id}/staff-process-tab")
-async def staff_process_tab(split_id: str, data: dict):
-    """Staff collects remaining tab balance (staff-side only)."""
+async def staff_process_tab(split_id: str, data: dict, user: dict = Depends(get_user)):
+    """Staff collects remaining tab balance (staff-side only).
+
+    This whole router is mounted under /api/table/, which server.py's
+    RequireAuthMiddleware treats as a public prefix wholesale (it exists
+    for the genuinely guest-facing QR-ordering/split endpoints elsewhere in
+    this file). That prefix match doesn't distinguish "guest-facing" from
+    "staff-only" — without an explicit Depends here, this endpoint
+    (recording a real payment against a tab) was reachable by anyone on the
+    internet with no credential at all, not merely unscoped to a tenant.
+
+    Also verifies the tab's own split belongs to the caller's business —
+    tab_id is an opaque id with no tenant field of its own, so without this
+    check a staff member from any business who learned/guessed another
+    business's tab_id could record a payment against it.
+    """
     tab_id = data.get("tabId")
     amount = data.get("amount", 0)
     method = data.get("method", "cash")
+    idempotency_key = data.get("idempotencyKey")
 
     if not tab_id:
         raise HTTPException(status_code=400, detail="tabId required")
 
-    result = await split_payment.staff_process_tab_payment(tab_id, amount, method)
+    tab = await db.split_tabs.find_one({"id": tab_id}, {"_id": 0})
+    if not tab:
+        raise HTTPException(status_code=404, detail="Tab not found")
+    owning_split = await db.bill_splits.find_one({"id": tab.get("splitId")}, {"_id": 0, "businessId": 1})
+    if not owning_split or owning_split.get("businessId") != user.get("businessId"):
+        raise HTTPException(status_code=404, detail="Tab not found")
+
+    result = await split_payment.staff_process_tab_payment(tab_id, amount, method, idempotency_key)
     if not result.get("success"):
         raise HTTPException(status_code=400, detail=result.get("error"))
+
+    if not result.get("replayed"):
+        try:
+            from services.audit_service import log_event
+            await log_event(
+                entity_type="split_tab", entity_id=tab_id, action="updated",
+                after=result, memo=f"Staff collected {amount} via {method} on tab {tab_id}",
+                severity="notice", tags=["payment", "split_tab"],
+            )
+        except Exception as e:
+            from utils.errors import log_and_continue
+            log_and_continue(log, f"Split-tab payment audit log write failed for {tab_id}", e)
 
     await realtime_mgr.broadcast_update(split_id, "tab_payment_received", {
         "tabId": tab_id,
@@ -320,11 +411,21 @@ def _claims_summary(split: dict) -> list:
 
 
 @router.get("/table/active-splits")
-async def get_active_splits():
+async def get_active_splits(user: dict = Depends(get_user)):
     """Staff-wide monitoring feed — one row per table with an open split,
     for SplitBillStaff.jsx's dashboard grid (as opposed to /staff-status
-    below, which is scoped to a single table)."""
-    splits = await db.bill_splits.find({"status": "open"}, {"_id": 0}).to_list(200)
+    below, which is scoped to a single table).
+
+    Same /api/table/ public-prefix issue as staff-process-tab below: with
+    no Depends here, this returned every open split across every business
+    on the deployment — guest phone numbers, item details, running
+    totals — to anyone on the internet with no credential. Auth added, and
+    now also businessId-scoped: db.bill_splits docs are stamped with the
+    resolving business at creation (services/bill_split.get_or_create_split),
+    so a logged-in staff member of one business can no longer see another
+    business's open splits."""
+    business_id = user.get("businessId")
+    splits = await db.bill_splits.find({"status": "open", "businessId": business_id}, {"_id": 0}).to_list(200)
     out = []
     for split in splits:
         tabs = await db.split_tabs.find(
@@ -341,9 +442,15 @@ async def get_active_splits():
 
 
 @router.get("/table/{table_number}/split/staff-status")
-async def get_staff_status(table_number: str):
-    """Staff view of split status (all claims, payments, balances)."""
-    split = await db.bill_splits.find_one({"tableNumber": str(table_number), "status": "open"}, {"_id": 0})
+async def get_staff_status(table_number: str, user: dict = Depends(get_user)):
+    """Staff view of split status (all claims, payments, balances). Same
+    /api/table/ public-prefix issue as the two endpoints above — was
+    reachable with no credential; auth added and scoped to the caller's
+    own business so a table-number collision with another business's open
+    split can't surface it here either."""
+    business_id = user.get("businessId")
+    split = await db.bill_splits.find_one(
+        {"tableNumber": str(table_number), "businessId": business_id, "status": "open"}, {"_id": 0})
     if not split:
         raise HTTPException(status_code=404, detail="No active split for this table")
 
@@ -369,7 +476,16 @@ async def get_staff_status(table_number: str):
 
 @router.websocket("/ws/split/{split_id}")
 async def websocket_split_updates(split_id: str, websocket: WebSocket):
-    """WebSocket endpoint for real-time split updates."""
+    """WebSocket endpoint for real-time split updates.
+
+    Sends _public_view(split), never the raw document — this used to send
+    the whole `db.bill_splits` doc straight to the client on connect and
+    on every sync_request, including lines[].claimedByPhone and
+    equalParts[].claimedByPhone, the exact guest phone numbers
+    _public_view's own docstring says must stay server-side. No
+    authentication is attached to this endpoint at all (a guest connects
+    before verifying a phone), so this was a fully unauthenticated PII
+    leak to anyone who knew a split_id."""
     await websocket.accept()
     await realtime_mgr.register_connection(split_id, websocket)
 
@@ -380,7 +496,7 @@ async def websocket_split_updates(split_id: str, websocket: WebSocket):
             await websocket.send_json({
                 "type": "connected",
                 "splitId": split_id,
-                "split": split,
+                "split": _public_view(split),
             })
 
         # Listen for client messages and broadcast
@@ -392,7 +508,8 @@ async def websocket_split_updates(split_id: str, websocket: WebSocket):
                 await websocket.send_json({"type": "pong"})
             elif msg_type == "sync_request":
                 split = await db.bill_splits.find_one({"id": split_id}, {"_id": 0})
-                await websocket.send_json({"type": "sync_response", "split": split})
+                await websocket.send_json({"type": "sync_response",
+                                            "split": _public_view(split) if split else None})
 
     except WebSocketDisconnect:
         await realtime_mgr.unregister_connection(split_id, websocket)

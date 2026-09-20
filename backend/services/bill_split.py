@@ -42,9 +42,10 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-async def _open_kitchen_orders(table_number: str) -> List[dict]:
+async def _open_kitchen_orders(table_number: str, business_id: str) -> List[dict]:
     return await db.kitchen_orders.find(
-        {"tableNumber": str(table_number), "status": {"$nin": list(OPEN_ORDER_EXCLUDED_STATUSES)}},
+        {"tableNumber": str(table_number), "businessId": business_id,
+         "status": {"$nin": list(OPEN_ORDER_EXCLUDED_STATUSES)}},
         {"_id": 0},
     ).to_list(200)
 
@@ -66,9 +67,11 @@ def _fingerprint(line: dict) -> tuple:
     return (line["productId"], line["productName"], line["unitPrice"])
 
 
-async def _build_lines(orders: List[dict]) -> List[dict]:
+async def _build_lines(orders: List[dict], business_id: str) -> List[dict]:
     product_ids = {it.get("productId") for o in orders for it in o.get("items", []) if it.get("productId")}
-    products = await db.products.find({"id": {"$in": list(product_ids)}}, {"_id": 0}).to_list(1000)
+    products = await db.products.find(
+        {"id": {"$in": list(product_ids)}, "businessId": business_id}, {"_id": 0}
+    ).to_list(1000)
     products_by_id = {p["id"]: p for p in products}
 
     lines: List[dict] = []
@@ -88,28 +91,37 @@ async def _build_lines(orders: List[dict]) -> List[dict]:
     return lines
 
 
-async def get_or_create_split(table_number: str) -> dict:
+async def get_or_create_split(table_number: str, business_id: str) -> dict:
     """The one open split session for this table, built from its live
     kitchen orders. Idempotent — scanning the QR twice, or two guests
     opening the link at once, lands on the same session.
+
+    `business_id` is mandatory and resolved by the caller (routes/bill_split.py,
+    from the QR link's `?business=` param) — every kitchen-order lookup and
+    the created split doc itself are scoped to it. Without this, two
+    businesses that both happen to have a "Table 5" with an open order at
+    the same time would collide: whichever business's order Mongo returned
+    first would silently become both tables' bill, letting a guest at one
+    venue see, claim, and pay for another venue's food.
 
     If the kitchen order has grown since the split was opened (another
     round fired), the newly-appeared units are appended as fresh open
     lines; anything already claimed or paid is left exactly as it was —
     a guest who's already paid for their burger never sees it reset.
     """
-    orders = await _open_kitchen_orders(table_number)
+    orders = await _open_kitchen_orders(table_number, business_id)
     if not orders:
         raise ValueError("No open order for this table")
     order_ids = sorted(o["id"] for o in orders)
 
-    existing = await db.bill_splits.find_one({"tableNumber": str(table_number), "status": "open"}, {"_id": 0})
-    fresh_lines = await _build_lines(orders)
+    existing = await db.bill_splits.find_one(
+        {"tableNumber": str(table_number), "businessId": business_id, "status": "open"}, {"_id": 0})
+    fresh_lines = await _build_lines(orders, business_id)
 
     if not existing:
         doc = {
-            "id": f"SPLIT-{str(uuid.uuid4())[:8].upper()}",
-            "tableNumber": str(table_number), "orderIds": order_ids,
+            "id": f"SPLIT-{uuid.uuid4().hex.upper()}",
+            "tableNumber": str(table_number), "businessId": business_id, "orderIds": order_ids,
             "mode": None, "equalParts": [], "lines": fresh_lines,
             "status": "open", "createdAt": _now(),
         }
@@ -333,6 +345,7 @@ async def mark_lines_paid(split_id: str, line_ids: Optional[List[str]], slot_ind
     if fully_paid:
         try:
             from services import ticket_lifecycle
-            await ticket_lifecycle.settle(table_number=split["tableNumber"], actor="guest_split_bill")
+            await ticket_lifecycle.settle(table_number=split["tableNumber"], actor="guest_split_bill",
+                                           business_id=split.get("businessId"))
         except Exception as e:
             log.error(f"Table auto-release failed for split {split_id} table {split['tableNumber']}: {e}")

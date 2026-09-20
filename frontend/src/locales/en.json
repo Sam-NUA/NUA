@@ -47,9 +47,10 @@
       "title": "Pay Later",
       "partial": "Pay Partial Amount",
       "payNow": "Pay Now",
-      "amountToPay": "Amount to Pay",
+      "amountToPay": "Amount to Put on Tab",
       "remaining": "Remaining Balance",
-      "tabCreated": "Tab created - you can pay the rest later"
+      "confirmTab": "Add {{amount}} to Tab",
+      "tabCreated": "Tab created — a staff member will collect and confirm this payment"
     },
     "customSplit": {
       "setupTitle": "Set up custom shares",

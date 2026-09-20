@@ -22,6 +22,10 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ.setdefault("MONGO_URL", "mongodb://localhost:27017")
 os.environ.setdefault("DB_NAME", "e2e_tests")
 os.environ.setdefault("JWT_SECRET", "e2e-test-secret-not-for-production")
+os.environ.setdefault("ADMIN_EMAIL", "owner@nua.com")
+os.environ.setdefault("ADMIN_PASSWORD", "NuaOwner2026!")
+os.environ.setdefault("DEMO_STAFF_PASSWORD", "Staff2026!")
+os.environ.setdefault("SUPPORT_OVERRIDE_KEY", "e2e-test-only-support-override-key")
 # Without this, server.py's CORS setup falls back to allow_origins=["*"] with
 # allow_credentials=False (see server.py's comment on frontend_url) — and the
 # frontend's axios client sends every request withCredentials:true. Browsers

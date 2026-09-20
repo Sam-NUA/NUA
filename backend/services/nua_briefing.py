@@ -4,9 +4,10 @@ Ash Daily Briefing — the morning "Good Morning Sam" endpoint.
 Deterministic data harvest + one LLM narrative call (GPT-5.2 via Emergent LLM key).
 """
 from __future__ import annotations
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 from datetime import datetime, timezone, timedelta
 from database import db
+from middleware.actor_context import tenant_scope_filter
 import os
 import logging
 import uuid
@@ -14,14 +15,16 @@ import uuid
 logger = logging.getLogger(__name__)
 
 
-async def _collect_briefing_data() -> Dict[str, Any]:
+async def _collect_briefing_data(business_id: Optional[str] = None) -> Dict[str, Any]:
     now = datetime.now(timezone.utc)
     today = now.date().isoformat()
     tomorrow = (now + timedelta(days=1)).date().isoformat()
     week_ago = (now - timedelta(days=7)).isoformat()
+    biz_scope = tenant_scope_filter(business_id)
 
     # Revenue last 7 days
-    txns = await db.transactions.find({"timestamp": {"$gte": week_ago}}, {"total": 1, "timestamp": 1}).to_list(20000)
+    txns = await db.transactions.find(
+        {"timestamp": {"$gte": week_ago}, **biz_scope}, {"total": 1, "timestamp": 1}).to_list(20000)
     week_rev = sum(float(t.get("total") or 0) for t in txns)
     day_revs = {}
     for t in txns:
@@ -30,16 +33,18 @@ async def _collect_briefing_data() -> Dict[str, Any]:
     forecast_today = round(sum(day_revs.values()) / max(1, len(day_revs)), 2)
 
     # Bookings today
-    bookings = await db.reservations.count_documents({"dateTime": {"$regex": f"^{today}"}}) if await db.reservations.count_documents({}) else 0
-    vip = await db.reservations.count_documents({"dateTime": {"$regex": f"^{today}"}, "isVip": True}) \
-        if await db.reservations.count_documents({}) else 0
+    bookings_q = {"dateTime": {"$regex": f"^{today}"}, **biz_scope}
+    bookings = await db.reservations.count_documents(bookings_q) if await db.reservations.count_documents(biz_scope) else 0
+    vip = await db.reservations.count_documents({**bookings_q, "isVip": True}) \
+        if await db.reservations.count_documents(biz_scope) else 0
 
     # Rostered staff
-    rostered = await db.shifts.count_documents({"date": today}) if await db.shifts.count_documents({}) else 0
+    rostered = await db.shifts.count_documents({"date": today, **biz_scope}) \
+        if await db.shifts.count_documents(biz_scope) else 0
 
     # Inventory risks
     low_stock = 0
-    async for p in db.products.find({}, {"stock": 1, "lowStockThreshold": 1}):
+    async for p in db.products.find(biz_scope, {"stock": 1, "lowStockThreshold": 1}):
         s = float(p.get("stock") or 0)
         thr = float(p.get("lowStockThreshold") or 5)
         if s <= thr:
@@ -47,19 +52,19 @@ async def _collect_briefing_data() -> Dict[str, Any]:
 
     # Top open Ash insights
     top_insights = await db.ash_insights.find(
-        {"resolvedAt": None, "severity": {"$in": ["high", "warning"]}},
+        {"resolvedAt": None, "severity": {"$in": ["high", "warning"]}, **biz_scope},
         {"_id": 0},
     ).sort("createdAt", -1).limit(5).to_list(5)
 
     # Birthdays (customers whose DoB matches today, month+day)
     birthdays = []
-    if await db.customers.count_documents({"birthday": {"$exists": True}}):
+    if await db.customers.count_documents({**tenant_scope_filter(business_id), "birthday": {"$exists": True}, **biz_scope}):
         md = now.strftime("--%m-%d")
-        async for c in db.customers.find({"birthday": {"$regex": md}}, {"_id": 0, "name": 1, "email": 1, "id": 1}):
+        async for c in db.customers.find({**tenant_scope_filter(business_id), "birthday": {"$regex": md}, **biz_scope}, {"_id": 0, "name": 1, "email": 1, "id": 1}):
             birthdays.append(c)
 
     # Pending approvals
-    pending_approvals = await db.approvals.count_documents({"status": "pending"})
+    pending_approvals = await db.approvals.count_documents({"status": "pending", **biz_scope})
 
     return {
         "date": today, "tomorrow": tomorrow,
@@ -73,8 +78,11 @@ async def _collect_briefing_data() -> Dict[str, Any]:
     }
 
 
-async def generate_briefing() -> Dict[str, Any]:
-    data = await _collect_briefing_data()
+async def generate_briefing(business_id: Optional[str] = None) -> Dict[str, Any]:
+    if business_id is None:
+        from middleware.actor_context import get_actor_context
+        business_id = get_actor_context().get("businessId")
+    data = await _collect_briefing_data(business_id)
 
     prompt = f"""Write a warm 5-sentence morning briefing for the owner.
 - Today's date: {data['date']}
@@ -119,6 +127,12 @@ Start with "Good morning". End with ONE specific recommendation."""
         "narrative": narrative,
         "data": data,
         "createdAt": datetime.now(timezone.utc).isoformat(),
+        "businessId": business_id,
     }
-    await db.ash_briefings.update_one({"date": data["date"]}, {"$set": doc}, upsert=True)
+    # Keyed by (date, businessId) — date alone let two businesses' briefings
+    # collide on one document, so whichever business generated theirs last
+    # on a given day silently overwrote every other business's morning
+    # briefing (real revenue, bookings, approvals) for that date.
+    await db.ash_briefings.update_one(
+        {"date": data["date"], "businessId": business_id}, {"$set": doc}, upsert=True)
     return doc

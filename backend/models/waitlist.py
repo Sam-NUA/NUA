@@ -34,6 +34,11 @@ class WaitlistEntry(BaseModel):
     checkInTime: str = ""
     seatedTime: Optional[str] = None
     createdAt: str = ""
+    businessId: Optional[str] = None
+    # Silver+ tier perk ("Priority waitlist", see routes/loyalty.py's seed
+    # tiers) — a recognised member jumps ahead of non-members who joined
+    # earlier, but never ahead of an earlier-joined fellow priority guest.
+    priority: bool = False
 
     def __init__(self, **data):
         super().__init__(**data)

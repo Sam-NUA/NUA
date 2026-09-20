@@ -144,7 +144,6 @@ def start_scheduler() -> None:
 
 
 def stop_scheduler() -> None:
-    global _task
     if _task and not _task.done():
         _task.cancel()
         logger.info("[repo-sync] scheduler cancelled — exiting cleanly")

@@ -94,11 +94,21 @@ export function isNetworkFailure(error) {
  * working unchanged. Throws through any real server-side rejection as-is.
  */
 export async function createTransactionResilient(payload) {
+  // Attached before the very first attempt, not only when queuing — a
+  // request can succeed server-side and still count as a "network failure"
+  // client-side if the response never makes it back (the connection drops
+  // right after the server writes the sale). Without a clientOpId already
+  // on the very first attempt, the retry that follows from the queue would
+  // ring up a second, fully-effectuated duplicate sale; carrying the same
+  // id from the first try means the backend's clientOpId dedup (see
+  // backend/routes/transactions.py's create_transaction) recognizes the
+  // retry as the same sale no matter which attempt actually landed.
+  const withOpId = { ...payload, clientOpId: payload.clientOpId || genId() };
   try {
-    return await transactionsAPI.create(payload);
+    return await transactionsAPI.create(withOpId);
   } catch (error) {
     if (!isNetworkFailure(error)) throw error;
-    const record = await enqueueTransaction(payload);
+    const record = await enqueueTransaction(withOpId);
     return {
       data: {
         id: `OFFLINE-${record.id.slice(0, 8)}`,

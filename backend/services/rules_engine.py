@@ -28,6 +28,7 @@ import uuid
 import logging
 import asyncio
 import operator as _op
+from middleware.actor_context import tenant_scope_filter
 
 logger = logging.getLogger(__name__)
 
@@ -211,7 +212,7 @@ async def _action_upgrade_vip(rule, event, params):
     if not cid:
         return {"error": "no customerId"}
     tier = params.get("tier", "Gold")
-    r = await db.customers.update_one({"id": cid}, {"$set": {"membershipTier": tier, "vipUpgradedAt": _now_iso()}})
+    r = await db.customers.update_one({**tenant_scope_filter(), "id": cid}, {"$set": {"membershipTier": tier, "vipUpgradedAt": _now_iso()}})
     return {"customerId": cid, "newTier": tier, "matched": r.matched_count}
 
 
@@ -220,7 +221,7 @@ async def _action_apply_credit(rule, event, params):
     amount = float(params.get("amount") or 0)
     if not cid or amount <= 0:
         return {"error": "customerId and amount required"}
-    r = await db.customers.update_one({"id": cid}, {"$inc": {"storeCredit": amount}})
+    r = await db.customers.update_one({**tenant_scope_filter(), "id": cid}, {"$inc": {"storeCredit": amount}})
     # Also log to wallet ledger if present
     try:
         await db.wallet_ledger.insert_one({
@@ -286,7 +287,15 @@ async def _action_mark_dish_86(rule, event, params):
     pid = params.get("productId") or _path_value(event["payload"], "productId")
     if not pid:
         return {"error": "no productId"}
-    r = await db.products.update_one({"id": pid}, {"$set": {"is86ed": True, "eightySixReason": params.get("reason", "auto")}})
+    # Was writing is86ed/eightySixReason — fields the product schema (and
+    # every reader of it: POS, kitchen display, online ordering, the
+    # low-stock/oos endpoints) has never had. This silently 86'd nothing
+    # anywhere visible; the real field is eightySixed (models/product.py).
+    r = await db.products.update_one(
+        {"id": pid},
+        {"$set": {"eightySixed": True, "eightySixedAt": datetime.now(timezone.utc).isoformat(),
+                   "eightySixedBy": "rules_engine", "eightySixedReason": params.get("reason", "auto")}},
+    )
     return {"productId": pid, "matched": r.matched_count}
 
 
@@ -344,24 +353,42 @@ def _now_iso() -> str:
 # Public API
 # ═════════════════════════════════════════════════════════════════════════
 async def emit_event(event_type: str, payload: Optional[Dict[str, Any]] = None,
-                     entity_id: Optional[str] = None) -> Dict[str, Any]:
+                     entity_id: Optional[str] = None, business_id: Optional[str] = None) -> Dict[str, Any]:
     """
     Fire an event through the rules engine. Every matching, active rule
     is evaluated + executed. Returns a summary { rulesEvaluated, ruleFirings }.
+
+    business_id scopes which business's rules this event can trigger —
+    without it, a POS sale (or any other event) in Business A evaluated
+    and executed every business's active rules for that event type, not
+    just Business A's own, so one business's automation ("VIP-upgrade on
+    big spend", "auto-PO on low stock") fired against another business's
+    customers/inventory. Defaults from the request's actor context, same
+    pattern as notification_service.send() — safe_emit's fire-and-forget
+    asyncio task still sees it, since asyncio.create_task captures the
+    calling context at creation time. Background scanners with no request
+    context (ops_signals.py, predictive_signals.py) fall through to None,
+    which matches every business's rules same as before this fix — a
+    known, separate, documented gap, not one this closes.
     """
+    if business_id is None:
+        from middleware.actor_context import get_actor_context
+        business_id = get_actor_context().get("businessId")
     event = {
         "id": str(uuid.uuid4()),
         "type": event_type,
         "entityId": entity_id,
         "payload": payload or {},
         "ts": _now_iso(),
+        "businessId": business_id,
     }
     try:
         await db.rule_events.insert_one(dict(event))
     except Exception:
         pass
 
-    rules_cursor = db.rules.find({"active": True, "triggerEvent": event_type}, {"_id": 0})
+    rules_cursor = db.rules.find(
+        {"active": True, "triggerEvent": event_type, **tenant_scope_filter(business_id)}, {"_id": 0})
     rules = await rules_cursor.to_list(200)
     rules.sort(key=lambda r: -(r.get("priority", 0)))
 
@@ -415,6 +442,7 @@ async def emit_event(event_type: str, payload: Optional[Dict[str, Any]] = None,
         "payload": event["payload"],
         "firings": firings,
         "ts": event["ts"],
+        "businessId": business_id,
     }
     try:
         await db.rule_executions.insert_one(dict(execution))

@@ -62,32 +62,52 @@ class SplitRealtimeManager:
         for ws in dead_connections:
             await self.unregister_connection(split_id, ws)
 
-    async def broadcast_claim(self, split_id: str, line_ids: list, phone: str) -> None:
-        """Broadcast item claim to all clients."""
+    async def broadcast_claim(self, split_id: str, line_ids: list) -> None:
+        """Broadcast item claim to all clients.
+
+        Never includes the claiming guest's phone number — this websocket
+        has no authentication at all by design (see routes/bill_split.py's
+        websocket_split_updates docstring), so anyone who can open it for a
+        split_id can watch every event on it. Connected clients that need
+        to know per-line claim state re-fetch the split itself (already
+        redacted via _public_view), rather than trust broadcast payloads
+        for anything phone-identifying."""
         await self.broadcast_update(split_id, "item_claimed", {
             "lineIds": line_ids,
-            "claimedByPhone": phone,
             "timestamp": datetime.now(timezone.utc).isoformat(),
         })
 
-    async def broadcast_payment(self, split_id: str, guest_phone: str, amount: float) -> None:
-        """Broadcast payment from guest."""
+    async def broadcast_payment(self, split_id: str, amount: float) -> None:
+        """Broadcast payment from guest — no guest_phone, same reasoning as
+        broadcast_claim above."""
         await self.broadcast_update(split_id, "payment_received", {
-            "guestPhone": guest_phone,
             "amount": amount,
             "timestamp": datetime.now(timezone.utc).isoformat(),
         })
 
     async def broadcast_split_update(self, split_id: str) -> None:
-        """Broadcast full split status update."""
+        """Broadcast full split status update, redacted the same way the
+        websocket's own connect/sync_request messages are (see
+        routes/bill_split.py's _public_view) — this method sends to the
+        exact same unauthenticated audience, so it must never leak
+        claimedByPhone either."""
         split = await db.bill_splits.find_one({"id": split_id}, {"_id": 0})
         if split:
-            await self.broadcast_update(split_id, "split_updated", split)
+            redacted = dict(split)
+            redacted["lines"] = [
+                {k: v for k, v in line.items() if k != "claimedByPhone"}
+                for line in (split.get("lines") or [])
+            ]
+            redacted["equalParts"] = [
+                {k: v for k, v in part.items() if k != "claimedByPhone"}
+                for part in (split.get("equalParts") or [])
+            ]
+            await self.broadcast_update(split_id, "split_updated", redacted)
 
-    async def broadcast_group_invite(self, split_id: str, guest_phone: str) -> None:
-        """Broadcast group invite notification."""
+    async def broadcast_group_invite(self, split_id: str) -> None:
+        """Broadcast group invite notification — no invited_phone, same
+        reasoning as broadcast_claim above."""
         await self.broadcast_update(split_id, "group_invite_sent", {
-            "invitedPhone": guest_phone,
             "timestamp": datetime.now(timezone.utc).isoformat(),
         })
 

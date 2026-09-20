@@ -18,6 +18,7 @@ from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, HTTPException, Depends
 from database import db
 from deps import get_user, require_owner_or_manager
+from middleware.actor_context import tenant_scope_filter, tenant_owns, tenant_owns_strict
 from utils.notifications import send_sms
 import hashlib
 import secrets
@@ -74,11 +75,20 @@ MILESTONE_SEEDS = [
 ]
 
 
-async def _ensure_seeded() -> None:
-    if await db.loyalty_badges.count_documents({}) == 0:
-        await db.loyalty_badges.insert_many([dict(b) for b in BADGE_SEEDS])
-    if await db.loyalty_milestones.count_documents({}) == 0:
-        await db.loyalty_milestones.insert_many([dict(m) for m in MILESTONE_SEEDS])
+async def _ensure_seeded(business_id: Optional[str] = None) -> None:
+    """Idempotent per-business seed. Previously seeded once globally
+    ("if the collection is empty at all") — every business after the
+    first one to trigger this ever saw loyalty_badges/loyalty_milestones
+    as already non-empty and got no catalog of its own, so every business
+    on the deployment silently shared one badge/milestone catalog with no
+    real per-business identity, and business B's badges/milestones were
+    fully visible to (and, since they're unscoped everywhere they're
+    read, indistinguishable from) business A's."""
+    scope = tenant_scope_filter(business_id)
+    if await db.loyalty_badges.count_documents(scope) == 0:
+        await db.loyalty_badges.insert_many([{**b, "businessId": business_id} for b in BADGE_SEEDS])
+    if await db.loyalty_milestones.count_documents(scope) == 0:
+        await db.loyalty_milestones.insert_many([{**m, "businessId": business_id} for m in MILESTONE_SEEDS])
 
 
 # ═════════════════════════════════════════════════════════════════════════
@@ -143,18 +153,20 @@ async def _condition_met(customer: Dict[str, Any], cond: str) -> bool:
 # ═════════════════════════════════════════════════════════════════════════
 # Public evaluation + progress
 # ═════════════════════════════════════════════════════════════════════════
-async def evaluate_customer(customer_id: str) -> Dict[str, Any]:
+async def evaluate_customer(customer_id: str, business_id: Optional[str] = None) -> Dict[str, Any]:
     """Award any newly-earned badges + milestones."""
-    await _ensure_seeded()
-    customer = await db.customers.find_one({"id": customer_id}, {"_id": 0})
+    customer = await db.customers.find_one({**tenant_scope_filter(business_id), "id": customer_id}, {"_id": 0})
     if not customer:
         return {"error": "customer not found"}
+    business_id = customer.get("businessId")
+    await _ensure_seeded(business_id)
+    scope = tenant_scope_filter(business_id)
 
     awarded_badges: List[Dict[str, Any]] = []
     awarded_milestones: List[Dict[str, Any]] = []
 
     # ── Badges ──
-    badges = await db.loyalty_badges.find({}, {"_id": 0}).to_list(200)
+    badges = await db.loyalty_badges.find(scope, {"_id": 0}).to_list(200)
     for b in badges:
         existing = await db.customer_badges.find_one({"customerId": customer_id, "badgeId": b["id"]})
         if existing:
@@ -173,13 +185,13 @@ async def evaluate_customer(customer_id: str) -> Dict[str, Any]:
                 # invisible everywhere else: checkout redemption, the
                 # wallet, the liability report, tier progress below.
                 await db.customers.update_one(
-                    {"id": customer_id},
+                    {**tenant_scope_filter(business_id), "id": customer_id},
                     {"$inc": {"points": doc["pointsAwarded"]}},
                 )
             awarded_badges.append(doc)
 
     # ── Milestones ──
-    miles = await db.loyalty_milestones.find({}, {"_id": 0}).sort("order", 1).to_list(200)
+    miles = await db.loyalty_milestones.find(scope, {"_id": 0}).sort("order", 1).to_list(200)
     for m in miles:
         existing = await db.customer_milestones.find_one({"customerId": customer_id, "milestoneId": m["id"]})
         if existing:
@@ -196,9 +208,9 @@ async def evaluate_customer(customer_id: str) -> Dict[str, Any]:
         await db.customer_milestones.insert_one(dict(rec))
         # Apply the reward
         if reward.get("type") == "points":
-            await db.customers.update_one({"id": customer_id}, {"$inc": {"points": int(reward.get("value") or 0)}})
+            await db.customers.update_one({**tenant_scope_filter(business_id), "id": customer_id}, {"$inc": {"points": int(reward.get("value") or 0)}})
         elif reward.get("type") == "tier":
-            await db.customers.update_one({"id": customer_id}, {"$set": {"membershipTier": reward.get("value")}})
+            await db.customers.update_one({**tenant_scope_filter(business_id), "id": customer_id}, {"$set": {"membershipTier": reward.get("value")}})
         elif reward.get("type") == "voucher":
             # Routed through the shared issuer (commerce_v29._issue_voucher)
             # rather than a hand-rolled insert — a bare {id, value, status}
@@ -261,7 +273,7 @@ async def evaluate_customer(customer_id: str) -> Dict[str, Any]:
 
     # ── Seasonal Challenges ──
     challenges = await db.loyalty_challenges.find(
-        {"active": True, "startDate": {"$lte": _now()}, "endDate": {"$gte": _now()}},
+        {"$and": [scope, {"active": True, "startDate": {"$lte": _now()}, "endDate": {"$gte": _now()}}]},
         {"_id": 0},
     ).to_list(50)
     challenge_progress = []
@@ -299,7 +311,7 @@ async def evaluate_customer(customer_id: str) -> Dict[str, Any]:
         if completed and not (prog or {}).get("rewarded"):
             reward = ch.get("reward") or {}
             if reward.get("type") == "points":
-                await db.customers.update_one({"id": customer_id}, {"$inc": {"points": int(reward.get("value") or 0)}})
+                await db.customers.update_one({**tenant_scope_filter(business_id), "id": customer_id}, {"$inc": {"points": int(reward.get("value") or 0)}})
             elif reward.get("type") == "voucher":
                 try:
                     from routes.commerce_v29 import _issue_voucher
@@ -321,14 +333,16 @@ async def evaluate_customer(customer_id: str) -> Dict[str, Any]:
             "challengeProgress": challenge_progress}
 
 
-async def get_customer_progress(customer_id: str) -> Dict[str, Any]:
-    await _ensure_seeded()
-    customer = await db.customers.find_one({"id": customer_id}, {"_id": 0})
+async def get_customer_progress(customer_id: str, business_id: Optional[str] = None) -> Dict[str, Any]:
+    customer = await db.customers.find_one({**tenant_scope_filter(business_id), "id": customer_id}, {"_id": 0})
     if not customer:
         return {"error": "customer not found"}
+    business_id = customer.get("businessId")
+    await _ensure_seeded(business_id)
+    scope = tenant_scope_filter(business_id)
 
     # Tier calculation
-    tiers = await db.loyalty_tiers.find({}, {"_id": 0}).sort("minPoints", 1).to_list(20)
+    tiers = await db.loyalty_tiers.find(scope, {"_id": 0}).sort("minPoints", 1).to_list(20)
     points = int(customer.get("points") or 0)
     current_tier = tiers[0] if tiers else None
     next_tier = None
@@ -352,7 +366,7 @@ async def get_customer_progress(customer_id: str) -> Dict[str, Any]:
                            "pointsNeeded": 0, "percent": 100}
 
     # Earned badges + all badge catalog
-    catalog = await db.loyalty_badges.find({}, {"_id": 0}).to_list(200)
+    catalog = await db.loyalty_badges.find(scope, {"_id": 0}).to_list(200)
     earned_badges = await db.customer_badges.find(
         {"customerId": customer_id}, {"_id": 0},
     ).to_list(200)
@@ -360,7 +374,7 @@ async def get_customer_progress(customer_id: str) -> Dict[str, Any]:
     badge_view = [{**b, "earned": b["id"] in earned_ids} for b in catalog]
 
     # Milestones
-    miles = await db.loyalty_milestones.find({}, {"_id": 0}).sort("order", 1).to_list(200)
+    miles = await db.loyalty_milestones.find(scope, {"_id": 0}).sort("order", 1).to_list(200)
     achieved = await db.customer_milestones.find(
         {"customerId": customer_id}, {"_id": 0},
     ).to_list(200)
@@ -377,7 +391,7 @@ async def get_customer_progress(customer_id: str) -> Dict[str, Any]:
     # Active challenges
     now = _now()
     challenges = await db.loyalty_challenges.find(
-        {"active": True, "startDate": {"$lte": now}, "endDate": {"$gte": now}},
+        {"$and": [scope, {"active": True, "startDate": {"$lte": now}, "endDate": {"$gte": now}}]},
         {"_id": 0},
     ).to_list(50)
     prog_rows = await db.customer_challenge_progress.find(
@@ -405,23 +419,26 @@ async def get_customer_progress(customer_id: str) -> Dict[str, Any]:
 # HTTP endpoints
 # ═════════════════════════════════════════════════════════════════════════
 @router.get("/badges")
-async def list_badges(_: dict = Depends(get_user)):
-    await _ensure_seeded()
-    return await db.loyalty_badges.find({}, {"_id": 0}).to_list(200)
+async def list_badges(user: dict = Depends(get_user)):
+    business_id = user.get("businessId")
+    await _ensure_seeded(business_id)
+    return await db.loyalty_badges.find(tenant_scope_filter(business_id), {"_id": 0}).to_list(200)
 
 
 @router.get("/milestones")
-async def list_milestones(_: dict = Depends(get_user)):
-    await _ensure_seeded()
-    return await db.loyalty_milestones.find({}, {"_id": 0}).sort("order", 1).to_list(200)
+async def list_milestones(user: dict = Depends(get_user)):
+    business_id = user.get("businessId")
+    await _ensure_seeded(business_id)
+    return await db.loyalty_milestones.find(tenant_scope_filter(business_id), {"_id": 0}).sort("order", 1).to_list(200)
 
 
 @router.get("/challenges")
-async def list_challenges(active_only: bool = True, _: dict = Depends(get_user)):
-    q: Dict[str, Any] = {}
+async def list_challenges(active_only: bool = True, user: dict = Depends(get_user)):
+    scope = tenant_scope_filter(user.get("businessId"))
+    q = scope
     if active_only:
         now = _now()
-        q = {"active": True, "startDate": {"$lte": now}, "endDate": {"$gte": now}}
+        q = {"$and": [scope, {"active": True, "startDate": {"$lte": now}, "endDate": {"$gte": now}}]}
     return await db.loyalty_challenges.find(q, {"_id": 0}).sort("startDate", -1).to_list(50)
 
 
@@ -442,28 +459,35 @@ async def create_challenge(body: dict, user: dict = Depends(require_owner_or_man
         "active": True,
         "createdBy": user.get("email"),
         "createdAt": _now(),
+        "businessId": user.get("businessId"),
     }
     await db.loyalty_challenges.insert_one(dict(doc))
     return doc
 
 
 @router.delete("/challenges/{cid}")
-async def delete_challenge(cid: str, _: dict = Depends(require_owner_or_manager)):
-    r = await db.loyalty_challenges.delete_one({"id": cid})
+async def delete_challenge(cid: str, user: dict = Depends(require_owner_or_manager)):
+    guard = await db.loyalty_challenges.find_one({"$and": [{"id": cid}, tenant_scope_filter(user.get("businessId"))]}, {"_id": 0, "id": 1, "businessId": 1})
+    if guard is None or not tenant_owns_strict(guard.get("businessId"), user.get("businessId")):
+        raise HTTPException(404, "not found")
+    r = await db.loyalty_challenges.delete_one({"$and": [{"id": cid}, tenant_scope_filter(user.get("businessId"))]})
     if not r.deleted_count:
         raise HTTPException(404, "not found")
     return {"deleted": True}
 
 
 @router.patch("/challenges/{cid}")
-async def update_challenge(cid: str, body: dict, _: dict = Depends(require_owner_or_manager)):
+async def update_challenge(cid: str, body: dict, user: dict = Depends(require_owner_or_manager)):
+    guard = await db.loyalty_challenges.find_one({"$and": [{"id": cid}, tenant_scope_filter(user.get("businessId"))]}, {"_id": 0, "id": 1, "businessId": 1})
+    if guard is None or not tenant_owns_strict(guard.get("businessId"), user.get("businessId")):
+        raise HTTPException(404, "not found")
     allowed = {"name", "description", "target", "startDate", "endDate", "reward", "active"}
     update = {k: v for k, v in body.items() if k in allowed}
     if not update:
         raise HTTPException(400, "no updatable fields provided")
     update["updatedAt"] = _now()
     r = await db.loyalty_challenges.find_one_and_update(
-        {"id": cid}, {"$set": update}, return_document=True,
+        {"$and": [{"id": cid}, tenant_scope_filter(user.get("businessId"))]}, {"$set": update}, return_document=True,
     )
     if not r:
         raise HTTPException(404, "not found")
@@ -472,19 +496,31 @@ async def update_challenge(cid: str, body: dict, _: dict = Depends(require_owner
 
 
 @router.get("/progress/{customer_id}")
-async def get_progress(customer_id: str, _: dict = Depends(get_user)):
+async def get_progress(customer_id: str, user: dict = Depends(get_user)):
+    guard = await db.customers.find_one({**tenant_scope_filter(user.get("businessId")), "id": customer_id}, {"_id": 0, "id": 1, "businessId": 1})
+    if guard is None or not tenant_owns(guard.get("businessId"), user.get("businessId")):
+        raise HTTPException(404, "Customer not found")
     return await get_customer_progress(customer_id)
 
 
 @router.get("/passport/{customer_id}")
-async def get_passport(customer_id: str, _: dict = Depends(get_user)):
+async def get_passport(customer_id: str, user: dict = Depends(get_user)):
     """Staff-facing: does this customer have loyalty accounts at sibling
     locations (same owner), and what does their combined picture look
     like? Anchors the group lookup on this customer's own record rather
     than the caller's business context, so it works the same whichever
-    location's staff happen to be looking."""
+    location's staff happen to be looking — deliberately unrestricted by
+    the caller's own business (see test_loyalty_passport.py's
+    test_staff_passport_endpoint_resolves_from_the_customer_record,
+    which exercises exactly this: an arbitrary caller resolving an
+    unrelated customer's passport). The aggregation itself still only
+    ever combines businesses that share an owner
+    (services/loyalty_group.py) — a phone matching across genuinely
+    unrelated owners is never aggregated, which is the privacy boundary
+    this endpoint actually needs to hold.
+    """
     from services import loyalty_group
-    customer = await db.customers.find_one({"id": customer_id}, {"_id": 0, "phone": 1, "businessId": 1})
+    customer = await db.customers.find_one({**tenant_scope_filter(user.get("businessId")), "id": customer_id}, {"_id": 0, "phone": 1, "businessId": 1})
     if not customer:
         raise HTTPException(404, "Customer not found")
     if not customer.get("phone"):
@@ -580,11 +616,13 @@ async def guest_lookup(body: Dict[str, Any]):
     # Single use — burn it the moment it's spent, win or lose.
     await db.loyalty_guest_otp.delete_one({"phone": phone})
 
-    customer = await db.customers.find_one({"phone": phone}, {"_id": 0, "id": 1, "name": 1, "businessId": 1})
+    from routes.online_orders import resolve_or_require_business_id
+    business_id = await resolve_or_require_business_id(body.get("business"))
+    customer = await db.customers.find_one({**tenant_scope_filter(business_id), "phone": phone}, {"_id": 0, "id": 1, "name": 1, "businessId": 1})
     if not customer:
         return {"found": False}
 
-    progress = await get_customer_progress(customer["id"])
+    progress = await get_customer_progress(customer["id"], business_id=business_id)
     if progress.get("error"):
         return {"found": False}
 
@@ -592,7 +630,28 @@ async def guest_lookup(body: Dict[str, Any]):
     # different venue), surface the combined picture instead of leaving the
     # guest to think the one record found here is their whole relationship.
     from services import loyalty_group
-    passport = await loyalty_group.passport_view(phone, customer.get("businessId"))
+    business_id = customer.get("businessId")
+    passport = await loyalty_group.passport_view(phone, business_id)
+
+    # Points/tier/badges/milestones and any paid membership are two
+    # separate systems (routes/v25_suite.py's subscriptions) linked only
+    # by customerId, not to each other — folded into this one guest
+    # response so "my rewards" is a single place to look rather than
+    # requiring the guest to know a paid plan is a whole different thing
+    # to check. Read-only here: enrollment/cancellation stays a staff
+    # action (routes/v25_suite.py), this only ever surfaces status.
+    subscription = None
+    sub = await db.subscriptions.find_one(
+        {"$and": [tenant_scope_filter(business_id),
+                  {"customerId": customer["id"], "status": "active"}]},
+        {"_id": 0},
+    )
+    if sub:
+        plan = await db.subscription_plans.find_one(
+            {"$and": [tenant_scope_filter(business_id), {"id": sub.get("planId")}]},
+            {"_id": 0, "name": 1, "perks": 1},
+        )
+        subscription = {"planName": (plan or {}).get("name"), "perks": (plan or {}).get("perks") or []}
 
     first_name = (customer.get("name") or "").strip().split(" ")[0] or "there"
     return {
@@ -604,11 +663,15 @@ async def guest_lookup(body: Dict[str, Any]):
         "badges": [b for b in progress["badges"] if b["earned"]],
         "passport": passport if passport.get("isMultiLocation") else None,
         "milestones": progress["milestones"],
+        "subscription": subscription,
     }
 
 
 @router.post("/evaluate/{customer_id}")
-async def evaluate(customer_id: str, _: dict = Depends(get_user)):
+async def evaluate(customer_id: str, user: dict = Depends(get_user)):
+    guard = await db.customers.find_one({**tenant_scope_filter(user.get("businessId")), "id": customer_id}, {"_id": 0, "id": 1, "businessId": 1})
+    if guard is None or not tenant_owns(guard.get("businessId"), user.get("businessId")):
+        raise HTTPException(404, "Customer not found")
     return await evaluate_customer(customer_id)
 
 
@@ -631,9 +694,14 @@ async def create_referral(body: dict, user: dict = Depends(get_user)):
     referee_id = body.get("refereeId")
     if not referrer_id or not (referee_email or referee_id):
         raise HTTPException(400, "referrerId + refereeEmail (or refereeId) required")
-    referrer = await db.customers.find_one({"id": referrer_id}, {"_id": 0})
-    if not referrer:
+    business_id = user.get("businessId")
+    referrer = await db.customers.find_one({**tenant_scope_filter(user.get("businessId")), "id": referrer_id}, {"_id": 0})
+    if not referrer or not tenant_owns(referrer.get("businessId"), business_id):
         raise HTTPException(404, "referrer not found")
+    if referee_id:
+        referee_guard = await db.customers.find_one({**tenant_scope_filter(user.get("businessId")), "id": referee_id}, {"_id": 0, "id": 1, "businessId": 1})
+        if referee_guard is None or not tenant_owns(referee_guard.get("businessId"), business_id):
+            raise HTTPException(404, "referee not found")
 
     # De-dup: same referrer + referee pending / active
     dup_q: Dict[str, Any] = {"referrerId": referrer_id}
@@ -655,6 +723,7 @@ async def create_referral(body: dict, user: dict = Depends(get_user)):
         "refereeRewardId": None,
         "createdAt": _now(),
         "createdBy": user.get("email"),
+        "businessId": business_id,
     }
     await db.loyalty_referrals.insert_one(dict(doc))
     return doc
@@ -662,10 +731,11 @@ async def create_referral(body: dict, user: dict = Depends(get_user)):
 
 @router.get("/referrals")
 async def list_referrals(referrerId: Optional[str] = None, status: Optional[str] = None,
-                          _: dict = Depends(get_user)):
+                          user: dict = Depends(get_user)):
     q: Dict[str, Any] = {}
     if referrerId: q["referrerId"] = referrerId
     if status: q["status"] = status
+    q = {"$and": [q, tenant_scope_filter(user.get("businessId"))]} if q else tenant_scope_filter(user.get("businessId"))
     return await db.loyalty_referrals.find(q, {"_id": 0}).sort("createdAt", -1).to_list(200)
 
 
@@ -673,8 +743,9 @@ async def list_referrals(referrerId: Optional[str] = None, status: Optional[str]
 async def complete_referral(ref_id: str, body: dict, user: dict = Depends(get_user)):
     """Fire once the referee has made their qualifying first transaction.
     Body optionally { refereeId } — used when the invite was email-only."""
-    r = await db.loyalty_referrals.find_one({"id": ref_id}, {"_id": 0})
-    if not r:
+    business_id = user.get("businessId")
+    r = await db.loyalty_referrals.find_one({"$and": [{"id": ref_id}, tenant_scope_filter(business_id)]}, {"_id": 0})
+    if r is None or not tenant_owns_strict(r.get("businessId"), business_id):
         raise HTTPException(404, "referral not found")
     if r["status"] == "completed":
         return r
@@ -682,11 +753,14 @@ async def complete_referral(ref_id: str, body: dict, user: dict = Depends(get_us
     referee_id = body.get("refereeId") or r.get("refereeId")
     if not referee_id:
         raise HTTPException(400, "refereeId is required")
+    referee_guard = await db.customers.find_one({**tenant_scope_filter(user.get("businessId")), "id": referee_id}, {"_id": 0, "id": 1, "businessId": 1})
+    if referee_guard is None or not tenant_owns(referee_guard.get("businessId"), business_id):
+        raise HTTPException(404, "referee not found")
 
     from routes.commerce_v29 import _issue_voucher
 
     async def _issue_referral_voucher(cust_id: str, reward: Dict[str, Any]) -> Dict[str, Any]:
-        cust = await db.customers.find_one({"id": cust_id}, {"_id": 0, "businessId": 1})
+        cust = await db.customers.find_one({**tenant_scope_filter(user.get("businessId")), "id": cust_id}, {"_id": 0, "businessId": 1})
         return await _issue_voucher({
             "sourceType": "loyalty_referral", "sourceRef": ref_id,
             "label": reward.get("label"), "valueType": "amount",
@@ -696,8 +770,8 @@ async def complete_referral(ref_id: str, body: dict, user: dict = Depends(get_us
     referrer_v = await _issue_referral_voucher(r["referrerId"], REFERRAL_REWARD_REFERRER)
     referee_v = await _issue_referral_voucher(referee_id, REFERRAL_REWARD_REFEREE)
 
-    await db.customers.update_one({"id": r["referrerId"]}, {"$inc": {"referrals": 1}})
-    await db.loyalty_referrals.update_one({"id": ref_id}, {"$set": {
+    await db.customers.update_one({**tenant_scope_filter(user.get("businessId")), "id": r["referrerId"]}, {"$inc": {"referrals": 1}})
+    await db.loyalty_referrals.update_one({"$and": [{"id": ref_id}, tenant_scope_filter(business_id)]}, {"$set": {
         "status": "completed", "refereeId": referee_id,
         "referrerRewardId": referrer_v["id"], "refereeRewardId": referee_v["id"],
         "completedAt": _now(), "completedBy": user.get("email"),
@@ -715,11 +789,11 @@ async def complete_referral(ref_id: str, body: dict, user: dict = Depends(get_us
                         data={"referralId": ref_id})
     except Exception:
         pass
-    return await db.loyalty_referrals.find_one({"id": ref_id}, {"_id": 0})
+    return await db.loyalty_referrals.find_one({"$and": [{"id": ref_id}, tenant_scope_filter(business_id)]}, {"_id": 0})
 
 
 @router.get("/leaderboard")
-async def leaderboard(metric: str = "points", limit: int = 20, _: dict = Depends(get_user)):
+async def leaderboard(metric: str = "points", limit: int = 20, user: dict = Depends(get_user)):
     """Top customers by metric ∈ {points, visits, spend, referrals}.
 
     field_map previously pointed at loyaltyPoints/totalVisits/totalSpend —
@@ -735,8 +809,9 @@ async def leaderboard(metric: str = "points", limit: int = 20, _: dict = Depends
         "spend": "totalSpent", "referrals": "referrals",
     }
     field = field_map.get(metric, "points")
+    query = {"$and": [tenant_scope_filter(user.get("businessId")), {field: {"$gt": 0}}]}
     rows = await db.customers.find(
-        {field: {"$gt": 0}},
+        query,
         {"_id": 0, "id": 1, "name": 1, "email": 1, "membershipTier": 1,
           "points": 1, "visits": 1, "totalSpent": 1, "referrals": 1},
     ).sort(field, -1).limit(limit).to_list(limit)

@@ -65,3 +65,32 @@ def test_search_finds_a_seeded_identity_customer(client, owner_headers):
 def test_identity_endpoints_require_authentication(anon):
     assert req(anon, "GET", "/api/identity/entitlements").status_code == 401
     assert req(anon, "GET", "/api/identity/customers").status_code == 401
+
+
+def test_a_different_businesss_identity_customer_is_not_visible(client, owner_headers):
+    """identity_customers had a venue_id field from the start but every
+    caller left it at the default "main", so every business's identity
+    records shared one venue and any staff member of any business could
+    search/read any other business's guest identities. venue_id is now
+    wired to the caller's real businessId; a record tagged for a genuinely
+    different business must not show up for this one."""
+    from database import db
+
+    cid = str(uuid.uuid4())
+    _run(db.identity_customers.delete_many({"id": cid}))
+    _run(db.identity_customers.insert_one({
+        "id": cid, "venue_id": "some-other-tenant-entirely", "name": "Other Tenant Identity Target",
+        "phone": "0400777999", "email": None, "source": "pos_checkout",
+        "visit_count": 1, "last_seen_at": "2026-08-01T00:00:00+00:00",
+    }))
+    try:
+        r = req(client, "GET", "/api/identity/customers", headers=owner_headers,
+                params={"search": "Other Tenant Identity Target"})
+        assert r.status_code == 200, r.text[:200]
+        ids = {c["id"] for c in r.json()}
+        assert cid not in ids, "a differently-venue-tagged identity customer must not leak across businesses"
+
+        detail = req(client, "GET", f"/api/identity/customers/{cid}", headers=owner_headers)
+        assert detail.status_code == 404, "direct-by-id lookup must also refuse a different business's identity record"
+    finally:
+        _run(db.identity_customers.delete_many({"id": cid}))

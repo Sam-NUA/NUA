@@ -25,6 +25,7 @@ from datetime import datetime, timedelta, timezone, date
 from pydantic import BaseModel
 from database import db
 from deps import get_user
+from middleware.actor_context import tenant_scope_filter, tenant_owns_strict
 import uuid
 import os
 import statistics
@@ -167,6 +168,7 @@ async def _create_alert(device: dict, reading: dict, background_tasks: Optional[
         "acknowledgedBy": None,
         "acknowledgedAt": None,
         "createdAt": _now_iso(),
+        "businessId": device.get("businessId"),
     }
     await db.temperature_alerts.insert_one(alert)
     # Fire the notification asynchronously so ingest stays snappy.
@@ -208,8 +210,9 @@ async def brands(_: dict = Depends(get_user)):
 
 
 @router.get("/temperature/devices")
-async def list_devices(_: dict = Depends(get_user)):
-    return await db.temperature_devices.find({}, {"_id": 0, "ingestSecret": 0}).sort("createdAt", -1).to_list(200)
+async def list_devices(user: dict = Depends(get_user)):
+    q = tenant_scope_filter(user.get("businessId"))
+    return await db.temperature_devices.find(q, {"_id": 0, "ingestSecret": 0}).sort("createdAt", -1).to_list(200)
 
 
 @router.post("/temperature/devices")
@@ -238,6 +241,7 @@ async def create_device(body: DeviceIn, user: dict = Depends(get_user)):
         "createdBy": user.get("email"),
         "createdAt": _now_iso(),
         "updatedAt": _now_iso(),
+        "businessId": user.get("businessId"),
     }
     await db.temperature_devices.insert_one(doc)
     doc.pop("_id", None)
@@ -248,23 +252,29 @@ async def create_device(body: DeviceIn, user: dict = Depends(get_user)):
 async def update_device(device_id: str, data: dict, user: dict = Depends(get_user)):
     if user["role"] not in ("owner", "manager"):
         raise HTTPException(403, "Owner or manager only")
+    guard = await db.temperature_devices.find_one({"$and": [{"id": device_id}, tenant_scope_filter(user.get("businessId"))]}, {"_id": 0, "id": 1, "businessId": 1})
+    if guard is None or not tenant_owns_strict(guard.get("businessId"), user.get("businessId")):
+        raise HTTPException(404, "Device not found")
     allowed = {"name", "unitType", "brand", "model", "connectivity", "deviceId",
                "location", "minC", "maxC", "active"}
     update = {k: v for k, v in data.items() if k in allowed}
     if not update:
         raise HTTPException(400, "Nothing to update")
     update["updatedAt"] = _now_iso()
-    r = await db.temperature_devices.update_one({"id": device_id}, {"$set": update})
+    r = await db.temperature_devices.update_one({"$and": [{"id": device_id}, tenant_scope_filter(user.get("businessId"))]}, {"$set": update})
     if r.matched_count == 0:
         raise HTTPException(404, "Device not found")
-    return await db.temperature_devices.find_one({"id": device_id}, {"_id": 0, "ingestSecret": 0})
+    return await db.temperature_devices.find_one({"$and": [{"id": device_id}, tenant_scope_filter(user.get("businessId"))]}, {"_id": 0, "ingestSecret": 0})
 
 
 @router.delete("/temperature/devices/{device_id}")
 async def delete_device(device_id: str, user: dict = Depends(get_user)):
     if user["role"] != "owner":
         raise HTTPException(403, "Owner only")
-    r = await db.temperature_devices.delete_one({"id": device_id})
+    guard = await db.temperature_devices.find_one({"$and": [{"id": device_id}, tenant_scope_filter(user.get("businessId"))]}, {"_id": 0, "id": 1, "businessId": 1})
+    if guard is None or not tenant_owns_strict(guard.get("businessId"), user.get("businessId")):
+        raise HTTPException(404, "Device not found")
+    r = await db.temperature_devices.delete_one({"$and": [{"id": device_id}, tenant_scope_filter(user.get("businessId"))]})
     if r.deleted_count == 0:
         raise HTTPException(404, "Device not found")
     return {"deleted": True}
@@ -274,9 +284,12 @@ async def delete_device(device_id: str, user: dict = Depends(get_user)):
 async def rotate_secret(device_id: str, user: dict = Depends(get_user)):
     if user["role"] != "owner":
         raise HTTPException(403, "Owner only")
+    guard = await db.temperature_devices.find_one({"$and": [{"id": device_id}, tenant_scope_filter(user.get("businessId"))]}, {"_id": 0, "id": 1, "businessId": 1})
+    if guard is None or not tenant_owns_strict(guard.get("businessId"), user.get("businessId")):
+        raise HTTPException(404, "Device not found")
     new_secret = uuid.uuid4().hex
     r = await db.temperature_devices.update_one(
-        {"id": device_id}, {"$set": {"ingestSecret": new_secret, "updatedAt": _now_iso()}},
+        {"$and": [{"id": device_id}, tenant_scope_filter(user.get("businessId"))]}, {"$set": {"ingestSecret": new_secret, "updatedAt": _now_iso()}},
     )
     if r.matched_count == 0:
         raise HTTPException(404, "Device not found")
@@ -289,8 +302,8 @@ async def log_reading(body: ReadingIn, background_tasks: BackgroundTasks,
                        user: dict = Depends(get_user)):
     """Manual reading endpoint — used from the POS 'Log now' button and as a
     fallback when a sensor is offline or its battery died."""
-    device = await db.temperature_devices.find_one({"id": body.deviceId}, {"_id": 0})
-    if not device:
+    device = await db.temperature_devices.find_one({"$and": [{"id": body.deviceId}, tenant_scope_filter(user.get("businessId"))]}, {"_id": 0})
+    if not device or not tenant_owns_strict(device.get("businessId"), user.get("businessId")):
         raise HTTPException(404, "Device not found")
     return await _persist_reading(device, body.temperatureC, body.humidity,
                                   body.batteryPct, body.source or "manual",
@@ -332,6 +345,7 @@ async def _persist_reading(device, temp_c, humidity, battery, source, recorded_a
         "recordedBy": recorded_by,
         "note": note,
         "createdAt": _now_iso(),
+        "businessId": device.get("businessId"),
     }
     await db.temperature_readings.insert_one(doc)
     if status != "normal":
@@ -343,8 +357,8 @@ async def _persist_reading(device, temp_c, humidity, battery, source, recorded_a
 @router.get("/temperature/readings")
 async def list_readings(deviceId: Optional[str] = None,
                          start: Optional[str] = None, end: Optional[str] = None,
-                         limit: int = 500, _: dict = Depends(get_user)):
-    query = {}
+                         limit: int = 500, user: dict = Depends(get_user)):
+    query = tenant_scope_filter(user.get("businessId"))
     if deviceId:
         query["deviceId"] = deviceId
     if start:
@@ -356,15 +370,20 @@ async def list_readings(deviceId: Optional[str] = None,
 
 # ─── Alerts ──────────────────────────────────────────────────────────────
 @router.get("/temperature/alerts")
-async def list_alerts(unacknowledgedOnly: bool = False, _: dict = Depends(get_user)):
-    query = {"acknowledged": False} if unacknowledgedOnly else {}
+async def list_alerts(unacknowledgedOnly: bool = False, user: dict = Depends(get_user)):
+    query = tenant_scope_filter(user.get("businessId"))
+    if unacknowledgedOnly:
+        query["acknowledged"] = False
     return await db.temperature_alerts.find(query, {"_id": 0}).sort("createdAt", -1).to_list(200)
 
 
 @router.post("/temperature/alerts/{alert_id}/acknowledge")
 async def ack_alert(alert_id: str, user: dict = Depends(get_user)):
+    guard = await db.temperature_alerts.find_one({"$and": [{"id": alert_id}, tenant_scope_filter(user.get("businessId"))]}, {"_id": 0, "id": 1, "businessId": 1})
+    if guard is None or not tenant_owns_strict(guard.get("businessId"), user.get("businessId")):
+        raise HTTPException(404, "Alert not found")
     r = await db.temperature_alerts.update_one(
-        {"id": alert_id},
+        {"$and": [{"id": alert_id}, tenant_scope_filter(user.get("businessId"))]},
         {"$set": {"acknowledged": True, "acknowledgedBy": user.get("email"),
                   "acknowledgedAt": _now_iso()}},
     )
@@ -398,7 +417,7 @@ def _period_bounds(period: str, anchor: Optional[str] = None):
 async def report(period: Optional[str] = None,
                   start: Optional[str] = None, end: Optional[str] = None,
                   deviceId: Optional[str] = None,
-                  _: dict = Depends(get_user)):
+                  user: dict = Depends(get_user)):
     """Compliance-friendly summary sheet.
 
     Two modes:
@@ -419,12 +438,14 @@ async def report(period: Optional[str] = None,
 
     range_start = f"{s}T00:00:00+00:00"
     range_end   = f"{e}T23:59:59+00:00"
-    q = {"recordedAt": {"$gte": range_start, "$lte": range_end}}
+    biz_scope = tenant_scope_filter(user.get("businessId"))
+    q = {"recordedAt": {"$gte": range_start, "$lte": range_end}, **biz_scope}
     if deviceId:
         q["deviceId"] = deviceId
     readings = await db.temperature_readings.find(q, {"_id": 0}).sort("recordedAt", 1).to_list(5000)
 
-    devices = {d["id"]: d for d in await db.temperature_devices.find({}, {"_id": 0, "ingestSecret": 0}).to_list(500)}
+    devices = {d["id"]: d for d in await db.temperature_devices.find(
+        biz_scope, {"_id": 0, "ingestSecret": 0}).to_list(500)}
 
     per_device = {}
     for r in readings:
@@ -471,7 +492,9 @@ async def scan_missing(user: dict = Depends(get_user)):
     dock's periodic sweep."""
     now = datetime.now(timezone.utc)
     cutoff = (now - timedelta(hours=12)).isoformat()
-    devices = await db.temperature_devices.find({"active": True}, {"_id": 0, "ingestSecret": 0}).to_list(200)
+    devices = await db.temperature_devices.find(
+        {"active": True, **tenant_scope_filter(user.get("businessId"))}, {"_id": 0, "ingestSecret": 0}
+    ).to_list(200)
 
     reminders = 0
     for dev in devices:
@@ -491,6 +514,7 @@ async def scan_missing(user: dict = Depends(get_user)):
             "recordedAt": None,
             "acknowledged": False,
             "createdAt": _now_iso(),
+            "businessId": dev.get("businessId"),
         }
         await db.temperature_alerts.insert_one(alert)
         reminders += 1

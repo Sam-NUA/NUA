@@ -21,6 +21,7 @@ export default function OrderOnline() {
   // each one its own online-ordering link. Absent on a single-business
   // deployment, where it's a no-op (backend treats it the same as unset).
   const businessParam = searchParams.get('business') || undefined;
+  const businessQuery = businessParam ? `?business=${encodeURIComponent(businessParam)}` : '';
   const { toast } = useToast();
   const { lang, setLang, t, dir, languages } = useLanguage('nua_online_lang');
   const CHANNELS = [
@@ -105,7 +106,7 @@ export default function OrderOnline() {
     setVoucherChecking(true);
     setVoucherError('');
     try {
-      const r = await onlineAPI.checkVoucher(voucherCode.trim(), cart.map(i => ({ price: i.price, quantity: i.quantity, category: i.category, id: i.id })));
+      const r = await onlineAPI.checkVoucher(voucherCode.trim(), cart.map(i => ({ price: i.price, quantity: i.quantity, category: i.category, id: i.id })), businessParam);
       if (r.data?.valid) {
         setVoucherApplied({ code: voucherCode.trim(), discount: r.data.discount, label: r.data.label });
       } else {
@@ -155,10 +156,10 @@ export default function OrderOnline() {
       // old "pay at pickup" default — falls back to the tracking page (same
       // as before this existed) if payments aren't set up for this venue.
       try {
-        const pay = await onlineAPI.checkout(r.data.id, window.location.origin);
+        const pay = await onlineAPI.checkout(r.data.id, window.location.origin, businessParam);
         if (pay.data?.configured && pay.data?.url) { window.location.href = pay.data.url; return; }
       } catch { /* fall through to tracking page */ }
-      navigate(`/track/${r.data.id}`);
+      navigate(`/track/${r.data.id}${businessQuery}`);
     } catch (e) {
       toast({ title: t('orderOnline.toastFailed'), description: e?.response?.data?.detail, variant: 'destructive' });
     } finally { setPlacing(false); }
@@ -190,8 +191,8 @@ export default function OrderOnline() {
           </div>
           <div className="flex items-center gap-3">
             <LanguageSelector lang={lang} setLang={setLang} languages={languages} variant="light" label={t('common.language')} />
-            <Button variant="ghost" onClick={() => navigate('/rewards')} className="text-sm">{t('orderOnline.myRewards')}</Button>
-            <Button variant="ghost" onClick={() => navigate('/track')} className="text-sm">{t('orderOnline.trackOrder')}</Button>
+            <Button variant="ghost" onClick={() => navigate(`/rewards${businessQuery}`)} className="text-sm">{t('orderOnline.myRewards')}</Button>
+            <Button variant="ghost" onClick={() => navigate(`/track${businessQuery}`)} className="text-sm">{t('orderOnline.trackOrder')}</Button>
           </div>
         </header>
 

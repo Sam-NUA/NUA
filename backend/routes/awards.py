@@ -8,11 +8,13 @@ attempts to fetch the latest published rates from fairwork.gov.au's open
 data feed; if the network or feed is unavailable, it falls back to the seed
 + flags a stale-data warning so the UI can prompt the user.
 """
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Depends
 from typing import List, Optional
 from datetime import datetime, timezone
 from pydantic import BaseModel
 from database import db
+from deps import get_user, require_owner_or_manager
+from middleware.actor_context import tenant_scope_filter, tenant_owns_strict
 import uuid
 import os
 
@@ -131,10 +133,10 @@ SEED_AWARDS: list[dict] = [
 
 # --- Endpoints -------------------------------------------------------------
 @router.get("/awards/catalogue")
-async def awards_catalogue(country: Optional[str] = None):
+async def awards_catalogue(country: Optional[str] = None, user: dict = Depends(get_user)):
     """List the seed awards (available to install)."""
     out = []
-    installed = {a["code"]: a async for a in db.awards.find({}, {"_id": 0})}
+    installed = {a["code"]: a async for a in db.awards.find(tenant_scope_filter(user.get("businessId")), {"_id": 0})}
     for s in SEED_AWARDS:
         if country and s["country"] != country:
             continue
@@ -148,7 +150,7 @@ async def awards_catalogue(country: Optional[str] = None):
     return out
 
 @router.post("/awards/install")
-async def install_award(body: dict):
+async def install_award(body: dict, user: dict = Depends(require_owner_or_manager)):
     """Install an award by code from the seed catalogue."""
     code = body.get("code")
     if not code:
@@ -156,6 +158,7 @@ async def install_award(body: dict):
     seed = next((s for s in SEED_AWARDS if s["code"] == code), None)
     if not seed:
         raise HTTPException(status_code=404, detail="Award not in catalogue")
+    biz = user.get("businessId")
     doc = {
         "id": str(uuid.uuid4()),
         "code": seed["code"],
@@ -167,18 +170,36 @@ async def install_award(body: dict):
         "classifications": seed.get("classifications", []),
         "sourceUrl": seed.get("sourceUrl", ""),
         "installedAt": datetime.now(timezone.utc).isoformat(),
+        "businessId": biz,
     }
-    await db.awards.update_one({"code": doc["code"]}, {"$set": doc}, upsert=True)
+    # Keyed by (code, businessId), not code alone — an award like
+    # "MA000119" is a shared national identifier, but "installed" is a
+    # per-business choice. Two businesses installing the same award used
+    # to collide on one shared document, so business A uninstalling it
+    # silently uninstalled it for business B too, and business A could see
+    # (and delete) business B's installed-awards list wholesale.
+    await db.awards.update_one({"code": doc["code"], "businessId": biz}, {"$set": doc}, upsert=True)
     return doc
 
 @router.get("/awards/installed")
-async def list_installed_awards():
-    rows = await db.awards.find({}, {"_id": 0}).to_list(200)
+async def list_installed_awards(user: dict = Depends(get_user)):
+    rows = await db.awards.find(tenant_scope_filter(user.get("businessId")), {"_id": 0}).to_list(200)
     return rows
 
 @router.delete("/awards/{code}")
-async def uninstall_award(code: str):
-    res = await db.awards.delete_one({"code": code})
+async def uninstall_award(code: str, user: dict = Depends(require_owner_or_manager)):
+    """The old inline `$or businessId/None/$exists` filter was the same
+    fail-open shape as tenant_owns() applied to a DELETE — awards are only
+    ever written by install_award above, which always stamps a real
+    businessId (no guest/anonymous path creates one), so an untagged award
+    row can only be genuine pre-fix legacy data, not currently-active data
+    from some other business — safe to quarantine with an exact match
+    rather than delete on a fail-open guess."""
+    biz = user.get("businessId")
+    existing = await db.awards.find_one({"$and": [{"code": code}, tenant_scope_filter(biz)]}, {"_id": 0, "businessId": 1})
+    if not existing or not tenant_owns_strict(existing.get("businessId"), biz):
+        raise HTTPException(status_code=404, detail="Not installed")
+    res = await db.awards.delete_one({"$and": [{"code": code}, tenant_scope_filter(biz)]})
     if res.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Not installed")
     return {"deleted": True}
@@ -188,7 +209,7 @@ async def uninstall_award(code: str):
 FAIRWORK_FEED = os.environ.get("FAIRWORK_AWARDS_FEED", "https://api.fwc.gov.au/v1/awards")
 
 @router.post("/awards/sync-fairwork")
-async def sync_fairwork():
+async def sync_fairwork(user: dict = Depends(require_owner_or_manager)):
     """Best-effort sync against the Fair Work Modern Awards feed.
 
     Returns the merged catalogue and a `stale: bool` flag — when stale is
@@ -223,7 +244,7 @@ async def sync_fairwork():
 
 # --- Super calc from payruns ----------------------------------------------
 @router.post("/payruns/super-by-award")
-async def super_by_award(body: dict):
+async def super_by_award(body: dict, user: dict = Depends(require_owner_or_manager)):
     """Compute super contributions for each staff member in a payrun using
     the installed Award's superRate.
 
@@ -238,8 +259,11 @@ async def super_by_award(body: dict):
     if not isinstance(staff, list):
         raise HTTPException(status_code=400, detail="payrun.staffPayroll must be a list")
 
-    # Pull installed awards into a {code: doc} map
-    installed = {a["code"]: a async for a in db.awards.find({}, {"_id": 0})}
+    # Pull installed awards into a {code: doc} map — scoped to this
+    # business, since superRate is a compliance-sensitive figure that must
+    # come from THIS business's own installed award, never another
+    # tenant's (whose install/uninstall choices this business never made).
+    installed = {a["code"]: a async for a in db.awards.find(tenant_scope_filter(user.get("businessId")), {"_id": 0})}
 
     out = []
     total = 0.0

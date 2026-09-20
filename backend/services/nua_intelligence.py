@@ -18,6 +18,7 @@ from __future__ import annotations
 from typing import List, Dict, Any, Optional
 from datetime import datetime, timezone, timedelta
 from database import db
+from middleware.actor_context import tenant_scope_filter, get_actor_context, _actor_ctx
 import asyncio
 import os
 import uuid
@@ -54,10 +55,10 @@ def _mk(category: str, key: str, severity: str, title: str, body: str,
 # ─── 1. Staffing shortage ────────────────────────────────────────────────
 async def predict_staffing_shortage() -> List[Dict[str, Any]]:
     tomorrow = (_now() + timedelta(days=1)).date()
-    reservations = await db.reservations.count_documents({
+    reservations = await db.reservations.count_documents({**tenant_scope_filter(),
         "dateTime": {"$regex": f"^{tomorrow.isoformat()}"},
     })
-    rostered = await db.shifts.count_documents({
+    rostered = await db.shifts.count_documents({**tenant_scope_filter(),
         "date": tomorrow.isoformat(), "status": {"$in": ["scheduled", "confirmed"]},
     })
     if reservations >= 20 and rostered < max(3, reservations // 8):
@@ -72,7 +73,7 @@ async def predict_staffing_shortage() -> List[Dict[str, Any]]:
 # ─── 2. Theft detection ──────────────────────────────────────────────────
 async def detect_theft_signals() -> List[Dict[str, Any]]:
     since = (_now() - timedelta(days=7)).isoformat()
-    voids = await db.transactions.find({"status": "voided", "timestamp": {"$gte": since}}, {"_id": 0}).to_list(2000)
+    voids = await db.transactions.find({**tenant_scope_filter(), "status": "voided", "timestamp": {"$gte": since}}, {"_id": 0}).to_list(2000)
     hits: List[Dict[str, Any]] = []
     by_staff: Dict[str, int] = {}
     for v in voids:
@@ -88,7 +89,7 @@ async def detect_theft_signals() -> List[Dict[str, Any]]:
     # Pour variance — flagged stocktake reconciles beyond threshold.
     try:
         recs = await db.stocktake_reconciles.find(
-            {"reconciledAt": {"$gte": since}, "flagged": True},
+            {**tenant_scope_filter(), "reconciledAt": {"$gte": since}, "flagged": True},
             {"_id": 0},
         ).sort("reconciledAt", -1).to_list(500)
     except Exception:
@@ -114,8 +115,8 @@ async def detect_theft_signals() -> List[Dict[str, Any]]:
 # ─── 3. Fraud detection ─────────────────────────────────────────────────
 async def detect_fraud_signals() -> List[Dict[str, Any]]:
     since = (_now() - timedelta(days=1)).isoformat()
-    refunds = await db.refunds.find({"createdAt": {"$gte": since}}, {"_id": 0}).to_list(1000) \
-        if await db.refunds.count_documents({}) else []
+    refunds = await db.refunds.find({**tenant_scope_filter(), "createdAt": {"$gte": since}}, {"_id": 0}).to_list(1000) \
+        if await db.refunds.count_documents({**tenant_scope_filter(), }) else []
     if len(refunds) >= 10:
         return [_mk("fraud", "refund_velocity", "high",
                      f"Refund velocity spike — {len(refunds)} refunds in 24h",
@@ -127,7 +128,7 @@ async def detect_fraud_signals() -> List[Dict[str, Any]]:
 
 # ─── 4. Pricing recommendations ─────────────────────────────────────────
 async def recommend_pricing() -> List[Dict[str, Any]]:
-    products = await db.products.find({}, {"_id": 0}).to_list(2000)
+    products = await db.products.find({**tenant_scope_filter(), }, {"_id": 0}).to_list(2000)
     hits = []
     for p in products:
         cost = float(p.get("cost") or 0)
@@ -146,7 +147,7 @@ async def recommend_pricing() -> List[Dict[str, Any]]:
 
 # ─── 5. Promotion suggestions ──────────────────────────────────────────
 async def suggest_promotions() -> List[Dict[str, Any]]:
-    products = await db.products.find({"stock": {"$gt": 30}}, {"_id": 0}).limit(20).to_list(20)
+    products = await db.products.find({**tenant_scope_filter(), "stock": {"$gt": 30}}, {"_id": 0}).limit(20).to_list(20)
     hits = []
     for p in products[:3]:
         hits.append(_mk("promotion", f"slow_mover_{p['id']}", "info",
@@ -159,8 +160,8 @@ async def suggest_promotions() -> List[Dict[str, Any]]:
 
 # ─── 6. Food waste prediction ──────────────────────────────────────────
 async def predict_food_waste() -> List[Dict[str, Any]]:
-    ingredients = await db.ingredients.find({}, {"_id": 0}).to_list(1000) \
-        if await db.ingredients.count_documents({}) else []
+    ingredients = await db.ingredients.find({**tenant_scope_filter(), }, {"_id": 0}).to_list(1000) \
+        if await db.ingredients.count_documents({**tenant_scope_filter(), }) else []
     hits = []
     for i in ingredients:
         stock = float(i.get("stock") or 0)
@@ -182,7 +183,7 @@ async def predict_food_waste() -> List[Dict[str, Any]]:
     try:
         since = (_now() - timedelta(days=7)).isoformat()
         events = await db.wastage_events.find(
-            {"createdAt": {"$gte": since}, "deletedAt": None}, {"_id": 0},
+            {**tenant_scope_filter(), "createdAt": {"$gte": since}, "deletedAt": None}, {"_id": 0},
         ).to_list(2000)
     except Exception:
         events = []
@@ -201,9 +202,9 @@ async def predict_food_waste() -> List[Dict[str, Any]]:
                 pname = "?"
                 if su_id and su_id != "?":
                     try:
-                        su_row = await db.stock_units.find_one({"id": su_id}, {"_id": 0})
+                        su_row = await db.stock_units.find_one({**tenant_scope_filter(), "id": su_id}, {"_id": 0})
                         if su_row:
-                            p = await db.products.find_one({"id": su_row.get("productId")}, {"_id": 0, "name": 1})
+                            p = await db.products.find_one({**tenant_scope_filter(), "id": su_row.get("productId")}, {"_id": 0, "name": 1})
                             if p: pname = p.get("name") or pname
                     except Exception:
                         pass
@@ -220,11 +221,11 @@ async def predict_food_waste() -> List[Dict[str, Any]]:
 async def detect_labour_anomalies() -> List[Dict[str, Any]]:
     # Wages ÷ revenue over the last 7 days
     since = (_now() - timedelta(days=7)).isoformat()
-    txns = await db.transactions.find({"timestamp": {"$gte": since}}, {"_id": 0}).to_list(20000)
+    txns = await db.transactions.find({**tenant_scope_filter(), "timestamp": {"$gte": since}}, {"_id": 0}).to_list(20000)
     revenue = sum(float(t.get("total") or 0) for t in txns) or 1
     # Very rough — use most recent pay run total or estimate from shifts
-    pay_runs = await db.payroll_runs.find({}, {"_id": 0}).sort("payDate", -1).limit(2).to_list(2) \
-        if await db.payroll_runs.count_documents({}) else []
+    pay_runs = await db.payroll_runs.find({**tenant_scope_filter(), }, {"_id": 0}).sort("payDate", -1).limit(2).to_list(2) \
+        if await db.payroll_runs.count_documents({**tenant_scope_filter(), }) else []
     wages = sum(float(r.get("gross") or 0) for r in pay_runs)
     ratio = wages / revenue if revenue else 0
     if ratio > 0.35:
@@ -239,7 +240,7 @@ async def detect_labour_anomalies() -> List[Dict[str, Any]]:
 # ─── 8. Menu underperformance ─────────────────────────────────────────
 async def detect_menu_underperformance() -> List[Dict[str, Any]]:
     since = (_now() - timedelta(days=30)).isoformat()
-    txns = await db.transactions.find({"timestamp": {"$gte": since}}, {"_id": 0}).to_list(20000)
+    txns = await db.transactions.find({**tenant_scope_filter(), "timestamp": {"$gte": since}}, {"_id": 0}).to_list(20000)
     sales_by_product: Dict[str, int] = {}
     for t in txns:
         for i in (t.get("items") or []):
@@ -252,7 +253,7 @@ async def detect_menu_underperformance() -> List[Dict[str, Any]]:
     low = [pid for pid, n in sales_by_product.items() if n < max(1, med * 0.2)]
     hits = []
     for pid in low[:5]:
-        p = await db.products.find_one({"id": pid}, {"_id": 0})
+        p = await db.products.find_one({**tenant_scope_filter(), "id": pid}, {"_id": 0})
         if p:
             hits.append(_mk("menu", f"underperformer_{pid}", "info",
                              f"{p.get('name')} sold only {sales_by_product[pid]} in 30 days",
@@ -268,8 +269,8 @@ async def forecast_weather_impact() -> List[Dict[str, Any]]:
     a proxy signal until a real weather API is wired up."""
     d1 = (_now() - timedelta(days=1)).date().isoformat()
     d2 = (_now() - timedelta(days=2)).date().isoformat()
-    c1 = await db.transactions.count_documents({"timestamp": {"$regex": f"^{d1}"}})
-    c2 = await db.transactions.count_documents({"timestamp": {"$regex": f"^{d2}"}})
+    c1 = await db.transactions.count_documents({**tenant_scope_filter(), "timestamp": {"$regex": f"^{d1}"}})
+    c2 = await db.transactions.count_documents({**tenant_scope_filter(), "timestamp": {"$regex": f"^{d2}"}})
     if c2 > 10 and c1 < c2 * 0.5:
         return [_mk("weather", "rain_impact", "info",
                      "Cover drop yesterday suggests weather impact",
@@ -298,7 +299,7 @@ async def forecast_public_holiday_demand() -> List[Dict[str, Any]]:
 
 # ─── 11. Purchasing recommendations ───────────────────────────────────
 async def recommend_purchasing() -> List[Dict[str, Any]]:
-    products = await db.products.find({"stock": {"$gte": 0}}, {"_id": 0}).to_list(2000)
+    products = await db.products.find({**tenant_scope_filter(), "stock": {"$gte": 0}}, {"_id": 0}).to_list(2000)
     hits = []
     # Lazy import to avoid a cycle
     from services import measured_inventory_service as _mi
@@ -333,8 +334,8 @@ async def recommend_purchasing() -> List[Dict[str, Any]]:
 async def recommend_roster_changes() -> List[Dict[str, Any]]:
     # Simple: if forecasted bookings today > threshold and current shifts less than needed
     today = _now().date().isoformat()
-    bookings_today = await db.reservations.count_documents({"dateTime": {"$regex": f"^{today}"}})
-    rostered = await db.shifts.count_documents({"date": today})
+    bookings_today = await db.reservations.count_documents({**tenant_scope_filter(), "dateTime": {"$regex": f"^{today}"}})
+    rostered = await db.shifts.count_documents({**tenant_scope_filter(), "date": today})
     if bookings_today >= 15 and rostered < max(3, bookings_today // 8):
         return [_mk("roster", "roster_gap_today", "high",
                      f"Roster gap today — {bookings_today} bookings, {rostered} shifts scheduled",
@@ -347,8 +348,8 @@ async def recommend_roster_changes() -> List[Dict[str, Any]]:
 # ─── 13. Staff burnout risk ───────────────────────────────────────────
 async def predict_staff_burnout() -> List[Dict[str, Any]]:
     since = (_now() - timedelta(days=14)).isoformat()
-    time_entries = await db.time_entries.find({"clockIn": {"$gte": since}}, {"_id": 0}).to_list(5000) \
-        if await db.time_entries.count_documents({}) else []
+    time_entries = await db.time_entries.find({**tenant_scope_filter(), "clockIn": {"$gte": since}}, {"_id": 0}).to_list(5000) \
+        if await db.time_entries.count_documents({**tenant_scope_filter(), }) else []
     hours_by_staff: Dict[str, float] = {}
     for e in time_entries:
         hours_by_staff[e.get("staffId", "?")] = hours_by_staff.get(e.get("staffId", "?"), 0) + float(e.get("hours") or 0)
@@ -365,7 +366,7 @@ async def predict_staff_burnout() -> List[Dict[str, Any]]:
 
 # ─── 14. Customer churn prediction ────────────────────────────────────
 async def predict_customer_churn() -> List[Dict[str, Any]]:
-    customers = await db.customers.find({"visits": {"$gte": 5}}, {"_id": 0}).limit(500).to_list(500)
+    customers = await db.customers.find({**tenant_scope_filter(), "visits": {"$gte": 5}}, {"_id": 0}).limit(500).to_list(500)
     hits = []
     for c in customers:
         last = c.get("lastVisit")
@@ -391,7 +392,7 @@ async def predict_customer_churn() -> List[Dict[str, Any]]:
 # ─── 15. Menu engineering matrix ──────────────────────────────────────
 async def recommend_menu_engineering() -> List[Dict[str, Any]]:
     since = (_now() - timedelta(days=30)).isoformat()
-    txns = await db.transactions.find({"timestamp": {"$gte": since}}, {"_id": 0}).to_list(20000)
+    txns = await db.transactions.find({**tenant_scope_filter(), "timestamp": {"$gte": since}}, {"_id": 0}).to_list(20000)
     sales: Dict[str, Dict[str, float]] = {}
     for t in txns:
         for i in (t.get("items") or []):
@@ -412,7 +413,7 @@ async def recommend_menu_engineering() -> List[Dict[str, Any]]:
         elif v["revenue"] >= med_rev: q = "Puzzle"
         else: q = "Dog"
         if q in ("Dog", "Puzzle"):
-            p = await db.products.find_one({"id": pid}, {"_id": 0})
+            p = await db.products.find_one({**tenant_scope_filter(), "id": pid}, {"_id": 0})
             if p:
                 msg = "Consider removing" if q == "Dog" else "Consider repositioning higher on the menu / renaming"
                 hits.append(_mk("menu_engineering", f"me_{pid}", "info" if q == "Puzzle" else "warning",
@@ -426,12 +427,12 @@ async def recommend_menu_engineering() -> List[Dict[str, Any]]:
 # ─── 16. Weekly summary — the ONE LLM call ────────────────────────────
 async def generate_weekly_summary() -> Optional[Dict[str, Any]]:
     since = (_now() - timedelta(days=7)).isoformat()
-    txns = await db.transactions.find({"timestamp": {"$gte": since}}, {"_id": 0}).to_list(20000)
+    txns = await db.transactions.find({**tenant_scope_filter(), "timestamp": {"$gte": since}}, {"_id": 0}).to_list(20000)
     revenue = sum(float(t.get("total") or 0) for t in txns)
     covers = len(txns)
-    bookings = await db.reservations.count_documents({"createdAt": {"$gte": since}})
-    refunds = await db.refunds.count_documents({"createdAt": {"$gte": since}}) if await db.refunds.count_documents({}) else 0
-    top = await db.customers.find({}, {"_id": 0}).sort("totalSpent", -1).limit(3).to_list(3)
+    bookings = await db.reservations.count_documents({**tenant_scope_filter(), "createdAt": {"$gte": since}})
+    refunds = await db.refunds.count_documents({**tenant_scope_filter(), "createdAt": {"$gte": since}}) if await db.refunds.count_documents({**tenant_scope_filter(), }) else 0
+    top = await db.customers.find({**tenant_scope_filter(), }, {"_id": 0}).sort("totalSpent", -1).limit(3).to_list(3)
 
     prompt = f"""Write a warm, insightful 4-sentence business summary for the last 7 days.
 - Revenue: ${revenue:,.2f}
@@ -486,8 +487,19 @@ GENERATORS = [
 ]
 
 
-async def run_all_insights(include_summary: bool = False) -> Dict[str, Any]:
-    """Runs all 15 (or 16) generators concurrently. Upserts by (category, key)."""
+async def run_all_insights(include_summary: bool = False, business_id: Optional[str] = None) -> Dict[str, Any]:
+    """Run every generator within one verified tenant and restore caller context."""
+    business_id = business_id or get_actor_context().get("businessId")
+    if not business_id:
+        raise ValueError("Business context required for insight generation")
+    token = _actor_ctx.set({**get_actor_context(), "businessId": business_id})
+    try:
+        return await _run_scoped_insights(include_summary, business_id)
+    finally:
+        _actor_ctx.reset(token)
+
+
+async def _run_scoped_insights(include_summary: bool, business_id: str) -> Dict[str, Any]:
     tasks = [g() for _, g in GENERATORS]
     results = await asyncio.gather(*tasks, return_exceptions=True)
     all_insights: List[Dict[str, Any]] = []
@@ -510,22 +522,29 @@ async def run_all_insights(include_summary: bool = False) -> Dict[str, Any]:
         except Exception as e:
             errors["summary"] = str(e)
 
-    # Upsert into `ash_insights`, indexed by (category, key), fresh each run
+    # Upsert into `ash_insights`, indexed by (category, key, businessId) —
+    # businessId is part of the key itself, not just a stamped field, so two
+    # businesses' same-named insight can never collide on one document.
     for ins in all_insights:
+        ins["businessId"] = business_id
         await db.ash_insights.update_one(
-            {"category": ins["category"], "key": ins["key"]},
+            {"category": ins["category"], "key": ins["key"], "businessId": business_id},
             {"$set": ins, "$setOnInsert": {"firstSeenAt": ins["createdAt"]}},
             upsert=True,
         )
-    # Mark stale insights (not touched this run) as resolved
+    # Mark stale insights (not touched this run) as resolved — scoped to
+    # this business's own insights, so running the scan for one business
+    # never resolves another business's still-active ones.
     fresh_keys = [(i["category"], i["key"]) for i in all_insights]
     resolved = 0
     if fresh_keys:
-        cursor = db.ash_insights.find({"resolvedAt": None}, {"_id": 0, "category": 1, "key": 1})
+        cursor = db.ash_insights.find(
+            {"resolvedAt": None, **tenant_scope_filter(business_id)},
+            {"_id": 0, "category": 1, "key": 1})
         async for row in cursor:
             if (row["category"], row["key"]) not in fresh_keys:
                 await db.ash_insights.update_one(
-                    {"category": row["category"], "key": row["key"]},
+                    {"category": row["category"], "key": row["key"], **tenant_scope_filter(business_id)},
                     {"$set": {"resolvedAt": _now().isoformat()}},
                 )
                 resolved += 1

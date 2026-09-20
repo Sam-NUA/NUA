@@ -32,7 +32,7 @@ def _make_reservation(client, owner_headers, **overrides):
 
 
 def _insert_transaction(table_number, iso_date, total, business_id=None):
-    txn = {
+    txn = {"businessId": "default",
         "id": f"TXN-ANALYTICS-{table_number}-{iso_date}-{total}",
         "timestamp": datetime.fromisoformat(f"{iso_date}T20:00:00+00:00"),
         "items": [], "subtotal": total, "gst": 0, "total": total,
@@ -166,7 +166,7 @@ def test_legacy_reservation_without_guestname_field_still_shows_a_name(client, o
     # at model-parse time, but this endpoint reads raw dicts straight from
     # Mongo -- a pre-migration document with only customerName set must
     # still show a real name in the report, not a blank cell.
-    _run(db.reservations.insert_one({
+    _run(db.reservations.insert_one({"businessId": "default",
         "id": "RES-LEGACY-1", "customerName": "Old Format Guest", "partySize": 2,
         "date": "2026-07-17", "time": "19:00", "status": "completed", "source": "phone",
         "createdAt": "2026-07-17T00:00:00", "updatedAt": "2026-07-17T00:00:00",

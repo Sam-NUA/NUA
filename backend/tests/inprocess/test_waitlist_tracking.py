@@ -10,7 +10,7 @@ from conftest import req
 
 def test_joining_the_waitlist_returns_a_trackable_id(client):
     r = req(client, "POST", "/api/public/join-waitlist", json={
-        "guestName": "Track Test Guest", "guestPhone": "0400000010", "partySize": 3})
+        "guestName": "Track Test Guest", "guestPhone": "0400000010", "partySize": 3, "business": "default"})
     assert r.status_code == 200, r.text[:200]
     body = r.json()
     assert body.get("id"), "the join response must hand back an id — otherwise nothing can track it later"
@@ -19,9 +19,9 @@ def test_joining_the_waitlist_returns_a_trackable_id(client):
 
 def test_track_endpoint_reports_live_position_not_the_stale_join_time_value(client, owner_headers):
     first = req(client, "POST", "/api/public/join-waitlist", json={
-        "guestName": "Ahead Guest", "guestPhone": "0400000011", "partySize": 2}).json()
+        "guestName": "Ahead Guest", "guestPhone": "0400000011", "partySize": 2, "business": "default"}).json()
     second = req(client, "POST", "/api/public/join-waitlist", json={
-        "guestName": "Behind Guest", "guestPhone": "0400000012", "partySize": 4}).json()
+        "guestName": "Behind Guest", "guestPhone": "0400000012", "partySize": 4, "business": "default"}).json()
 
     track_second = req(client, "GET", f"/api/waitlist/track/{second['id']}")
     assert track_second.status_code == 200, track_second.text[:200]
@@ -42,7 +42,7 @@ def test_track_endpoint_reports_live_position_not_the_stale_join_time_value(clie
 
 def test_a_seated_guest_no_longer_has_a_queue_position(client, owner_headers):
     entry = req(client, "POST", "/api/public/join-waitlist", json={
-        "guestName": "Seated Soon Guest", "guestPhone": "0400000013", "partySize": 2}).json()
+        "guestName": "Seated Soon Guest", "guestPhone": "0400000013", "partySize": 2, "business": "default"}).json()
     req(client, "POST", f"/api/waitlist/{entry['id']}/seat", headers=owner_headers)
 
     tracked = req(client, "GET", f"/api/waitlist/track/{entry['id']}")

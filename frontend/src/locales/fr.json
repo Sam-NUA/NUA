@@ -47,9 +47,10 @@
       "title": "Payer Plus Tard",
       "partial": "Payer un Montant Partiel",
       "payNow": "Payer Maintenant",
-      "amountToPay": "Montant à Payer",
+      "amountToPay": "Montant à Ajouter à l'Ardoise",
       "remaining": "Solde Restant",
-      "tabCreated": "Compte créé - vous pouvez payer le reste plus tard"
+      "confirmTab": "Ajouter {{amount}} à l'Ardoise",
+      "tabCreated": "Compte créé — un membre du personnel percevra et confirmera ce paiement"
     },
     "customSplit": {
       "setupTitle": "Configurer les parts personnalisées",

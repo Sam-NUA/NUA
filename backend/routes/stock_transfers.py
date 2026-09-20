@@ -20,7 +20,7 @@ import uuid
 
 from database import db
 from deps import require_owner_or_manager
-from middleware.actor_context import tenant_scope_filter, tenant_owns
+from middleware.actor_context import tenant_scope_filter, tenant_owns_strict
 
 router = APIRouter()
 
@@ -56,8 +56,8 @@ async def create_transfer(data: StockTransferCreate, user: dict = Depends(requir
     if data.fromLocation == data.toLocation:
         raise HTTPException(status_code=400, detail="Source and destination must differ")
 
-    product = await db.products.find_one({"id": data.productId}, {"_id": 0})
-    if not product or not tenant_owns(product.get("businessId"), user.get("businessId")):
+    product = await db.products.find_one({"$and": [{"id": data.productId}, tenant_scope_filter(user.get("businessId"))]}, {"_id": 0})
+    if not product or not tenant_owns_strict(product.get("businessId"), user.get("businessId")):
         raise HTTPException(status_code=404, detail="Product not found")
 
     stock_by_loc = product.get("stockByLocation") or {}
@@ -73,7 +73,7 @@ async def create_transfer(data: StockTransferCreate, user: dict = Depends(requir
     # transfers requested for the last few units at once can't both succeed.
     field = f"stockByLocation.{data.fromLocation}"
     result = await db.products.update_one(
-        {"id": data.productId, field: {"$gte": data.quantity}},
+        {"$and": [{"id": data.productId, field: {"$gte": data.quantity}}, tenant_scope_filter(user.get("businessId"))]},
         {"$inc": {field: -data.quantity}},
     )
     if result.modified_count == 0:
@@ -118,8 +118,8 @@ async def list_transfers(status: Optional[str] = None, productId: Optional[str] 
 
 @router.post("/stock-transfers/{transfer_id}/receive", response_model=StockTransfer)
 async def receive_transfer(transfer_id: str, user: dict = Depends(require_owner_or_manager)):
-    transfer = await db.stock_transfers.find_one({"id": transfer_id}, {"_id": 0})
-    if not transfer or not tenant_owns(transfer.get("businessId"), user.get("businessId")):
+    transfer = await db.stock_transfers.find_one({"$and": [{"id": transfer_id}, tenant_scope_filter(user.get("businessId"))]}, {"_id": 0})
+    if not transfer or not tenant_owns_strict(transfer.get("businessId"), user.get("businessId")):
         raise HTTPException(status_code=404, detail="Transfer not found")
     if transfer["status"] != "in_transit":
         raise HTTPException(status_code=400, detail=f"Transfer is already {transfer['status']}")
@@ -129,9 +129,9 @@ async def receive_transfer(transfer_id: str, user: dict = Depends(require_owner_
 
     now_iso = datetime.now(timezone.utc).isoformat()
     await db.stock_transfers.update_one(
-        {"id": transfer_id}, {"$set": {"status": "received", "receivedAt": now_iso}},
+        {"$and": [{"id": transfer_id}, tenant_scope_filter(user.get("businessId"))]}, {"$set": {"status": "received", "receivedAt": now_iso}},
     )
-    updated = await db.stock_transfers.find_one({"id": transfer_id}, {"_id": 0})
+    updated = await db.stock_transfers.find_one({"$and": [{"id": transfer_id}, tenant_scope_filter(user.get("businessId"))]}, {"_id": 0})
     return StockTransfer(**updated)
 
 
@@ -139,8 +139,8 @@ async def receive_transfer(transfer_id: str, user: dict = Depends(require_owner_
 async def cancel_transfer(transfer_id: str, user: dict = Depends(require_owner_or_manager)):
     """Cancels an in-transit transfer and returns the stock to its source —
     for a shipment that never actually left, or was requested by mistake."""
-    transfer = await db.stock_transfers.find_one({"id": transfer_id}, {"_id": 0})
-    if not transfer or not tenant_owns(transfer.get("businessId"), user.get("businessId")):
+    transfer = await db.stock_transfers.find_one({"$and": [{"id": transfer_id}, tenant_scope_filter(user.get("businessId"))]}, {"_id": 0})
+    if not transfer or not tenant_owns_strict(transfer.get("businessId"), user.get("businessId")):
         raise HTTPException(status_code=404, detail="Transfer not found")
     if transfer["status"] != "in_transit":
         raise HTTPException(status_code=400, detail=f"Transfer is already {transfer['status']}")
@@ -148,6 +148,6 @@ async def cancel_transfer(transfer_id: str, user: dict = Depends(require_owner_o
     field = f"stockByLocation.{transfer['fromLocation']}"
     await db.products.update_one({"id": transfer["productId"]}, {"$inc": {field: transfer["quantity"]}})
 
-    await db.stock_transfers.update_one({"id": transfer_id}, {"$set": {"status": "cancelled"}})
-    updated = await db.stock_transfers.find_one({"id": transfer_id}, {"_id": 0})
+    await db.stock_transfers.update_one({"$and": [{"id": transfer_id}, tenant_scope_filter(user.get("businessId"))]}, {"$set": {"status": "cancelled"}})
+    updated = await db.stock_transfers.find_one({"$and": [{"id": transfer_id}, tenant_scope_filter(user.get("businessId"))]}, {"_id": 0})
     return StockTransfer(**updated)

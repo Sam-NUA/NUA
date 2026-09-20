@@ -58,7 +58,8 @@ def _actor_from_request(request) -> Optional[dict]:
     try:
         import jwt
         payload = jwt.decode(token, os.environ["JWT_SECRET"], algorithms=["HS256"])
-        return {"userId": payload.get("sub"), "role": payload.get("role")}
+        return {"userId": payload.get("sub"), "role": payload.get("role"),
+                "businessId": payload.get("businessId")}
     except Exception:
         return None
 
@@ -77,7 +78,7 @@ async def record_error(request_id: str, request, exc: Exception) -> None:
         await db.error_log.insert_one({
             "requestId": request_id,
             "method": request.method,
-            "path": request.url.path,
+            "path": request.scope["path"],  # not request.url.path — see server.py's RequireAuthMiddleware comment on why
             "actor": actor,
             "error": f"{type(exc).__name__}: {exc}",
             "traceback": traceback.format_exc()[-4000:],  # bounded — a runaway
@@ -85,6 +86,7 @@ async def record_error(request_id: str, request, exc: Exception) -> None:
                                                            # write megabytes per row
             "at": now,
             "expiresAt": now + timedelta(days=ERROR_RETENTION_DAYS),
+            "businessId": (actor or {}).get("businessId"),
         })
     except Exception:
         log.exception("failed to record error %s (secondary failure, not the original)", request_id)
@@ -114,6 +116,7 @@ async def record_client_error(payload: dict, actor: Optional[dict]) -> None:
             "actor": actor,
             "at": now,
             "expiresAt": now + timedelta(days=CLIENT_ERROR_RETENTION_DAYS),
+            "businessId": (actor or {}).get("businessId"),
         })
     except Exception:
         log.exception("failed to record client error (non-fatal)")
@@ -147,7 +150,7 @@ class ObservabilityMiddleware(BaseHTTPMiddleware):
         except Exception as exc:
             await record_error(request_id, request, exc)
             log.error("unhandled exception [%s] %s %s: %s",
-                     request_id, request.method, request.url.path, exc, exc_info=True)
+                     request_id, request.method, request.scope["path"], exc, exc_info=True)
             response = JSONResponse(
                 status_code=500,
                 content={"detail": "Something went wrong on our end.", "requestId": request_id},
@@ -158,7 +161,7 @@ class ObservabilityMiddleware(BaseHTTPMiddleware):
         log.info(json.dumps({
             "requestId": request_id,
             "method": request.method,
-            "path": request.url.path,
+            "path": request.scope["path"],
             "status": status_code,
             "durationMs": duration_ms,
             "actor": actor.get("userId") if actor else None,

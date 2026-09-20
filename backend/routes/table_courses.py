@@ -17,6 +17,7 @@ from datetime import datetime, timezone
 from pydantic import BaseModel
 from database import db
 from deps import get_user
+from middleware.actor_context import tenant_scope_filter, tenant_owns_strict
 import uuid
 import logging
 
@@ -59,10 +60,22 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+# table_course_settings used to be a bare "_id": "singleton" doc shared by
+# every business on the deployment. Re-keyed per business via
+# services.tenant_settings.get_scoped_singleton/set_scoped_singleton — a
+# business that has never customised its courses reads the legacy
+# untagged document (same safe-default fallback as every other collection
+# in this codebase), the first business to save its own gets its own
+# tagged copy from then on. table_states and dock_notifications below were
+# already fixed in an earlier pass (they're ordinary per-row collections,
+# not singletons, and the gap there was worse than a read leak — see git
+# history / TENANT_ISOLATION_REMAINING_WORK.md).
 # ─── Settings CRUD ───────────────────────────────────────────────────────
 @router.get("/table-courses/settings")
-async def get_settings(_: dict = Depends(get_user)):
-    row = await db.table_course_settings.find_one({"_id": "singleton"})
+async def get_settings(user: dict = Depends(get_user)):
+    from services.tenant_settings import get_scoped_singleton, set_scoped_singleton
+    biz = user.get("businessId")
+    row = await get_scoped_singleton(db.table_course_settings, {"scope": "singleton"}, biz)
     if not row:
         row = {
             "courses": DEFAULT_COURSES,
@@ -70,7 +83,7 @@ async def get_settings(_: dict = Depends(get_user)):
             "autoAdvance": False,
             "updatedAt": _now(),
         }
-        await db.table_course_settings.insert_one({"_id": "singleton", **row})
+        await set_scoped_singleton(db.table_course_settings, {"scope": "singleton"}, row, biz)
     row.pop("_id", None)
     return row
 
@@ -79,6 +92,7 @@ async def get_settings(_: dict = Depends(get_user)):
 async def update_settings(body: CoursesSettingsIn, user: dict = Depends(get_user)):
     if user["role"] not in ("owner", "manager"):
         raise HTTPException(403, "Owner or manager only")
+    from services.tenant_settings import set_scoped_singleton
     payload = {
         "courses":       [c.dict() for c in body.courses],
         "overdueColour": body.overdueColour or OVERDUE_COLOUR,
@@ -86,9 +100,7 @@ async def update_settings(body: CoursesSettingsIn, user: dict = Depends(get_user
         "updatedAt":     _now(),
         "updatedBy":     user.get("email"),
     }
-    await db.table_course_settings.update_one(
-        {"_id": "singleton"}, {"$set": payload}, upsert=True,
-    )
+    await set_scoped_singleton(db.table_course_settings, {"scope": "singleton"}, payload, user.get("businessId"))
     return payload
 
 
@@ -106,12 +118,13 @@ class TableStateIn(BaseModel):
 
 
 @router.get("/table-courses/states")
-async def list_states(_: dict = Depends(get_user)):
+async def list_states(user: dict = Depends(get_user)):
     """Return every table that has a live state (i.e. is currently occupied).
     Each row is enriched with derived colour + dwell minutes so the SPA can
     render without extra roundtrips."""
-    states = await db.table_states.find({}, {"_id": 0}).to_list(500)
-    settings_row = await db.table_course_settings.find_one({"_id": "singleton"})
+    states = await db.table_states.find(tenant_scope_filter(user.get("businessId")), {"_id": 0}).to_list(500)
+    from services.tenant_settings import get_scoped_singleton
+    settings_row = await get_scoped_singleton(db.table_course_settings, {"scope": "singleton"}, user.get("businessId"))
     courses = (settings_row or {}).get("courses", DEFAULT_COURSES)
     overdue_colour = (settings_row or {}).get("overdueColour", OVERDUE_COLOUR)
     by_key = {c["key"]: c for c in courses}
@@ -124,7 +137,7 @@ async def list_states(_: dict = Depends(get_user)):
     vip_ids = set()
     if customer_ids:
         vip_customers = await db.customers.find(
-            {"id": {"$in": customer_ids}, "isVip": True}, {"_id": 0, "id": 1}
+            {**tenant_scope_filter(user.get("businessId")), "id": {"$in": customer_ids}, "isVip": True}, {"_id": 0, "id": 1}
         ).to_list(len(customer_ids))
         vip_ids = {c["id"] for c in vip_customers}
 
@@ -164,11 +177,13 @@ async def list_states(_: dict = Depends(get_user)):
 @router.post("/table-courses/states")
 async def upsert_state(body: TableStateIn, user: dict = Depends(get_user)):
     """Seat a table, advance its course, or clear it (`clearState=true`)."""
+    biz = user.get("businessId")
+    scope = tenant_scope_filter(biz)
     if body.clearState:
-        r = await db.table_states.delete_one({"tableId": body.tableId})
+        r = await db.table_states.delete_one({"tableId": body.tableId, **scope})
         return {"cleared": r.deleted_count > 0}
 
-    existing = await db.table_states.find_one({"tableId": body.tableId})
+    existing = await db.table_states.find_one({"tableId": body.tableId, **scope})
     now = _now()
     if existing:
         update = {"updatedAt": now}
@@ -179,8 +194,8 @@ async def upsert_state(body: TableStateIn, user: dict = Depends(get_user)):
             v = getattr(body, f)
             if v is not None:
                 update[f] = v
-        await db.table_states.update_one({"tableId": body.tableId}, {"$set": update})
-        return await db.table_states.find_one({"tableId": body.tableId}, {"_id": 0})
+        await db.table_states.update_one({"id": existing["id"]}, {"$set": update})
+        return await db.table_states.find_one({"id": existing["id"]}, {"_id": 0})
 
     doc = {
         "id": str(uuid.uuid4()),
@@ -197,6 +212,7 @@ async def upsert_state(body: TableStateIn, user: dict = Depends(get_user)):
         "createdAt": now,
         "updatedAt": now,
         "createdBy": user.get("email"),
+        "businessId": biz,
     }
     await db.table_states.insert_one(doc)
     doc.pop("_id", None)
@@ -216,7 +232,8 @@ async def send_nudge(body: SendNudgeIn, user: dict = Depends(get_user)):
     """Drops a notification into the dock for the server assigned to the
     table (or the explicit `targetServerId`). Also stored so the server can
     catch up when they log in."""
-    state = await db.table_states.find_one({"tableId": body.tableId}, {"_id": 0})
+    biz = user.get("businessId")
+    state = await db.table_states.find_one({"tableId": body.tableId, **tenant_scope_filter(biz)}, {"_id": 0})
     server_id = body.targetServerId or (state or {}).get("serverId")
 
     notif = {
@@ -229,6 +246,7 @@ async def send_nudge(body: SendNudgeIn, user: dict = Depends(get_user)):
         "sentBy": user.get("email"),
         "sentAt": _now(),
         "read": False,
+        "businessId": biz,
     }
     await db.dock_notifications.insert_one(notif)
     notif.pop("_id", None)
@@ -259,8 +277,8 @@ async def send_nudge(body: SendNudgeIn, user: dict = Depends(get_user)):
 
 @router.get("/table-courses/notifications")
 async def list_notifications(serverId: Optional[str] = None, unreadOnly: bool = False,
-                              _: dict = Depends(get_user)):
-    q = {}
+                              user: dict = Depends(get_user)):
+    q = tenant_scope_filter(user.get("businessId"))
     if serverId:
         q["$or"] = [{"serverId": serverId}, {"serverId": None}]
     if unreadOnly:
@@ -270,8 +288,11 @@ async def list_notifications(serverId: Optional[str] = None, unreadOnly: bool = 
 
 @router.post("/table-courses/notifications/{notif_id}/read")
 async def mark_notif_read(notif_id: str, user: dict = Depends(get_user)):
+    existing = await db.dock_notifications.find_one({"$and": [{"id": notif_id}, tenant_scope_filter(user.get("businessId"))]}, {"_id": 0, "businessId": 1})
+    if not existing or not tenant_owns_strict(existing.get("businessId"), user.get("businessId")):
+        raise HTTPException(404, "Notification not found")
     r = await db.dock_notifications.update_one(
-        {"id": notif_id},
+        {"$and": [{"id": notif_id}, tenant_scope_filter(user.get("businessId"))]},
         {"$set": {"read": True, "readAt": _now(), "readBy": user.get("email")}},
     )
     if r.matched_count == 0:

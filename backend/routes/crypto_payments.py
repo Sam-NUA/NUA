@@ -31,12 +31,31 @@ async def _create_crypto_session(data: dict, http_request: Request, cashier: dic
                                     "Coinbase Commerce API key.")
 
     origin_url = data.get("originUrl", str(http_request.base_url).rstrip("/"))
-    order_id = data.get("orderId", f"ORD-{str(uuid.uuid4())[:8].upper()}")
+    client_order_id = data.get("orderId")
+    order_id = client_order_id or f"ORD-{str(uuid.uuid4())[:8].upper()}"
     amount = data.get("amount", 0)
     sale_payload = data.get("sale")
 
     if amount <= 0:
         raise HTTPException(status_code=400, detail="Invalid amount")
+
+    # Same double-click/retry protection as _create_stripe_session, and the
+    # same businessId-namespacing to stop two different businesses' staff
+    # colliding on a client-supplied orderId — see
+    # services/payment_idempotency.py and _create_stripe_session's own
+    # comment on why the namespace matters.
+    from services.payment_idempotency import claim_or_wait, record_result, fingerprint, IdempotencyConflict
+    idempotency_key = f"{cashier.get('businessId') or 'guest'}:{data.get('idempotencyKey') or order_id}"
+    # Same amount + CLIENT-supplied-orderId fingerprint as
+    # _create_stripe_session — see its comment on why client_order_id, not
+    # order_id, and why those two fields and not the whole payload.
+    try:
+        prior_result = await claim_or_wait("crypto", idempotency_key,
+                                            payload_fingerprint=fingerprint(amount, client_order_id))
+    except IdempotencyConflict as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    if prior_result is not None:
+        return prior_result
 
     # Coinbase Commerce doesn't template a charge identifier into
     # redirect_url the way Stripe does {CHECKOUT_SESSION_ID} — it just
@@ -77,7 +96,9 @@ async def _create_crypto_session(data: dict, http_request: Request, cashier: dic
                 payment_doc[k] = data[k]
     await db.payment_transactions.insert_one(payment_doc)
 
-    return {"url": charge["hosted_url"], "sessionId": charge["code"]}
+    result = {"url": charge["hosted_url"], "sessionId": charge["code"]}
+    await record_result("crypto", idempotency_key, result)
+    return result
 
 
 @router.post("/crypto/checkout")

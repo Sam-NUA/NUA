@@ -16,6 +16,7 @@ from typing import List, Dict, Any, Optional
 from datetime import datetime, timezone
 from database import db
 from models.accounting import JournalEntry, JournalLine
+from middleware.actor_context import tenant_scope_filter, tenant_owns_strict, get_actor_context
 import uuid
 import logging
 
@@ -79,9 +80,17 @@ SEED_COA: List[Dict[str, Any]] = [
 ]
 
 
-async def seed_chart_of_accounts() -> Dict[str, int]:
-    """Idempotent — insert any missing seed accounts without touching customised ones."""
-    existing = {a["code"] async for a in db.accounts.find({}, {"code": 1})}
+async def seed_chart_of_accounts(business_id: Optional[str] = None) -> Dict[str, int]:
+    """Idempotent — insert any missing seed accounts without touching customised ones.
+
+    Accounts are keyed by (code, businessId): each business gets its own
+    chart of accounts, seeded independently. Without businessId on `code`
+    uniqueness, the first business to seed would "claim" every code and no
+    other business could ever seed its own copy.
+    """
+    if business_id is None:
+        business_id = get_actor_context().get("businessId")
+    existing = {a["code"] async for a in db.accounts.find(tenant_scope_filter(business_id), {"code": 1})}
     to_insert = []
     for acc in SEED_COA:
         if acc["code"] in existing:
@@ -93,6 +102,7 @@ async def seed_chart_of_accounts() -> Dict[str, int]:
             "isLocked": acc.get("isLocked", False),
             "isBank": acc.get("isBank", False),
             "createdAt": datetime.now(timezone.utc).isoformat(),
+            "businessId": business_id,
             **acc,
         }
         to_insert.append(doc)
@@ -118,9 +128,10 @@ def _validate_balanced(lines: List[Dict[str, Any]]) -> None:
             raise ValueError(f"Line {l.get('accountCode')} has both debit and credit — split into two lines")
 
 
-async def _next_journal_number() -> str:
+async def _next_journal_number(business_id: Optional[str]) -> str:
+    query = {"$and": [tenant_scope_filter(business_id), {"journalNumber": {"$exists": True}}]}
     last = await db.journal_entries.find_one(
-        {"journalNumber": {"$exists": True}},
+        query,
         {"journalNumber": 1},
         sort=[("journalNumber", -1)],
     )
@@ -133,13 +144,14 @@ async def _next_journal_number() -> str:
     return f"JE-{n:06d}"
 
 
-async def _enrich_account_names(lines: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+async def _enrich_account_names(lines: List[Dict[str, Any]], business_id: Optional[str]) -> List[Dict[str, Any]]:
     codes = list({l["accountCode"] for l in lines if l.get("accountCode")})
     if not codes:
         return lines
+    query = {"$and": [tenant_scope_filter(business_id), {"code": {"$in": codes}}]}
     accs = {
         a["code"]: a
-        async for a in db.accounts.find({"code": {"$in": codes}}, {"_id": 0, "code": 1, "name": 1})
+        async for a in db.accounts.find(query, {"_id": 0, "code": 1, "name": 1})
     }
     for l in lines:
         if not l.get("accountName") and l.get("accountCode") in accs:
@@ -157,21 +169,24 @@ async def post_entry(
     source_ref: Optional[str] = None,
     created_by: Optional[str] = None,
     idempotent: bool = True,
+    business_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Post a balanced double-entry journal. Raises ValueError on imbalance."""
+    if business_id is None:
+        business_id = get_actor_context().get("businessId")
+
     if idempotent and source_ref and source_type != "manual":
-        existing = await db.journal_entries.find_one(
-            {"sourceType": source_type, "sourceRef": source_ref},
-            {"_id": 0},
-        )
+        query = {"$and": [tenant_scope_filter(business_id),
+                           {"sourceType": source_type, "sourceRef": source_ref}]}
+        existing = await db.journal_entries.find_one(query, {"_id": 0})
         if existing:
             return existing
 
     _validate_balanced(lines)
-    lines = await _enrich_account_names(lines)
+    lines = await _enrich_account_names(lines, business_id)
 
     entry = JournalEntry(
-        journalNumber=await _next_journal_number(),
+        journalNumber=await _next_journal_number(business_id),
         date=entry_date or datetime.now(timezone.utc).date().isoformat(),
         memo=memo,
         reference=reference,
@@ -182,15 +197,19 @@ async def post_entry(
         createdBy=created_by,
     )
     doc = entry.dict()
+    doc["businessId"] = business_id
     await db.journal_entries.insert_one(dict(doc))
     doc.pop("_id", None)
     return doc
 
 
-async def reverse_entry(entry_id: str, *, memo: Optional[str] = None, created_by: Optional[str] = None) -> Dict[str, Any]:
+async def reverse_entry(entry_id: str, *, memo: Optional[str] = None, created_by: Optional[str] = None,
+                         business_id: Optional[str] = None) -> Dict[str, Any]:
     """Create an opposite journal that cancels `entry_id`."""
-    orig = await db.journal_entries.find_one({"id": entry_id}, {"_id": 0})
-    if not orig:
+    if business_id is None:
+        business_id = get_actor_context().get("businessId")
+    orig = await db.journal_entries.find_one({"$and": [{"id": entry_id}, tenant_scope_filter(business_id)]}, {"_id": 0})
+    if orig is None or not tenant_owns_strict(orig.get("businessId"), business_id):
         raise ValueError("Journal entry not found")
     reversed_lines = [
         {"accountCode": l["accountCode"], "accountName": l.get("accountName"),
@@ -207,24 +226,28 @@ async def reverse_entry(entry_id: str, *, memo: Optional[str] = None, created_by
         source_ref=entry_id,
         created_by=created_by,
         idempotent=False,
+        business_id=business_id,
     )
-    await db.journal_entries.update_one({"id": entry_id}, {"$set": {"reversedBy": rev["id"]}})
+    await db.journal_entries.update_one({"$and": [{"id": entry_id}, tenant_scope_filter(business_id)]}, {"$set": {"reversedBy": rev["id"]}})
     return rev
 
 
 # ═════════════════════════════════════════════════════════════════════════
 # Aggregations — reports read from journal_lines only
 # ═════════════════════════════════════════════════════════════════════════
-async def _account_map() -> Dict[str, Dict[str, Any]]:
+async def _account_map(business_id: Optional[str] = None) -> Dict[str, Dict[str, Any]]:
     return {
-        a["code"]: a async for a in db.accounts.find({}, {"_id": 0})
+        a["code"]: a async for a in db.accounts.find(tenant_scope_filter(business_id), {"_id": 0})
     }
 
 
-async def trial_balance(as_of: Optional[str] = None) -> Dict[str, Any]:
+async def trial_balance(as_of: Optional[str] = None, business_id: Optional[str] = None) -> Dict[str, Any]:
+    if business_id is None:
+        business_id = get_actor_context().get("businessId")
     match: Dict[str, Any] = {"posted": True}
     if as_of:
         match["date"] = {"$lte": as_of}
+    match = {"$and": [match, tenant_scope_filter(business_id)]}
     pipeline = [
         {"$match": match},
         {"$unwind": "$lines"},
@@ -236,7 +259,7 @@ async def trial_balance(as_of: Optional[str] = None) -> Dict[str, Any]:
         {"$sort": {"_id": 1}},
     ]
     rows = await db.journal_entries.aggregate(pipeline).to_list(1000)
-    accounts = await _account_map()
+    accounts = await _account_map(business_id)
     out = []
     total_debit = total_credit = 0.0
     for r in rows:
@@ -269,8 +292,11 @@ async def trial_balance(as_of: Optional[str] = None) -> Dict[str, Any]:
     }
 
 
-async def _account_totals_between(from_date: Optional[str], to_date: Optional[str]) -> Dict[str, float]:
+async def _account_totals_between(from_date: Optional[str], to_date: Optional[str],
+                                    business_id: Optional[str] = None) -> Dict[str, float]:
     """Net movement per account (debit - credit) between dates."""
+    if business_id is None:
+        business_id = get_actor_context().get("businessId")
     match: Dict[str, Any] = {"posted": True}
     if from_date or to_date:
         match["date"] = {}
@@ -278,6 +304,7 @@ async def _account_totals_between(from_date: Optional[str], to_date: Optional[st
         if to_date:   match["date"]["$lte"] = to_date
         if not match["date"]:
             match.pop("date")
+    match = {"$and": [match, tenant_scope_filter(business_id)]}
     pipeline = [
         {"$match": match},
         {"$unwind": "$lines"},
@@ -291,9 +318,11 @@ async def _account_totals_between(from_date: Optional[str], to_date: Optional[st
     return {r["_id"]: round(float(r["debit"] or 0) - float(r["credit"] or 0), 2) for r in rows}
 
 
-async def profit_and_loss(from_date: str, to_date: str) -> Dict[str, Any]:
-    totals = await _account_totals_between(from_date, to_date)
-    accounts = await _account_map()
+async def profit_and_loss(from_date: str, to_date: str, business_id: Optional[str] = None) -> Dict[str, Any]:
+    if business_id is None:
+        business_id = get_actor_context().get("businessId")
+    totals = await _account_totals_between(from_date, to_date, business_id)
+    accounts = await _account_map(business_id)
     revenue: List[Dict[str, Any]] = []
     cogs: List[Dict[str, Any]] = []
     expenses: List[Dict[str, Any]] = []
@@ -346,9 +375,11 @@ async def profit_and_loss(from_date: str, to_date: str) -> Dict[str, Any]:
     }
 
 
-async def balance_sheet(as_of: Optional[str] = None) -> Dict[str, Any]:
-    totals = await _account_totals_between(None, as_of)
-    accounts = await _account_map()
+async def balance_sheet(as_of: Optional[str] = None, business_id: Optional[str] = None) -> Dict[str, Any]:
+    if business_id is None:
+        business_id = get_actor_context().get("businessId")
+    totals = await _account_totals_between(None, as_of, business_id)
+    accounts = await _account_map(business_id)
     assets: List[Dict[str, Any]] = []
     liabilities: List[Dict[str, Any]] = []
     equity: List[Dict[str, Any]] = []
@@ -393,15 +424,19 @@ async def balance_sheet(as_of: Optional[str] = None) -> Dict[str, Any]:
     }
 
 
-async def cash_flow(from_date: str, to_date: str) -> Dict[str, Any]:
+async def cash_flow(from_date: str, to_date: str, business_id: Optional[str] = None) -> Dict[str, Any]:
     """Direct method — sum debits/credits against bank accounts in the period."""
-    bank_codes = [a["code"] async for a in db.accounts.find({"isBank": True}, {"code": 1})]
+    if business_id is None:
+        business_id = get_actor_context().get("businessId")
+    bank_query = {"$and": [tenant_scope_filter(business_id), {"isBank": True}]}
+    bank_codes = [a["code"] async for a in db.accounts.find(bank_query, {"code": 1})]
     if not bank_codes:
         return {"from": from_date, "to": to_date, "inflows": [], "outflows": [],
                 "netCash": 0.0, "openingBalance": 0.0, "closingBalance": 0.0}
 
     pipeline = [
-        {"$match": {"posted": True, "date": {"$gte": from_date, "$lte": to_date}}},
+        {"$match": {"$and": [{"posted": True, "date": {"$gte": from_date, "$lte": to_date}},
+                              tenant_scope_filter(business_id)]}},
         {"$unwind": "$lines"},
         {"$match": {"lines.accountCode": {"$in": bank_codes}}},
         {"$project": {
@@ -422,7 +457,7 @@ async def cash_flow(from_date: str, to_date: str) -> Dict[str, Any]:
     net = round(sum(i["amount"] for i in inflows) - sum(o["amount"] for o in outflows), 2)
 
     # Opening balance = bank totals before from_date
-    opening_totals = await _account_totals_between(None, from_date)
+    opening_totals = await _account_totals_between(None, from_date, business_id)
     opening = round(sum(opening_totals.get(c, 0) for c in bank_codes), 2)
     closing = round(opening + net, 2)
     return {
@@ -435,7 +470,10 @@ async def cash_flow(from_date: str, to_date: str) -> Dict[str, Any]:
     }
 
 
-async def general_ledger(account_code: str, from_date: Optional[str] = None, to_date: Optional[str] = None) -> Dict[str, Any]:
+async def general_ledger(account_code: str, from_date: Optional[str] = None, to_date: Optional[str] = None,
+                          business_id: Optional[str] = None) -> Dict[str, Any]:
+    if business_id is None:
+        business_id = get_actor_context().get("businessId")
     match: Dict[str, Any] = {"posted": True, "lines.accountCode": account_code}
     if from_date or to_date:
         match["date"] = {}
@@ -443,6 +481,7 @@ async def general_ledger(account_code: str, from_date: Optional[str] = None, to_
         if to_date:   match["date"]["$lte"] = to_date
         if not match["date"]:
             match.pop("date")
+    match = {"$and": [match, tenant_scope_filter(business_id)]}
     pipeline = [
         {"$match": match},
         {"$sort": {"date": 1, "journalNumber": 1}},
@@ -468,14 +507,15 @@ async def general_ledger(account_code: str, from_date: Optional[str] = None, to_
                 "credit": round(c, 2),
                 "balance": round(running, 2),
             })
-    acc = await db.accounts.find_one({"code": account_code}, {"_id": 0}) or {"code": account_code}
+    acc_query = {"$and": [tenant_scope_filter(business_id), {"code": account_code}]}
+    acc = await db.accounts.find_one(acc_query, {"_id": 0}) or {"code": account_code}
     return {"account": acc, "rows": rows, "closingBalance": round(running, 2)}
 
 
 # ═════════════════════════════════════════════════════════════════════════
 # Auto-posting hooks — called from other modules
 # ═════════════════════════════════════════════════════════════════════════
-async def auto_post_pos_sale(txn: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+async def auto_post_pos_sale(txn: Dict[str, Any], business_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
     """POS transaction (cash/card) → Bank DR, Sales CR, Surcharge CR, Gratuity CR, GST CR.
 
     `total` is GST-inclusive (menu prices already include GST) and already
@@ -487,6 +527,12 @@ async def auto_post_pos_sale(txn: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     its GST-exclusive value. Gratuity is a liability, not revenue — it's
     money owed out to staff, not money the business earned.
     """
+    if business_id is None:
+        # The Square/Connect sync path calls this with no request/actor
+        # context at all (a background sync job, not a staff request), but
+        # already stamps businessId onto the transaction it built — prefer
+        # that over the (empty) actor-context default in that case.
+        business_id = txn.get("businessId") or get_actor_context().get("businessId")
     total = float(txn.get("total") or 0)
     if total <= 0:
         return None
@@ -525,10 +571,11 @@ async def auto_post_pos_sale(txn: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         reference=txn.get("receiptNumber") or txn.get("id"),
         source_type="pos_sale",
         source_ref=txn.get("id"),
+        business_id=business_id,
     )
 
 
-async def auto_post_refund(refund: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+async def auto_post_refund(refund: Dict[str, Any], business_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
     """Refund → reverse sale side."""
     amount = float(refund.get("amount") or 0)
     if amount <= 0:
@@ -549,10 +596,11 @@ async def auto_post_refund(refund: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         memo=f"Refund — {refund.get('reason', '')}",
         source_type="refund",
         source_ref=refund.get("id"),
+        business_id=business_id,
     )
 
 
-async def auto_post_gift_card_sale(sale: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+async def auto_post_gift_card_sale(sale: Dict[str, Any], business_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
     """Gift card sold → Bank DR, Gift Card Liability CR."""
     amount = float(sale.get("amount") or 0)
     if amount <= 0:
@@ -567,10 +615,11 @@ async def auto_post_gift_card_sale(sale: Dict[str, Any]) -> Optional[Dict[str, A
         memo="Gift card issued",
         source_type="gift_card_sale",
         source_ref=sale.get("id"),
+        business_id=business_id,
     )
 
 
-async def auto_post_voucher_redeem(redeem: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+async def auto_post_voucher_redeem(redeem: Dict[str, Any], business_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
     """Voucher redeemed against a sale → Voucher Liability DR, Sales CR."""
     amount = float(redeem.get("amount") or 0)
     if amount <= 0:
@@ -585,10 +634,11 @@ async def auto_post_voucher_redeem(redeem: Dict[str, Any]) -> Optional[Dict[str,
         memo="Voucher redeem",
         source_type="voucher_redeem",
         source_ref=redeem.get("id"),
+        business_id=business_id,
     )
 
 
-async def auto_post_bill(bill: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+async def auto_post_bill(bill: Dict[str, Any], business_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
     """AP bill received → Expense/GST Paid DR, Accounts Payable CR."""
     total = float(bill.get("total") or 0)
     if total <= 0:
@@ -615,10 +665,11 @@ async def auto_post_bill(bill: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         memo=f"Bill {bill.get('billNumber') or ''} — {bill.get('supplierName') or ''}".strip(),
         source_type="ap_bill",
         source_ref=bill.get("id"),
+        business_id=business_id,
     )
 
 
-async def auto_post_bill_payment(payment: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+async def auto_post_bill_payment(payment: Dict[str, Any], business_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
     """AP payment → Accounts Payable DR, Bank CR."""
     amount = float(payment.get("amount") or 0)
     if amount <= 0:
@@ -634,10 +685,11 @@ async def auto_post_bill_payment(payment: Dict[str, Any]) -> Optional[Dict[str, 
         memo=f"AP payment — bill {payment.get('billId')}",
         source_type="ap_payment",
         source_ref=payment.get("id"),
+        business_id=business_id,
     )
 
 
-async def auto_post_invoice(invoice: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+async def auto_post_invoice(invoice: Dict[str, Any], business_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
     """AR invoice → AR DR, Sales CR, GST Collected CR."""
     total = float(invoice.get("total") or 0)
     if total <= 0:
@@ -657,10 +709,11 @@ async def auto_post_invoice(invoice: Dict[str, Any]) -> Optional[Dict[str, Any]]
         memo=f"Invoice {invoice.get('invoiceNumber') or ''} — {invoice.get('customerName') or ''}".strip(),
         source_type="ar_invoice",
         source_ref=invoice.get("id"),
+        business_id=business_id,
     )
 
 
-async def auto_post_invoice_receipt(receipt: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+async def auto_post_invoice_receipt(receipt: Dict[str, Any], business_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
     amount = float(receipt.get("amount") or 0)
     if amount <= 0:
         return None
@@ -675,10 +728,11 @@ async def auto_post_invoice_receipt(receipt: Dict[str, Any]) -> Optional[Dict[st
         memo=f"AR receipt — invoice {receipt.get('invoiceId')}",
         source_type="ar_receipt",
         source_ref=receipt.get("id"),
+        business_id=business_id,
     )
 
 
-async def auto_post_payroll_run(run: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+async def auto_post_payroll_run(run: Dict[str, Any], business_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
     """Payroll run summary → Wages Expense DR, PAYG CR, Super CR, Bank CR (net)."""
     gross = float(run.get("gross") or 0)
     payg = float(run.get("payg") or 0)
@@ -699,10 +753,11 @@ async def auto_post_payroll_run(run: Dict[str, Any]) -> Optional[Dict[str, Any]]
         memo=f"Payroll run {run.get('id')}",
         source_type="payroll_run",
         source_ref=run.get("id"),
+        business_id=business_id,
     )
 
 
-async def auto_post_customer_deposit(deposit: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+async def auto_post_customer_deposit(deposit: Dict[str, Any], business_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
     """Customer deposit received → Bank DR, Customer Deposits Held CR."""
     amount = float(deposit.get("amount") or 0)
     if amount <= 0:
@@ -718,10 +773,12 @@ async def auto_post_customer_deposit(deposit: Dict[str, Any]) -> Optional[Dict[s
         memo=f"Customer deposit — {deposit.get('bookingId') or ''}",
         source_type="deposit",
         source_ref=deposit.get("id"),
+        business_id=business_id,
     )
 
 
-async def auto_post_deposit_applied(deposit: Dict[str, Any], transaction: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+async def auto_post_deposit_applied(deposit: Dict[str, Any], transaction: Dict[str, Any],
+                                     business_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
     amount = float(deposit.get("amount") or 0)
     if amount <= 0:
         return None
@@ -736,10 +793,11 @@ async def auto_post_deposit_applied(deposit: Dict[str, Any], transaction: Dict[s
         memo=f"Deposit applied to txn {transaction.get('id')}",
         source_type="deposit_applied",
         source_ref=deposit.get("id"),
+        business_id=business_id,
     )
 
 
-async def auto_post_deposit_refunded(deposit: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+async def auto_post_deposit_refunded(deposit: Dict[str, Any], business_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
     """Held deposit paid back to the customer (booking fell through) → Held
     deposit liability DR, Bank CR. Mirrors auto_post_deposit_applied's
     liability release but the money leaves the business instead of
@@ -758,4 +816,5 @@ async def auto_post_deposit_refunded(deposit: Dict[str, Any]) -> Optional[Dict[s
         memo=f"Deposit refunded — {deposit.get('bookingId') or ''}",
         source_type="deposit_refunded",
         source_ref=deposit.get("id"),
+        business_id=business_id,
     )

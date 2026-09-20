@@ -23,6 +23,7 @@ class SeatNote(BaseModel):
 
 
 class KitchenOrderCreate(BaseModel):
+    businessId: Optional[str] = None
     transactionId: Optional[str] = None
     reservationId: Optional[str] = None
     tableNumber: Optional[str] = None
@@ -41,6 +42,7 @@ class KitchenOrderCreate(BaseModel):
 
 class KitchenOrder(BaseModel):
     id: str = ""
+    businessId: Optional[str] = None
     transactionId: Optional[str] = None
     reservationId: Optional[str] = None
     tableNumber: Optional[str] = None

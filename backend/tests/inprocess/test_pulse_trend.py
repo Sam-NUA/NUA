@@ -14,7 +14,7 @@ def test_today_pulse_includes_a_7_day_trend(client, owner_headers):
         now = datetime.now(timezone.utc)
         await db.transactions.insert_one({
             "id": str(uuid.uuid4()), "total": 123.45, "timestamp": now - timedelta(days=2),
-            "status": "completed",
+            "status": "completed", "businessId": "default",
         })
 
     asyncio.get_event_loop().run_until_complete(seed())

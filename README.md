@@ -1,8 +1,10 @@
 # Nua — Restaurant OS
 
-> **Updated 25 June 2026**
+> **Updated 14 September 2026**
 >
-> A production-ready, AI-first restaurant operating system. POS, kitchen, reservations, inventory, accounting, loyalty, social-media marketing — all in one place. Built with React + FastAPI + MongoDB. Themed in NUA's signature orange / purple / pink palette and rebranded as **Nua - Restaurant OS** from iteration 37 onward.
+> An AI-first restaurant operating system. POS, kitchen, reservations, inventory, accounting, loyalty, social-media marketing — all in one place. Built with React + FastAPI + MongoDB. Themed in NUA's signature orange / purple / pink palette and rebranded as **Nua - Restaurant OS** from iteration 37 onward.
+>
+> This is a multi-tenant SaaS platform: many businesses share one deployment, each other's data kept apart by application-level `businessId` scoping (no per-tenant database or schema separation). A security/tenant-isolation audit found and fixed a severe class of bugs in that scoping this year — see [`backend/TRUST_RELEASE_FINAL_REPORT.md`](backend/TRUST_RELEASE_FINAL_REPORT.md) for the honest, evidence-backed account of what's fixed, what's tested, and what's still a known, documented gap before calling any part of this "production-ready" for a real multi-tenant deployment.
 
 ---
 
@@ -211,6 +213,16 @@ Each block is one user-driven iteration. Bullets are the **user instruction** pl
   - Only `bookings_inbox.ack` retains inline auth — intentional graceful-degradation for webhook callers.
 - **README updated** (this file).
 
+### Trust Release — security hardening + Voice POS + Loyalty 3.0 + Booking 3.0 (Sep 2026)
+
+Not a single user-typed instruction like the iterations above — a multi-week directive to independently audit and harden the platform for a genuine multi-tenant SaaS deployment (every business's data kept apart on one shared database, with no per-tenant schema), then build three deferred features on top of a verified-solid foundation. Full detail, every fix cited with its file and commit, is in [`backend/TRUST_RELEASE_FINAL_REPORT.md`](backend/TRUST_RELEASE_FINAL_REPORT.md) and [`backend/TENANT_ISOLATION_REMAINING_WORK.md`](backend/TENANT_ISOLATION_REMAINING_WORK.md) — this entry is the short version.
+
+- **P0 — security & safety foundation.** CI restored and strengthened (flake8, mypy, pip-audit, gitleaks, npm audit, e2e job). Hardcoded secret fallbacks removed (7 files now fail closed instead of trusting a default key). Stripe/webhook signature verification now rejects unsigned or misconfigured payloads instead of silently accepting them. Ash (the AI agent)'s tool-execution safety hardened: an owner-only audited kill switch, high-risk tools can no longer be set to auto-execute, idempotency keys on tool calls, rollback for the directive's named action types. Financial/offline integrity: refund caps and online-order status transitions made atomic (were exploitable by two concurrent requests), stock floor added, offline-queue replay dedup end-to-end.
+- **P0.3 — tenant isolation, the largest single effort.** The original audit found 38 of 58 backend route files with zero `businessId` scoping. Two root causes were found and fixed: `ActorContextMiddleware` let a client-supplied header override the JWT-derived tenant on write, and `_stamp_new()`'s `doc.setdefault("businessId", ...)` was a no-op against a field that already existed as `None` on every `BaseEntity` model — meaning **every product ever created was tagged `businessId=None` and visible to every other business on the deployment**, silently, since the feature was built. Beyond the original 34-file list, the same sweep found and fixed a comparable root-cause bug in `models/reservation.py` (no `businessId` field at all — the entire reservations/bookings system, direct guest PII included, had been unscoped since it was written) and in `loyalty_ledger` (every points earn/redeem/refund event, at every real write site). Nine-plus confirmed zero-authentication endpoints were found across `bill_split.py`, `awards.py`, `reservations.py`'s floor-plan and waitlist CRUD, `channel_menus.py`, `loyalty.py`, and `loyalty_engine.py`'s reports — reachable with no credential, or by any authenticated staff member regardless of business. All fixed with the same pattern throughout (`tenant_scope_filter`/`tenant_owns`), each with its own regression test, the full backend suite re-run before every commit. What's still a documented, deliberate gap (not silently left broken) is in `TENANT_ISOLATION_REMAINING_WORK.md`.
+- **Voice POS** — the `/agent/voice-command` router existed and was wired into the UI, but its target endpoint had been deleted; the mic button silently did nothing. Rebuilt end-to-end and verified in a real browser (Playwright, fake audio device) — recording, transcription request, and a genuine `agentAPI.tick()`/navigation response. The AI Phone Agent's "order" intent now actually creates a kitchen ticket via `services/channel_orders.py` instead of only logging what it heard.
+- **Loyalty 3.0** — a unified guest-facing loyalty passport (points, tier, badges, milestones, active subscription) surfaced a severe pre-existing gap: `routes/loyalty_v2.py`'s badge/milestone catalogs, challenges, referrals and leaderboard had zero tenant scoping at all, on par with the `_stamp_new` finding. Tier perks are now enforced for real (Silver+ jumps the waitlist queue, never ahead of an earlier-joined fellow member) and a redemption-cost-vs-incremental-spend ROI report was added, explicit in both its docstring and its response about being a same-business snapshot proxy, not a causal cohort study.
+- **Booking 3.0** — deposits are now collected through a real Stripe Checkout session (not a staff-ticked checkbox), and a no-show only forfeits a deposit that was actually collected — never a bare flag. A per-business cancellation-policy engine (configurable free-cancellation cutoff, default 24h) decides refund vs. forfeit on cancellation. The waitlist's "Notify" button now sends a real SMS instead of only changing a status label. Honest limit, stated in the code: NUA has no saved-card/off-session-charge capability (only Stripe's one-time hosted Checkout), so a walk-in that never had a deposit collected still can't be charged a no-show fee after the fact.
+
 ## Repository layout
 
 ```
@@ -290,8 +302,11 @@ Every endpoint is prefixed `/api`. Auth via Bearer JWT from `POST /api/auth/logi
 | Modifiers      | `GET/POST/PUT/DELETE /modifiers`                                      | |
 | Categories     | `GET/POST/PUT/DELETE /categories`, `POST /categories/cleanup-legacy`  | icon + color + prepTime + channels |
 | Transactions   | `GET/POST /transactions`, `POST /transactions/refund`                 | Stock + recipe + customer cascade |
-| Loyalty        | `GET/PUT /loyalty/config`, `POST /loyalty/redeem`                     | `minRedeem` = 10 (= $0.10) |
-| Reservations   | `GET/POST /reservations`, `POST /reservations/{id}/ai-assign-table`   | AI auto-assign by party size |
+| Loyalty        | `GET/PUT /loyalty/config`, `POST /loyalty/redeem`, `GET /loyalty/reports/roi` | `minRedeem` = 10 (= $0.10); ROI report is a same-business proxy, not a causal cohort study |
+| Loyalty 2.0    | `GET /loyalty/v2/passport/{customerId}`, `.../badges`, `.../challenges`, `.../referrals`, `.../leaderboard` | Unified guest passport + tier badges/milestones |
+| Reservations   | `GET/POST /reservations`, `POST /reservations/{id}/ai-assign-table`, `POST .../request-deposit`, `GET/PUT /reservations/cancellation-policy` | AI auto-assign by party size; real Stripe deposit collection; per-business cancellation cutoff |
+| Waitlist       | `GET/POST /waitlist`, `PUT /waitlist/{id}` (status→`notified` sends a real SMS), `GET /waitlist/track/{code}` | Silver+ tier jumps the queue |
+| Voice POS      | `POST /agent/voice-command`, `POST /phone-agent/simulate`             | Voice command → `agentAPI.tick()`/navigate; phone agent places real orders |
 | Bookings Inbox | `POST /bookings/inbox`, `POST /bookings/inbox/{id}/ack`               | AI parse → reservation |
 | Channel Menus  | `GET /channel-menus/{channel}`, `POST .../patch`, `.../ai-prep-times`, `.../ai-discount-slow` | |
 | Awards         | `GET /awards/catalogue`, `POST /awards/install`, `POST /payruns/super-by-award` | Fair Work AU |
@@ -320,7 +335,8 @@ Environment variables (all in `.env` files, never hard-coded):
 
 ## Testing
 
-- **Unit / route tests** — `cd /app/backend && python3 -m pytest tests/ -q`. Each iteration ships its own suite (e.g. `tests/test_iteration38_social_loyalty.py`).
+- **Fast unit/route tests (the ones to run locally and in CI)** — `cd backend && python3 -m pytest tests/inprocess -q`. Runs entirely against `mongomock-motor`, no live database or server needed — this is the suite every Trust Release fix was validated against, full run, before every commit. **613 passing** as of the security-hardening + Voice POS/Loyalty 3.0/Booking 3.0 work above (up from 469 pre-Trust-Release).
+- **Legacy live-server integration tests** — the flat `backend/tests/test_iteration*.py` / `test_*_features.py` files predate `tests/inprocess` and hit a real running instance over HTTP (`requests` against `REACT_APP_BACKEND_URL`), not mongomock. They need a deployed backend + real env vars to run at all; treat them as historical per-iteration scorecards (below), not as part of the fast local/CI loop.
 - **End-to-end** — `testing_agent_v3_fork` is the integrated subagent used for full Playwright + curl runs. Reports land in `/app/test_reports/iteration_NN.json`.
 - **Per-iteration scorecards**
 
@@ -334,8 +350,15 @@ Environment variables (all in `.env` files, never hard-coded):
 | 38   | 20/20   | ~88% (testid gaps only) | Social Media + Loyalty 10pt + Split + PromotionDialog               |
 | 39   | curl-verified | self-tested      | Content Calendar + AI Weekly Plan + README                          |
 | 40   | curl+pytest verified | self-tested | Background worker (~64ms enqueue) + Edit/Duplicate + bespoke auth   |
+| Trust Release | 613/613 (`tests/inprocess`) | Voice POS: real-browser Playwright verified; Loyalty 3.0/Booking 3.0: pytest only | Security hardening + tenant isolation + Voice POS + Loyalty 3.0 + Booking 3.0 |
 
 ## Roadmap / Backlog
+
+### P0 — security/trust gaps, known and documented (see `backend/TENANT_ISOLATION_REMAINING_WORK.md`)
+- Remaining backend route files still needing a tenant-isolation pass — the original audit found 38, most are fixed (see the Trust Release entry above), a handful remain and are ranked by risk in the tracking doc.
+- `loyalty_config` and a few `db.settings` singleton documents (business hours, print routing, email config) are still single global documents shared by every business on a deployment — no way for two businesses on one deployment to run different rates/settings yet.
+- No saved-card / off-session Stripe charge capability (`SetupIntent` + a later `PaymentIntent`) — only the one-time hosted Checkout redirect exists today, which caps what "charge a no-show fee" or "auto-renew a subscription" can actually do.
+- `table_ordering.py`'s guest-facing QR menu and `public.py`'s `join-waitlist` are genuinely public by design but carry no business-identifying signal in their request shape yet, so on a real multi-tenant deployment they'd need a `?business=` param threaded through (the pattern `online_orders.py`'s public storefront already uses) before they're safe to expose past a single-business demo.
 
 ### P1
 - Real **SendGrid / Twilio API keys** to activate live notifications.

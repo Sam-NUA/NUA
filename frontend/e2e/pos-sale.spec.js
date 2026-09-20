@@ -31,5 +31,18 @@ test('ring up a card sale end to end', async ({ page }) => {
   // it), so asserting on it directly races its own disappearance on a slow
   // CI runner. The cart clearing back to empty is the durable, checkable
   // consequence of the same successful checkout — assert on that instead.
-  await expect(page.getByTestId('pos-total')).toHaveText('$0.00', { timeout: 15_000 });
+  //
+  // Not `toHaveText('$0.00')`: POSTerminal.jsx only renders pos-total inside
+  // `{cart.length > 0 && (...)}` — once the sale succeeds and the cart
+  // clears, that element is removed from the DOM entirely, it never updates
+  // to show "$0.00". Asserting toHaveText('$0.00') against it can never
+  // pass at any timeout; it was misread as flakiness (the failure looks
+  // identical to a slow update — "element(s) not found" — until you check
+  // what actually unmounts it). Assert on the element's disappearance
+  // instead, which is what "cart cleared" actually looks like in the DOM.
+  // handleCheckout's post-payment chain (print-routing dispatch, the gift-
+  // card/store-credit settle step, a full product-catalog refetch) is
+  // measurably slow in this harness (~10-20s), hence the generous timeout.
+  await expect(page.getByTestId('pos-total')).not.toBeVisible({ timeout: 30_000 });
+  await expect(page.getByText('Cart is empty')).toBeVisible();
 });

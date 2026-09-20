@@ -9,6 +9,13 @@ async function loginAsOwner(page) {
   // login call has occasionally starved the login connection outright.
   await page.waitForLoadState('networkidle').catch(() => {});
 
+  // Login.jsx defaults to the PIN-code mode (staff terminals' priority login
+  // method — see Login.jsx's own "Mode Toggle" comment) unless
+  // localStorage's nua_login_mode already says 'email', which a fresh
+  // browser context never has. Switch to email mode explicitly instead of
+  // assuming login-email is already on screen.
+  await page.getByTestId('mode-email').click();
+
   // Even so, the very first login attempt against a webServer that just
   // finished booting can hit a transient "couldn't reach the server" — the
   // backend process is up (its /api/health readiness check passed) but a

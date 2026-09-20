@@ -76,8 +76,37 @@ async def restore(entity_type: str, entity_id: str, version: int,
 @router.delete("/purge/{entity_type}/{entity_id}")
 async def gdpr_purge(entity_type: str, entity_id: str,
                      collection: str = Query(...),
-                     _: dict = Depends(require_owner)):
-    """Owner-only right-to-be-forgotten. Removes doc + history."""
+                     user: dict = Depends(require_owner)):
+    """Owner-only right-to-be-forgotten. Removes doc + history.
+
+    `collection` used to be taken straight from the caller with no
+    validation and no tenant check at all — an owner of ANY business could
+    permanently delete any document (auth_users, businesses, transactions,
+    anything) in any OTHER business by id, purely by knowing/guessing it.
+    Now restricted to the same allowlist restore/history already use
+    (this endpoint's own stated purpose — a GDPR purge of one of YOUR
+    entities — was never "arbitrary document in an arbitrary collection"),
+    and the document's own businessId is checked against the caller's
+    before anything is touched.
+
+    Deliberately an EXACT match, not tenant_owns()'s usual fail-open-to-
+    untagged-legacy-data rule (which is right for a read — never hide data
+    because the tenant signal is merely missing — but wrong for a
+    permanent hard delete). A second independent audit flagged this: this
+    codebase's own history includes a real bug where `_stamp_new()`
+    silently left every product's businessId unset, so an untagged
+    `businessId=None` row is a genuine, plausible state on an old
+    deployment — and tenant_owns() treats "no businessId on either side"
+    as a match, which would let ANY owner permanently delete such a row
+    from ANY other business. A purge of a document whose business can't be
+    confirmed is refused (404) rather than risked, even if that means an
+    owner has to reach for the restore/history endpoints instead to
+    reconcile truly-untagged legacy data."""
+    if collection not in ENTITY_TYPE_TO_COLLECTION.values():
+        raise HTTPException(status_code=400, detail=f"Purge isn't supported for collection '{collection}'")
+    existing = await getattr(db, collection).find_one({"id": entity_id}, {"_id": 0, "businessId": 1})
+    if not existing or existing.get("businessId") != user.get("businessId"):
+        raise HTTPException(404, "Entity not found")
     ok = await entity_service.hard_delete(collection, entity_id, entity_type=entity_type)
     if not ok:
         raise HTTPException(404, "Entity not found")

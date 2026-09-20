@@ -31,15 +31,15 @@ def test_summary_sums_across_all_transactions_and_expenses(client, owner_headers
     before = _summary(client, owner_headers)
 
     loop.run_until_complete(db.transactions.insert_many([
-        {"id": "AGG-T1", "total": 100.0, "gst": 9.09,
+        {"businessId": "default", "id": "AGG-T1", "total": 100.0, "gst": 9.09,
          "timestamp": datetime(2026, 1, 15, tzinfo=timezone.utc)},
-        {"id": "AGG-T2", "total": 200.0, "gst": 18.18,
+        {"businessId": "default", "id": "AGG-T2", "total": 200.0, "gst": 18.18,
          "timestamp": datetime(2026, 2, 15, tzinfo=timezone.utc)},
     ]))
     loop.run_until_complete(db.expenses.insert_many([
-        {"id": "AGG-E1", "amount": 40.0, "gstAmount": 4.0, "category": "Ingredients",
+        {"businessId": "default", "id": "AGG-E1", "amount": 40.0, "gstAmount": 4.0, "category": "Ingredients",
          "date": datetime(2026, 1, 20, tzinfo=timezone.utc)},
-        {"id": "AGG-E2", "amount": 20.0, "gstAmount": 2.0, "category": "Rent",
+        {"businessId": "default", "id": "AGG-E2", "amount": 20.0, "gstAmount": 2.0, "category": "Rent",
          "date": datetime(2026, 2, 20, tzinfo=timezone.utc)},
     ]))
 
@@ -59,9 +59,9 @@ def test_summary_respects_an_optional_date_range(client, owner_headers):
                       start_date="2026-03-01", end_date="2026-03-31")
 
     loop.run_until_complete(db.transactions.insert_many([
-        {"id": "AGG-RNG-JAN", "total": 100.0, "gst": 0,
+        {"businessId": "default", "id": "AGG-RNG-JAN", "total": 100.0, "gst": 0,
          "timestamp": datetime(2026, 1, 15, tzinfo=timezone.utc)},
-        {"id": "AGG-RNG-MAR", "total": 500.0, "gst": 0,
+        {"businessId": "default", "id": "AGG-RNG-MAR", "total": 500.0, "gst": 0,
          "timestamp": datetime(2026, 3, 15, tzinfo=timezone.utc)},
     ]))
 
@@ -79,12 +79,12 @@ def test_pandl_splits_cogs_from_operating_expenses(client, owner_headers):
                     start_date="2026-04-01", end_date="2026-04-30")
 
     loop.run_until_complete(db.transactions.insert_one(
-        {"id": "AGG-PL-T", "total": 300.0, "gst": 0,
+        {"businessId": "default", "id": "AGG-PL-T", "total": 300.0, "gst": 0,
          "timestamp": datetime(2026, 4, 10, tzinfo=timezone.utc)}))
     loop.run_until_complete(db.expenses.insert_many([
-        {"id": "AGG-PL-COGS", "amount": 40.0, "gstAmount": 0, "category": "Ingredients",
+        {"businessId": "default", "id": "AGG-PL-COGS", "amount": 40.0, "gstAmount": 0, "category": "Ingredients",
          "date": datetime(2026, 4, 12, tzinfo=timezone.utc)},
-        {"id": "AGG-PL-OPEX", "amount": 20.0, "gstAmount": 0, "category": "Rent",
+        {"businessId": "default", "id": "AGG-PL-OPEX", "amount": 20.0, "gstAmount": 0, "category": "Rent",
          "date": datetime(2026, 4, 12, tzinfo=timezone.utc)},
     ]))
 

@@ -13,6 +13,7 @@ F9  Kitchen-Load Balancing                   GET  /api/ai/kitchen-load
 from fastapi import APIRouter, HTTPException, Depends
 from deps import get_user, require_owner, require_owner_or_manager
 from database import db
+from middleware.actor_context import tenant_scope_filter
 from services import floor_tables
 from datetime import datetime, timezone, timedelta
 from collections import Counter, defaultdict
@@ -56,7 +57,7 @@ async def _llm_json(session_id: str, system: str, user_text: str, model: str = "
 # E5 — AUTO-UPSELL FOR CART
 # ============================================================================
 @router.post("/ai/upsell")
-async def upsell_for_cart(data: dict, _: dict = Depends(get_user)):
+async def upsell_for_cart(data: dict, user: dict = Depends(get_user)):
     """Given the current cart, recommend 1-3 high-margin add-ons.
     Returns {suggestions: [{productId, name, price, reason}]}"""
     cart = data.get("cart", [])
@@ -65,7 +66,7 @@ async def upsell_for_cart(data: dict, _: dict = Depends(get_user)):
 
     # Pull product catalog with margin info — keep small to control tokens
     products = await db.products.find(
-        {"active": {"$ne": False}},
+        {"active": {"$ne": False}, **tenant_scope_filter(user.get("businessId"))},
         {"_id": 0, "id": 1, "name": 1, "price": 1, "cost": 1, "category": 1},
     ).to_list(200)
     # Compute margin
@@ -107,11 +108,12 @@ async def upsell_for_cart(data: dict, _: dict = Depends(get_user)):
 # E6 — AUTO-PRICE-TUNE RECOMMENDATIONS
 # ============================================================================
 @router.get("/ai/price-tune")
-async def price_tune_recs(_: dict = Depends(require_owner_or_manager)):
+async def price_tune_recs(user: dict = Depends(require_owner_or_manager)):
     """Analyze 30-day sales velocity vs current price; return rec'd nudges."""
+    biz_scope = tenant_scope_filter(user.get("businessId"))
     cutoff = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
     tx = await db.transactions.find(
-        {"createdAt": {"$gte": cutoff}}, {"_id": 0, "items": 1}
+        {"createdAt": {"$gte": cutoff}, **biz_scope}, {"_id": 0, "items": 1}
     ).to_list(5000)
     sales = Counter()
     for t in tx:
@@ -120,7 +122,7 @@ async def price_tune_recs(_: dict = Depends(require_owner_or_manager)):
             if pid:
                 sales[pid] += int(it.get("quantity", 1))
     products = await db.products.find(
-        {"active": {"$ne": False}}, {"_id": 0}
+        {"active": {"$ne": False}, **biz_scope}, {"_id": 0}
     ).to_list(500)
     # Compute median velocity to use as baseline
     velocities = sorted(sales.values()) or [0]
@@ -155,7 +157,7 @@ async def apply_price_tune(data: dict, user: dict = Depends(require_owner_or_man
     if not pid or new_price <= 0:
         raise HTTPException(status_code=400, detail="productId + newPrice required")
     res = await db.products.update_one(
-        {"id": pid},
+        {"id": pid, **tenant_scope_filter(user.get("businessId"))},
         {"$set": {
             "price": new_price,
             "lastPriceChange": {
@@ -181,6 +183,7 @@ async def apply_price_tune(data: dict, user: dict = Depends(require_owner_or_man
         "payload": {"productId": pid, "newPrice": new_price},
         "status": "executed",
         "createdAt": datetime.now(timezone.utc).isoformat(),
+        "businessId": user.get("businessId"),
     })
     return {"updated": True, "productId": pid, "newPrice": new_price}
 
@@ -189,7 +192,7 @@ async def apply_price_tune(data: dict, user: dict = Depends(require_owner_or_man
 # E7 — OVERBOOKING GUARDRAIL
 # ============================================================================
 @router.post("/ai/overbooking-check")
-async def overbooking_check(data: dict, _: dict = Depends(get_user)):
+async def overbooking_check(data: dict, user: dict = Depends(get_user)):
     """Staff pre-flight advisory before creating a reservation — does the
     exact same capacity math services.booking_rules_engine now enforces at
     write time (when Settings > Booking Rules has capacity enforcement
@@ -202,8 +205,8 @@ async def overbooking_check(data: dict, _: dict = Depends(get_user)):
         raise HTTPException(status_code=400, detail="date + time required")
 
     from services.booking_rules_engine import get_rules, capacity_for_slot
-    rules = await get_rules()
-    cap_info = await capacity_for_slot(date, time_str, rules)
+    rules = await get_rules(user.get("businessId"))
+    cap_info = await capacity_for_slot(date, time_str, rules, business_id=user.get("businessId"))
     available = cap_info["available"]
     allow = available >= party_size
     return {
@@ -226,16 +229,17 @@ async def overbooking_check(data: dict, _: dict = Depends(get_user)):
 # F5 — AI COST COACH
 # ============================================================================
 @router.get("/ai/cost-coach")
-async def cost_coach(_: dict = Depends(require_owner_or_manager)):
+async def cost_coach(user: dict = Depends(require_owner_or_manager)):
     """Analyze food cost % vs target, surface top offenders + LLM advice."""
     target_cost_pct = 32.0  # industry standard
+    biz_scope = tenant_scope_filter(user.get("businessId"))
 
     products = await db.products.find(
-        {"active": {"$ne": False}}, {"_id": 0, "id": 1, "name": 1, "price": 1, "cost": 1, "category": 1}
+        {"active": {"$ne": False}, **biz_scope}, {"_id": 0, "id": 1, "name": 1, "price": 1, "cost": 1, "category": 1}
     ).to_list(500)
     cutoff = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
     tx = await db.transactions.find(
-        {"createdAt": {"$gte": cutoff}}, {"_id": 0, "items": 1}
+        {"createdAt": {"$gte": cutoff}, **biz_scope}, {"_id": 0, "items": 1}
     ).to_list(5000)
     units = Counter()
     revenue = defaultdict(float)
@@ -302,13 +306,14 @@ async def cost_coach(_: dict = Depends(require_owner_or_manager)):
 # F6 — PREDICTIVE LABOR FORECAST
 # ============================================================================
 @router.get("/ai/labor-forecast")
-async def labor_forecast(_: dict = Depends(require_owner_or_manager)):
+async def labor_forecast(user: dict = Depends(require_owner_or_manager)):
     """Forecast next 7 days of staffing needs from historical transactions."""
 
     # Look back 8 weeks to get day-of-week + hour patterns
     cutoff = (datetime.now(timezone.utc) - timedelta(days=56)).isoformat()
     tx = await db.transactions.find(
-        {"createdAt": {"$gte": cutoff}}, {"_id": 0, "createdAt": 1, "total": 1}
+        {"createdAt": {"$gte": cutoff}, **tenant_scope_filter(user.get("businessId"))},
+        {"_id": 0, "createdAt": 1, "total": 1}
     ).to_list(20000)
     # Buckets[day_of_week][hour] = list of (orders, revenue)
     buckets = defaultdict(lambda: defaultdict(lambda: [0, 0.0]))
@@ -354,11 +359,12 @@ async def labor_forecast(_: dict = Depends(require_owner_or_manager)):
 # F7 — DYNAMIC SURGE PRICING
 # ============================================================================
 @router.get("/ai/surge-recommendations")
-async def surge_recommendations(_: dict = Depends(require_owner_or_manager)):
+async def surge_recommendations(user: dict = Depends(require_owner_or_manager)):
     """Per-hour-of-week surge multipliers based on historical demand peaks."""
     cutoff = (datetime.now(timezone.utc) - timedelta(days=56)).isoformat()
     tx = await db.transactions.find(
-        {"createdAt": {"$gte": cutoff}}, {"_id": 0, "createdAt": 1}
+        {"createdAt": {"$gte": cutoff}, **tenant_scope_filter(user.get("businessId"))},
+        {"_id": 0, "createdAt": 1}
     ).to_list(20000)
     by_hour = Counter()
     for t in tx:
@@ -396,22 +402,29 @@ async def surge_recommendations(_: dict = Depends(require_owner_or_manager)):
 
 
 @router.post("/ai/surge/apply")
-async def apply_surge(data: dict, _: dict = Depends(require_owner)):
-    """Persist a surge rule to settings so POS can pick it up."""
+async def apply_surge(data: dict, user: dict = Depends(require_owner)):
+    """Persist a surge rule to settings so POS can pick it up.
+
+    Scoped to the caller's own business — without this, one business
+    applying surge pricing wiped (delete_many({})) and replaced every
+    other business's surge rules on the deployment.
+    """
+    biz = user.get("businessId")
     rules = data.get("rules", [])
-    await db.surge_rules.delete_many({})
+    await db.surge_rules.delete_many(tenant_scope_filter(biz))
     if rules:
         for r in rules:
             r["id"] = f"SURGE-{uuid.uuid4().hex[:6].upper()}"
             r["createdAt"] = datetime.now(timezone.utc).isoformat()
+            r["businessId"] = biz
             await db.surge_rules.insert_one(r)
     return {"applied": len(rules)}
 
 
 @router.get("/ai/surge/active")
-async def active_surge():
-    """Public: get current applied surge rules — for POS to multiply prices."""
-    rules = await db.surge_rules.find({}, {"_id": 0}).to_list(200)
+async def active_surge(user: dict = Depends(get_user)):
+    """Get current applied surge rules — for POS to multiply prices."""
+    rules = await db.surge_rules.find(tenant_scope_filter(user.get("businessId")), {"_id": 0}).to_list(200)
     now = datetime.now()
     dow, hour = now.weekday(), now.hour
     active = next((r for r in rules if r.get("dow") == dow and r.get("hour") == hour), None)
@@ -467,6 +480,7 @@ async def voice_to_recipe(data: dict, user: dict = Depends(get_user)):
         "createdBy": user["id"],
         "createdAt": datetime.now(timezone.utc).isoformat(),
         **(out if isinstance(out, dict) else {}),
+        "businessId": user.get("businessId"),
     }
     await db.recipes.insert_one(recipe)
     recipe.pop("_id", None)
@@ -474,8 +488,8 @@ async def voice_to_recipe(data: dict, user: dict = Depends(get_user)):
 
 
 @router.get("/ai/recipes")
-async def list_recipes(_: dict = Depends(get_user)):
-    recipes = await db.recipes.find({}, {"_id": 0}).sort("createdAt", -1).to_list(100)
+async def list_recipes(user: dict = Depends(get_user)):
+    recipes = await db.recipes.find(tenant_scope_filter(user.get("businessId")), {"_id": 0}).sort("createdAt", -1).to_list(100)
     return recipes
 
 
@@ -487,12 +501,13 @@ async def kitchen_load(user: dict = Depends(get_user)):
     """Surface station load + recommend rebalancing."""
     if user["role"] not in ("owner", "manager", "kitchen"):
         raise HTTPException(status_code=403, detail="Kitchen/Manager/Owner only")
+    biz_scope = tenant_scope_filter(user.get("businessId"))
     # Pull open kitchen orders
     orders = await db.kitchen_orders.find(
-        {"status": {"$in": ["pending", "in_progress"]}}, {"_id": 0}
+        {"status": {"$in": ["pending", "in_progress"]}, **biz_scope}, {"_id": 0}
     ).to_list(500)
     # Group items by station (product.station or category fallback)
-    products = {p["id"]: p for p in await db.products.find({}, {"_id": 0}).to_list(2000)}
+    products = {p["id"]: p for p in await db.products.find(biz_scope, {"_id": 0}).to_list(2000)}
     by_station = defaultdict(lambda: {"items": 0, "orders": 0, "wait": 0.0})
     now = datetime.now(timezone.utc)
     for o in orders:

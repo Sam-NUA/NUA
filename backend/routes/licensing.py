@@ -57,7 +57,7 @@ def _uid(prefix: str) -> str: return f"{prefix}-{uuid.uuid4().hex[:10].upper()}"
 
 def _sign_entitlement(tenant_id: str, device_id: str, state: str, expires_at: datetime) -> str:
     """Sign a short-lived entitlement token. POS devices cache this and revalidate periodically."""
-    secret = os.environ.get("JWT_SECRET", "nua-secret")
+    secret = os.environ["JWT_SECRET"]
     payload = {
         "tenantId": tenant_id, "deviceId": device_id, "state": state,
         "iat": int(_now().timestamp()), "exp": int(expires_at.timestamp()),
@@ -75,6 +75,21 @@ async def _audit(tenant_id: str, action: str, actor: str, details: dict | None =
 
 async def _get_license(tenant_id: str) -> Optional[dict]:
     return await db.tenant_licenses.find_one({"tenantId": tenant_id}, {"_id": 0})
+
+
+def _own_tenant_id(user: dict, data: Optional[dict] = None) -> str:
+    """The tenantId for every licensing action is always the caller's own
+    businessId — `user` carries no separate "tenantId" field (it never has;
+    reading it was always None), and a client-supplied tenantId in the
+    request body must never be trusted to pick which tenant's license gets
+    onboarded, read, modified, or billed. A request-body tenantId is
+    accepted only when it agrees with the caller's own business, for
+    backward-compatible clients that still send it."""
+    tenant_id = (user.get("businessId") or "default").strip()
+    requested = ((data or {}).get("tenantId") or "").strip()
+    if requested and requested != tenant_id:
+        raise HTTPException(status_code=403, detail="tenantId must match your own business")
+    return tenant_id
 
 
 def _grace_end(failed_at_iso: str) -> str:
@@ -104,7 +119,7 @@ async def onboard(data: dict, user: dict = Depends(require_owner)):
     Calls ABR live; refuses to issue without a verified Active ABN.
     """
 
-    tenant_id = (data.get("tenantId") or user.get("tenantId") or "default").strip()
+    tenant_id = _own_tenant_id(user, data)
     abn = (data.get("abn") or "").strip()
     plan = data.get("plan", "standard")
     max_devices = int(data.get("maxDevices", 3))
@@ -241,7 +256,7 @@ def _build_warnings(lic: dict) -> list[str]:
 async def activate_device(data: dict, user: dict = Depends(require_owner_or_manager)):
     """First-time device registration. The POS device generates a stable
     deviceId and submits it with an owner/manager auth header."""
-    tenant_id = data.get("tenantId") or user.get("tenantId") or "default"
+    tenant_id = _own_tenant_id(user, data)
     device_id = data.get("deviceId")
     name = data.get("name", f"Device {device_id[:6] if device_id else '?'}")
     if not device_id:
@@ -264,7 +279,7 @@ async def activate_device(data: dict, user: dict = Depends(require_owner_or_mana
 
 @router.post("/device/revoke")
 async def revoke_device(data: dict, user: dict = Depends(require_owner)):
-    tenant_id = data.get("tenantId") or user.get("tenantId") or "default"
+    tenant_id = _own_tenant_id(user, data)
     device_id = data.get("deviceId")
     res = await db.tenant_licenses.update_one(
         {"tenantId": tenant_id},
@@ -288,7 +303,7 @@ async def request_abn_change(data: dict, user: dict = Depends(require_owner)):
     if not twofa or len(twofa) < 4:
         raise HTTPException(status_code=400, detail="2FA code required for ABN change")
 
-    tenant_id = data.get("tenantId") or user.get("tenantId") or "default"
+    tenant_id = _own_tenant_id(user, data)
     new_abn = (data.get("newAbn") or "").strip()
     reason = data.get("reason", "")
     if not checksum_valid(new_abn):
@@ -328,9 +343,15 @@ async def request_abn_change(data: dict, user: dict = Depends(require_owner)):
 async def approve_abn_change(req_id: str, request: Request, user: dict = Depends(require_owner)):
     """Per spec: 'do not allow to change ABN, once license is issued'.
     We retain the endpoint so support can override, but it is closed by default."""
-    # Hard-gated: requires SUPPORT_OVERRIDE_KEY env or operator action
+    # Hard-gated: requires SUPPORT_OVERRIDE_KEY to be configured AND matched.
+    # No hardcoded fallback — a default value here would be a documented,
+    # source-visible backdoor around the "ABN cannot change" guarantee.
+    # `not override_key` also covers the case where the env var is unset and
+    # the header is unset too (both None): without that check, None == None
+    # would pass the comparison and grant the override to anyone.
+    override_key = os.environ.get("SUPPORT_OVERRIDE_KEY")
     override = request.headers.get("X-Support-Override")
-    if override != os.environ.get("SUPPORT_OVERRIDE_KEY", "nua-support-2026"):
+    if not override_key or override != override_key:
         raise HTTPException(status_code=403, detail="ABN changes are not permitted once a license is issued. Contact support.")
     req = await db.abn_change_requests.find_one({"id": req_id}, {"_id": 0})
     if not req: raise HTTPException(status_code=404, detail="Request not found")
@@ -363,24 +384,28 @@ async def stripe_webhook(request: Request, stripe_signature: Optional[str] = Hea
     invoice.paid, invoice.payment_failed, customer.subscription.updated, customer.subscription.deleted."""
     payload = await request.body()
     secret = os.environ.get("STRIPE_WEBHOOK_SECRET", "")
+    if not secret:
+        # Fail closed. This endpoint is public/unauthenticated and drives
+        # real tenant license/subscription state transitions (activation,
+        # suspension) — accepting an unsigned payload here means anyone who
+        # can reach this URL can flip any tenant's billing state. There is
+        # no safe dev-fallback for a security-critical verification step;
+        # if a deployment needs to exercise this path without real Stripe
+        # webhooks, it must set STRIPE_WEBHOOK_SECRET to a test value and
+        # sign requests with stripe.Webhook.generate_test_header, exactly
+        # as tests/inprocess/test_licensing_webhook_signature.py does.
+        logger.error("STRIPE_WEBHOOK_SECRET not set; rejecting webhook instead of skipping signature verification")
+        raise HTTPException(status_code=503, detail="Webhook signature verification is not configured")
     try:
-        if secret:
-            # construct_event returns a stripe.Event — a StripeObject, not a
-            # plain dict. It supports [] and attribute access but NOT
-            # .get(), which raises AttributeError rather than falling back
-            # to a default the way dict.get() does. Every call below uses
-            # .get() (an intentional, defensive style for a webhook payload
-            # whose exact shape isn't guaranteed) — so without this
-            # conversion, every correctly-signed, real webhook delivery
-            # crashed with a 500 immediately on the first `event.get(...)`.
-            # The insecure dev-fallback path below never hit this because
-            # json.loads() already produces a plain dict.
-            event = stripe.Webhook.construct_event(payload, stripe_signature, secret).to_dict()
-        else:
-            # Dev fallback — skip signature verification but log a warning
-            import json
-            event = json.loads(payload)
-            logger.warning("STRIPE_WEBHOOK_SECRET not set; signature verification skipped")
+        # construct_event returns a stripe.Event — a StripeObject, not a
+        # plain dict. It supports [] and attribute access but NOT .get(),
+        # which raises AttributeError rather than falling back to a default
+        # the way dict.get() does. Every call below uses .get() (an
+        # intentional, defensive style for a webhook payload whose exact
+        # shape isn't guaranteed) — so without this conversion, every
+        # correctly-signed, real webhook delivery crashed with a 500
+        # immediately on the first `event.get(...)`.
+        event = stripe.Webhook.construct_event(payload, stripe_signature, secret).to_dict()
     except (ValueError, stripe.error.SignatureVerificationError) as e:
         raise HTTPException(status_code=400, detail=f"Webhook verification failed: {e}")
 
@@ -454,7 +479,7 @@ async def stripe_webhook(request: Request, stripe_signature: Optional[str] = Hea
 # ============================================================================
 @router.get("/me")
 async def my_license(user: dict = Depends(get_user)):
-    tenant_id = user.get("tenantId") or "default"
+    tenant_id = _own_tenant_id(user)
     lic = await _get_license(tenant_id)
     if not lic:
         return {"hasLicense": False, "tenantId": tenant_id}
@@ -463,7 +488,7 @@ async def my_license(user: dict = Depends(get_user)):
 
 @router.get("/audit")
 async def list_audit(user: dict = Depends(require_owner_or_manager)):
-    tenant_id = user.get("tenantId") or "default"
+    tenant_id = _own_tenant_id(user)
     rows = await db.license_audit.find({"tenantId": tenant_id}, {"_id": 0}).sort("createdAt", -1).to_list(200)
     return rows
 
@@ -471,7 +496,7 @@ async def list_audit(user: dict = Depends(require_owner_or_manager)):
 @router.post("/billing/recovery-link")
 async def billing_recovery_link(data: dict, user: dict = Depends(require_owner)):
     """Generate a Stripe Billing Portal session URL so the owner can update their card."""
-    tenant_id = user.get("tenantId") or "default"
+    tenant_id = _own_tenant_id(user, data)
     lic = await _get_license(tenant_id)
     if not lic or not lic.get("stripeCustomerId"):
         raise HTTPException(status_code=404, detail="No Stripe customer linked")
@@ -486,7 +511,7 @@ async def billing_recovery_link(data: dict, user: dict = Depends(require_owner))
 # Dev-only manual state forcing — useful for QA / demos. Owner-gated.
 @router.post("/dev/force-state")
 async def force_state(data: dict, user: dict = Depends(require_owner)):
-    tenant_id = user.get("tenantId") or "default"
+    tenant_id = _own_tenant_id(user, data)
     state = data.get("state")
     allowed = {STATE_ACTIVE, STATE_PAST_DUE, STATE_GRACE, STATE_SUSPENDED, STATE_CANCELLED, STATE_ABN_REVIEW}
     if state not in allowed:
