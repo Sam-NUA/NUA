@@ -31,6 +31,8 @@ const TIER_COLOR = {
  */
 export default function LoyaltyGuestPortal() {
   const navigate = useNavigate();
+  const business = new URLSearchParams(window.location.search).get('business');
+  const businessQuery = business ? `?business=${encodeURIComponent(business)}` : '';
   const [phone, setPhone] = useState('');
   const [code, setCode] = useState('');
   const [codeSent, setCodeSent] = useState(false);
@@ -55,7 +57,7 @@ export default function LoyaltyGuestPortal() {
     if (!code.trim()) return;
     setLoading(true); setErr(''); setData(null);
     try {
-      const r = await loyaltyGuestAPI.lookup(phone.trim(), code.trim(), new URLSearchParams(window.location.search).get("business"));
+      const r = await loyaltyGuestAPI.lookup(phone.trim(), code.trim(), business);
       if (!r.data.found) {
         setErr("We couldn't find a rewards account for that number.");
       } else {
@@ -75,7 +77,7 @@ export default function LoyaltyGuestPortal() {
       <div className="max-w-lg mx-auto p-4 sm:p-6 space-y-5">
         <div className="flex items-center justify-between">
           <h1 className="text-2xl font-bold flex items-center gap-2"><Sparkles className="text-violet-500" /> My Rewards</h1>
-          <Button variant="ghost" size="sm" onClick={() => navigate('/order-online')}>← Back to menu</Button>
+          <Button variant="ghost" size="sm" onClick={() => navigate(`/order-online${businessQuery}`)}>← Back to menu</Button>
         </div>
 
         {!data && !codeSent && (

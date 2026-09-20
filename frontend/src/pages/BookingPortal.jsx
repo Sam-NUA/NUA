@@ -22,6 +22,7 @@ const EVENT_ICONS = { dining: UtensilsCrossed, wine_pairing: Star, cooking_class
 export default function BookingPortal() {
   const navigate = useNavigate();
   const business = new URLSearchParams(window.location.search).get("business");
+  const businessQuery = business ? `?business=${encodeURIComponent(business)}` : '';
   const [tab, setTab] = useState('reserve'); // reserve, waitlist, events, menu
   const [step, setStep] = useState('select');
   const [menu, setMenu] = useState([]);
@@ -417,7 +418,7 @@ export default function BookingPortal() {
               <div className="flex flex-col sm:flex-row gap-2 justify-center mt-6">
                 {tab === 'waitlist' && confirmData.id && (
                   <Button className="bg-purple-600 hover:bg-purple-700 text-white"
-                    onClick={() => navigate(`/waitlist-track/${confirmData.id}`)}
+                    onClick={() => navigate(`/waitlist-track/${confirmData.id}${businessQuery}`)}
                     data-testid="portal-track-waitlist-btn">
                     Track my position live
                   </Button>

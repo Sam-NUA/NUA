@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useCallback } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import { Clock, Users, CheckCircle, Bell, RefreshCw, PartyPopper, XCircle } from 'lucide-react';
 import { Card, CardContent } from '../components/ui/card';
 import { Button } from '../components/ui/button';
@@ -17,6 +17,9 @@ const STATUS_COPY = {
 export default function TrackWaitlist() {
   const { code: codeFromUrl } = useParams();
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  const business = searchParams.get('business');
+  const businessQuery = business ? `?business=${encodeURIComponent(business)}` : '';
   const [code, setCode] = useState(codeFromUrl || '');
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -62,7 +65,7 @@ export default function TrackWaitlist() {
       <div className="max-w-xl mx-auto p-4 sm:p-6 space-y-5">
         <div className="flex items-center justify-between">
           <h1 className="text-2xl font-bold">Waitlist status</h1>
-          <Button variant="ghost" size="sm" onClick={() => navigate('/booking')}>← Back</Button>
+          <Button variant="ghost" size="sm" onClick={() => navigate(`/booking${businessQuery}`)}>← Back</Button>
         </div>
 
         {!codeFromUrl && (

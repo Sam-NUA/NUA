@@ -22,6 +22,8 @@ export default function TrackOrder() {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const sessionId = searchParams.get('session_id');
+  const business = searchParams.get('business');
+  const businessQuery = business ? `?business=${encodeURIComponent(business)}` : '';
   const [code, setCode] = useState(codeFromUrl || '');
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -103,8 +105,8 @@ export default function TrackOrder() {
         <div className="flex items-center justify-between">
           <h1 className="text-2xl font-bold">Track your order</h1>
           <div className="flex gap-2">
-            <Button variant="ghost" size="sm" onClick={() => navigate('/rewards')}>My Rewards</Button>
-            <Button variant="ghost" size="sm" onClick={() => navigate('/order-online')}>← Back to menu</Button>
+            <Button variant="ghost" size="sm" onClick={() => navigate(`/rewards${businessQuery}`)}>My Rewards</Button>
+            <Button variant="ghost" size="sm" onClick={() => navigate(`/order-online${businessQuery}`)}>← Back to menu</Button>
           </div>
         </div>
 

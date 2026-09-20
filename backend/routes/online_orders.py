@@ -21,6 +21,7 @@ from typing import Optional
 import os
 import json
 import uuid
+from urllib.parse import urlencode
 
 from utils.notifications import notify_order
 from routes.commerce_v29 import _resolve_voucher, _validate_voucher_rules, _compute_voucher_discount
@@ -393,8 +394,11 @@ async def create_online_order_checkout(data: dict, http_request: Request):
     webhook_url = f"{host_url}/api/webhook/stripe"
     stripe_checkout = StripeCheckout(api_key=api_key, webhook_url=webhook_url)
 
-    success_url = f"{origin_url}/track/{order_id}?session_id={{CHECKOUT_SESSION_ID}}"
-    cancel_url = f"{origin_url}/track/{order_id}"
+    business_selector = data.get("business")
+    business_query = urlencode({"business": business_selector}) if business_selector else ""
+    success_query = f"{business_query}&" if business_query else ""
+    success_url = f"{origin_url}/track/{order_id}?{success_query}session_id={{CHECKOUT_SESSION_ID}}"
+    cancel_url = f"{origin_url}/track/{order_id}" + (f"?{business_query}" if business_query else "")
 
     checkout_request = CheckoutSessionRequest(
         amount=float(order["total"]),
@@ -616,6 +620,7 @@ def _public_order_view(order: dict) -> dict:
         "customerName": customer.get("name"),
         "items": order.get("items", []),
         "subtotal": order.get("subtotal"), "gst": order.get("gst"), "total": order.get("total"),
+        "paymentStatus": order.get("paymentStatus"),
         "eta": order.get("eta"), "etaMessage": order.get("etaMessage"),
         "notifications": order.get("notifications", []),
         "events": [{"kind": e["kind"], "at": e["at"], "message": e.get("message", "")} for e in order.get("events", [])],

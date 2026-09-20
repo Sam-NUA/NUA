@@ -709,7 +709,7 @@ export const onlineAPI = {
   trackStreamUrl: (code) => `${API_BASE_URL}/online/orders/track/stream/${encodeURIComponent(code)}`,
   kitchenLoad: () => api.get('/online/kitchen/load'),
   checkVoucher: (code, cart, business) => api.post('/vouchers/public-check', { code, cart }, { params: { business } }),
-  checkout: (orderId, originUrl) => api.post('/online/orders/checkout', { orderId, originUrl }),
+  checkout: (orderId, originUrl, business) => api.post('/online/orders/checkout', { orderId, originUrl, business }),
 };
 
 // v17 — Loyalty engine + AI Agent (Ash)
@@ -1045,8 +1045,9 @@ export const nuaAPI = {
   getHealthScore: () => api.get('/nua/health-score'),
 };
 
-// Multi-Business / Multi-Tenant — create/list/edit businesses, tenant data
-// export, and the one-time businessId backfill migration for pre-tenancy data
+// Multi-Business / Multi-Tenant — create/list/edit businesses and export
+// tenant data. Legacy ownership migration is deliberately support-operated;
+// it must never be exposed as a one-click owner action.
 export const businessAPI = {
   create: (data) => api.post('/business/create', data),
   list: () => api.get('/business/list'),
@@ -1054,7 +1055,6 @@ export const businessAPI = {
   update: (id, data) => api.put(`/business/${id}`, data),
   summary: (id) => api.get(`/business/${id}/summary`),
   exportData: (id, collection) => api.get(`/business/${id}/export`, { params: collection ? { collection } : {} }),
-  backfillTenant: () => api.post('/business/backfill-tenant'),
   purgeDemoData: () => api.post('/business/purge-demo-data', { confirm: 'PURGE' }),
   setupStatus: (id) => api.get(`/business/${id}/setup-status`),
 };

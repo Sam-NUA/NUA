@@ -1,26 +1,67 @@
 # Foundation Day runbook — pilot venue go-live
 
-One-time steps to run against the pilot venue's database before handing it
-over, in order. All three endpoints are owner-only and idempotent — safe to
-re-run if a step is interrupted.
+Steps to complete against the pilot venue's staging database before handing it
+over, in order. Do not run these procedures against production until the
+staging reports and operator sign-off have been reviewed.
 
-## 1. Multi-tenant backfill
+## 1. Reconcile legacy tenant ownership
 
-Stamps `businessId="default"` onto any pre-existing document that predates
-tenant tagging, and assigns a storefront slug to any business missing one.
-Run once, right after the pilot venue's real data (menu, staff) has been
-entered and before the venue starts taking live orders.
+Never assign every unowned legacy document to the default or first business.
+The former `/api/business/backfill-tenant` endpoint is retired and returns
+`410`; it must not be restored or called from an operator UI.
+
+This is a support-operated, dry-run-first workflow. It requires an owner token
+plus the separately managed `SUPPORT_OVERRIDE_KEY`. Start by listing the
+explicit collection allowlist:
 
 ```
-POST /api/business/backfill-tenant
+GET /api/admin/ownership-migration/collections
 Authorization: Bearer <owner token>
 ```
 
-Response: `{"backfilled": {<collection>: <rows modified>, ...}, "total": N}`.
+For every returned collection, scan one bounded page at a time. Preserve each
+report as release evidence and follow `nextCursor` until it is `null`:
 
-**Verify:** `total` should be `0` on a second call (nothing left to
-backfill). If it isn't, something is still writing untagged rows — stop and
-find the write path before going live, don't just re-run this repeatedly.
+```
+POST /api/admin/ownership-migration/scan/<collection>?batch_size=500&after_id=<nextCursor>
+Authorization: Bearer <owner token>
+X-Support-Override: <support override key>
+```
+
+The scan writes nothing. Review `resolved`, `quarantined`, and `conflicts`.
+Only after the complete scan has been approved may an authorised operator run
+the same collection, using the same pagination rules:
+
+```
+POST /api/admin/ownership-migration/run/<collection>?batch_size=500&after_id=<nextCursor>
+Authorization: Bearer <owner token>
+X-Support-Override: <support override key>
+```
+
+The migration assigns ownership only when customer and creator evidence agree.
+Ambiguous rows remain unowned and are quarantined. Review them with:
+
+```
+GET /api/admin/ownership-migration/quarantined/<collection>?after_id=<nextCursor>
+Authorization: Bearer <owner token>
+X-Support-Override: <support override key>
+```
+
+Resolve a quarantined row only after checking an authoritative source record:
+
+```
+POST /api/admin/ownership-migration/quarantined/<collection>/<documentKey>/resolve
+Authorization: Bearer <owner token>
+X-Support-Override: <support override key>
+Content-Type: application/json
+
+{"businessId": "<verified business id>", "evidence": "<specific source and review note>"}
+```
+
+**Verify:** re-scan every collection after the run. There must be no unexpected
+unowned rows, every quarantine must have an explicit disposition, and any
+`conflicts` must be investigated before go-live. Never paste the support
+override key into tickets, reports, source control, or command history.
 
 ## 2. License enforcement — decision: leave OFF for Aug 15
 
