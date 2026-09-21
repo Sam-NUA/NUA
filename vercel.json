@@ -1,0 +1,18 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "experimentalServices": {
+    "backend": {
+      "root": "backend",
+      "mountPath": "/api/backend"
+    },
+    "bookings-api": {
+      "root": "bookings-api",
+      "mountPath": "/api/bookings-api"
+    },
+    "frontend": {
+      "root": "frontend",
+      "mountPath": "/",
+      "framework": "create-react-app"
+    }
+  }
+}
