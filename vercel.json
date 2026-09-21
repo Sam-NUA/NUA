@@ -1,27 +1,18 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
-  "services": {
-    "frontend": {
-      "runtime": "container",
-      "root": "frontend/"
-    },
+  "experimentalServices": {
     "backend": {
-      "runtime": "container",
-      "root": "backend/"
-    }
-  },
-  "rewrites": [
-    {
-      "source": "/api/(.*)",
-      "destination": {
-        "service": "backend"
-      }
+      "root": "backend",
+      "mountPath": "/api/backend"
     },
-    {
-      "source": "/(.*)",
-      "destination": {
-        "service": "frontend"
-      }
+    "bookings-api": {
+      "root": "bookings-api",
+      "mountPath": "/api/bookings-api"
+    },
+    "frontend": {
+      "root": "frontend",
+      "mountPath": "/",
+      "framework": "create-react-app"
     }
-  ]
+  }
 }
