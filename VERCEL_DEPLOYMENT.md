@@ -1,61 +1,53 @@
-# NUA Vercel deployment
+# Vercel staging deployment
 
-NUA is deployed as two container services in one Vercel project:
+This branch prepares NUA for an isolated Vercel staging deployment. It does not authorize production data, production domains, or database migrations.
 
-- `frontend`: the React/CRACO SPA served by nginx;
-- `backend`: the FastAPI application served by Uvicorn;
-- `/api/*`: routed to the backend service;
-- all other paths: routed to the frontend service.
+## Architecture
 
-This keeps browser API and WebSocket traffic on the same Vercel origin. The
-frontend Docker build deliberately leaves `REACT_APP_BACKEND_URL` empty, so
-its existing `/api` requests remain relative to that origin.
+Vercel should use the repository's Services preset and `vercel.json`:
 
-## Staging prerequisites
+| Service | Root | Mount path |
+|---|---|---|
+| Frontend | `frontend` | `/` |
+| Backend API | `backend` | `/api/backend` |
+| Bookings API | `bookings-api` | `/api/bookings-api` |
 
-Create a Vercel project from `Sam-NUA/NUA` using the repository root. Select
-the **Services** framework preset if Vercel does not select it automatically.
+The frontend appends `/api` to `REACT_APP_BACKEND_URL`, so set it to `/api/backend`. Browser calls such as `/api/backend/api/auth/login` are then forwarded to the backend as `/api/auth/login`.
 
-Configure these Preview environment variables before the first deployment:
+## Staging environment variables
 
-| Variable | Requirement |
-| --- | --- |
-| `MONGO_URL` | A staging-only MongoDB connection string; never production data. |
-| `DB_NAME` | The dedicated staging database name. |
-| `JWT_SECRET` | A new high-entropy staging secret. |
-| `FRONTEND_URL` | The exact Vercel preview/custom staging origin once assigned. |
-| `FORWARDED_ALLOW_IPS` | Set only after Vercel's trusted proxy topology is confirmed; do not use `*` by default. |
+Enter secrets directly in Vercel. Do not commit them or paste them into PR comments.
 
-Provider credentials such as Stripe, Twilio, SendGrid and AI keys are optional
-for the first platform smoke test, but each corresponding integration remains
-disabled or degraded until its staging credential is configured.
+Required:
 
-## Safe first deployment
+- `MONGO_URL`: staging-only MongoDB connection string
+- `DB_NAME=nua_staging`
+- `JWT_SECRET`: a new high-entropy staging secret
+- `BOOKINGS_DB_NAME=nua_bookings_staging`
+- `BOOKINGS_ADMIN_KEY`: a new high-entropy staging secret
+- `REACT_APP_BACKEND_URL=/api/backend`
 
-1. Deploy a Preview environment from a branch; do not alias it to production.
-2. Confirm both containers become ready.
-3. Check `GET /api/` returns the NUA API metadata.
-4. Verify SPA deep links load directly, not only through client navigation.
-5. Run login, tenant-isolation, booking, ordering and WebSocket smoke tests.
-6. Run the ownership-migration preflight in dry-run mode against staging only.
-7. Promote the already-tested Preview deployment rather than rebuilding a
-   different production artifact.
+Optional or deferred:
 
-## Operational cautions
+- `BOOKINGS_MONGO_URL`: omit to reuse `MONGO_URL`
+- `REACT_APP_LICENSE_ENFORCEMENT=false` for staging
+- `LICENSE_ENFORCEMENT_ENABLED=false` for staging
+- `FRONTEND_URL`: set to the assigned staging URL after the first deployment
+- `NUA_BOOKINGS_API_URL`: set after the deployment URL is assigned if backend-to-bookings integration is enabled
+- `NUA_BOOKINGS_API_KEY`: use the same staging value as `BOOKINGS_ADMIN_KEY` only when that integration is enabled
+- `NUA_BOOKINGS_VENUE_ID`: staging venue identifier, if required
+- `FORWARDED_ALLOW_IPS`: configure only after Vercel's proxy topology is verified
 
-- Startup seeders are idempotent, but a new staging database must be reviewed
-  after its first boot before it is used for acceptance testing.
-- NUA contains in-process schedulers and in-memory WebSocket connection maps.
-  Before production, verify their behaviour under container scaling and
-  restarts. Move scheduled work to Vercel Cron/Queues and shared fan-out state
-  if more than one backend instance will run.
-- EFTPOS/printer sockets that target a venue LAN cannot be reached directly
-  from a cloud container; those integrations require the local POS/edge agent.
-- Do not run live-data migrations as part of deployment.
+## Release sequence
 
-## Cutover rule
+1. Create an isolated Vercel project named `nua-staging`.
+2. Add staging-only environment variables.
+3. Deploy this branch as a Preview deployment; do not promote it.
+4. Verify health, login, tenant isolation, bookings, orders, SPA navigation, and WebSocket behavior.
+5. Run any ownership migration in dry-run mode only.
+6. Merge only after all checks pass.
+7. Production promotion, production secrets, live data, and migrations require separate approval.
 
-The existing Fly.io workflow must not be treated as an active staging path.
-Its last deployment failed because `FLY_API_TOKEN` was unset, and both public
-Fly endpoints currently return HTTP 502. Disable or replace that workflow only
-when the Vercel Preview deployment and smoke tests are green.
+## Rollback
+
+Do not promote a failed preview. If a later staging deployment regresses, use Vercel's previous known-good deployment or redeploy the last known-good commit. No database rollback is implied by a deployment rollback.
