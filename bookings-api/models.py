@@ -70,6 +70,7 @@ class VenueCreate(BaseModel):
 class Venue(BaseModel):
     id: str = Field(default_factory=lambda: _uid("VEN"))
     partner_id: str
+    test: bool = False
     name: str
     timezone: str = "Australia/Sydney"
     address: str = ""

@@ -6,16 +6,28 @@ The allocation logic in allocation.py is the platform's licensed IP and only
 ever executes here — hosted API access only, no self-hosted distribution.
 """
 import logging
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
 import routes_admin
 import routes_public
 import routes_v1
+import webhooks
 
 logging.basicConfig(level=logging.INFO)
 
+@asynccontextmanager
+async def lifespan(app):
+    await webhooks.start_worker()
+    try:
+        yield
+    finally:
+        await webhooks.stop_worker()
+
+
 app = FastAPI(
+    lifespan=lifespan,
     title="NUA Bookings API",
     version="1.0",
     description="Multi-tenant bookings platform. All /v1 routes require a partner API key.",

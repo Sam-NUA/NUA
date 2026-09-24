@@ -13,6 +13,23 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  bookings-tests:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ./bookings-api
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+          cache-dependency-path: bookings-api/requirements.txt
+      - name: Install service and test dependencies
+        run: pip install -r requirements.txt pytest==9.1.1 mongomock-motor==0.0.36
+      - name: Verify booking boundaries and webhook recovery
+        run: python -m pytest tests -q
+
   # ─── Backend: the in-process suite + quality/security gates ────────────
   # backend/tests/*.py (the 50+ files outside tests/inprocess/) all talk to a
   # live BASE_URL and were never runnable here. backend/tests/inprocess mounts
