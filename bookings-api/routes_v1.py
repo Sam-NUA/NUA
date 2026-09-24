@@ -1,6 +1,10 @@
 from datetime import datetime, timedelta, timezone
+import hashlib
+import json
+from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException
+from pymongo.errors import DuplicateKeyError
 
 import webhooks
 from allocation import allocate_resource, availability, promote_waitlist, resource_is_free, _parse
@@ -24,7 +28,7 @@ def _now() -> str:
 async def _own_venue(venue_id: str, partner: dict) -> dict:
     """Every venue access goes through here — a partner can only ever touch
     venues registered under its own key."""
-    venue = await db.venues.find_one({"id": venue_id, "partner_id": partner["id"]}, {"_id": 0})
+    venue = await db.venues.find_one({"id": venue_id, **_venue_scope(partner)}, {"_id": 0})
     if not venue:
         raise HTTPException(status_code=404, detail="Venue not found")
     return venue
@@ -32,23 +36,45 @@ async def _own_venue(venue_id: str, partner: dict) -> dict:
 
 def _confirmation(partner: dict, booking: dict) -> dict:
     out = dict(booking)
+    out.pop("_id", None)
+    out.pop("request_hash", None)
     if partner.get("branding_mode", "co-brand") == "co-brand":
         out["powered_by"] = "NUA Bookings"
     return out
+
+
+def _venue_scope(partner: dict) -> dict:
+    # Historical venues are live. A sandbox key must never reach them.
+    return {"partner_id": partner["id"],
+            "test": True if partner.get("test_mode") else {"$ne": True}}
+
+
+def _data_scope(partner: dict) -> dict:
+    return {"test": True if partner.get("test_mode") else {"$ne": True}}
+
+
+async def _replay_booking(key: str, request_hash: str, partner: dict):
+    existing = await db.bookings.find_one({"_id": key})
+    if existing is None:
+        return None
+    if existing.get("request_hash") != request_hash:
+        raise HTTPException(409, "Idempotency-Key was already used with a different booking request")
+    return _confirmation(partner, existing)
 
 
 # ---- Venues & resources ----
 
 @router.post("/venues")
 async def create_venue(body: VenueCreate, partner: dict = Depends(get_partner)):
-    venue = Venue(**body.dict(), partner_id=partner["id"], created_at=_now())
+    venue = Venue(**body.dict(), partner_id=partner["id"],
+                  test=partner.get("test_mode", False), created_at=_now())
     await db.venues.insert_one(venue.dict())
     return venue.dict()
 
 
 @router.get("/venues")
 async def list_venues(partner: dict = Depends(get_partner)):
-    return await db.venues.find({"partner_id": partner["id"]}, {"_id": 0}).to_list(500)
+    return await db.venues.find(_venue_scope(partner), {"_id": 0}).to_list(500)
 
 
 @router.post("/venues/{venue_id}/resources")
@@ -78,8 +104,21 @@ async def get_availability(venue_id: str, date: str, party_size: int = 2,
 # ---- Bookings ----
 
 @router.post("/bookings")
-async def create_booking(body: BookingCreate, partner: dict = Depends(get_partner)):
+async def create_booking(body: BookingCreate, partner: dict = Depends(get_partner),
+                         idempotency_key: Optional[str] = Header(default=None, alias="Idempotency-Key")):
     venue = await _own_venue(body.venue_id, partner)
+    storage_key = None
+    request_hash = ""
+    if idempotency_key is not None:
+        if not idempotency_key.strip() or len(idempotency_key) > 200:
+            raise HTTPException(400, "Idempotency-Key must contain 1 to 200 characters")
+        scope = [partner["id"], bool(partner.get("test_mode")), idempotency_key]
+        storage_key = "booking-request:" + hashlib.sha256(json.dumps(scope).encode()).hexdigest()
+        request_hash = hashlib.sha256(
+            json.dumps(body.dict(), sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+        replay = await _replay_booking(storage_key, request_hash, partner)
+        if replay is not None:
+            return replay
     start = body.start_time
     end = body.end_time
     if not end:
@@ -93,10 +132,11 @@ async def create_booking(body: BookingCreate, partner: dict = Depends(get_partne
             raise HTTPException(status_code=404, detail="Resource not found")
         if not (resource["capacity_min"] <= body.party_size <= resource["capacity_max"]):
             raise HTTPException(status_code=409, detail="Party size does not fit this resource")
-        if not await resource_is_free(resource["id"], start, end):
+        if not await resource_is_free(resource["id"], start, end, test_mode=partner.get("test_mode", False)):
             raise HTTPException(status_code=409, detail="Resource is already booked for that time")
     else:
-        resource = await allocate_resource(venue["id"], body.party_size, start, end)
+        resource = await allocate_resource(venue["id"], body.party_size, start, end,
+                                           test_mode=partner.get("test_mode", False))
         if resource is None:
             raise HTTPException(status_code=409, detail="No availability for that party size and time")
 
@@ -107,7 +147,19 @@ async def create_booking(body: BookingCreate, partner: dict = Depends(get_partne
         test=partner.get("test_mode", False),
         created_at=_now(), updated_at=_now(),
     )
-    await db.bookings.insert_one(booking.dict())
+    doc = booking.dict()
+    if storage_key:
+        # The booking and replay identity are one atomic insert. Mongo's _id
+        # uniqueness prevents two racing retries from creating two records.
+        doc.update({"_id": storage_key, "request_hash": request_hash})
+    try:
+        await db.bookings.insert_one(doc)
+    except DuplicateKeyError:
+        if storage_key:
+            replay = await _replay_booking(storage_key, request_hash, partner)
+            if replay is not None:
+                return replay
+        raise
     await log_usage(partner["id"], venue["id"], "booking.created", test=partner.get("test_mode", False))
     await webhooks.emit(partner, "booking.created", booking.dict())
     return _confirmation(partner, booking.dict())
@@ -116,15 +168,15 @@ async def create_booking(body: BookingCreate, partner: dict = Depends(get_partne
 @router.get("/bookings")
 async def list_bookings(venue_id: str, date: str = None, partner: dict = Depends(get_partner)):
     await _own_venue(venue_id, partner)
-    query = {"venue_id": venue_id}
+    query = {"venue_id": venue_id, **_data_scope(partner)}
     if date:
         query["start_time"] = {"$gte": f"{date}T00:00:00", "$lte": f"{date}T23:59:59"}
-    return await db.bookings.find(query, {"_id": 0}).sort("start_time", 1).to_list(1000)
+    return await db.bookings.find(query, {"_id": 0, "request_hash": 0}).sort("start_time", 1).to_list(1000)
 
 
 @router.patch("/bookings/{booking_id}")
 async def update_booking(booking_id: str, body: BookingUpdate, partner: dict = Depends(get_partner)):
-    booking = await db.bookings.find_one({"id": booking_id}, {"_id": 0})
+    booking = await db.bookings.find_one({"id": booking_id, **_data_scope(partner)}, {"_id": 0})
     if not booking:
         raise HTTPException(status_code=404, detail="Booking not found")
     await _own_venue(booking["venue_id"], partner)
@@ -146,11 +198,13 @@ async def update_booking(booking_id: str, body: BookingUpdate, partner: dict = D
                 raise HTTPException(status_code=404, detail="Resource not found")
             if not (resource["capacity_min"] <= party <= resource["capacity_max"]):
                 raise HTTPException(status_code=409, detail="Party size does not fit this resource")
-            if not await resource_is_free(target, start, end, exclude_booking_id=booking_id):
+            if not await resource_is_free(target, start, end, exclude_booking_id=booking_id,
+                                          test_mode=partner.get("test_mode", False)):
                 raise HTTPException(status_code=409, detail="Resource is already booked for that time")
         else:
             resource = await allocate_resource(booking["venue_id"], party, start, end,
-                                               exclude_booking_id=booking_id)
+                                               exclude_booking_id=booking_id,
+                                               test_mode=partner.get("test_mode", False))
             if resource is None:
                 raise HTTPException(status_code=409, detail="No availability for that change")
             patch["resource_id"] = resource["id"]
@@ -167,6 +221,7 @@ async def update_booking(booking_id: str, body: BookingUpdate, partner: dict = D
         promoted = await promote_waitlist(
             booking["venue_id"], booking.get("resource_id"),
             booking["start_time"], booking["end_time"],
+            test_mode=partner.get("test_mode", False),
         )
         if promoted:
             await webhooks.emit(partner, "waitlist.seated", promoted)
@@ -192,13 +247,13 @@ async def add_waitlist(body: WaitlistCreate, partner: dict = Depends(get_partner
 async def list_waitlist(venue_id: str, partner: dict = Depends(get_partner)):
     await _own_venue(venue_id, partner)
     return await db.waitlist.find(
-        {"venue_id": venue_id, "status": "waiting"}, {"_id": 0}
+        {"venue_id": venue_id, "status": "waiting", **_data_scope(partner)}, {"_id": 0}
     ).sort("joined_at", 1).to_list(500)
 
 
 @router.patch("/waitlist/{entry_id}")
 async def update_waitlist(entry_id: str, body: WaitlistUpdate, partner: dict = Depends(get_partner)):
-    entry = await db.waitlist.find_one({"id": entry_id}, {"_id": 0})
+    entry = await db.waitlist.find_one({"id": entry_id, **_data_scope(partner)}, {"_id": 0})
     if not entry:
         raise HTTPException(status_code=404, detail="Waitlist entry not found")
     await _own_venue(entry["venue_id"], partner)

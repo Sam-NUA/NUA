@@ -19,7 +19,7 @@ def _parse(ts: str) -> datetime:
 
 
 async def resource_is_free(resource_id: str, start: str, end: str,
-                           exclude_booking_id: Optional[str] = None) -> bool:
+                           exclude_booking_id: Optional[str] = None, test_mode: bool = False) -> bool:
     """A resource is free iff no active booking overlaps [start, end).
     Overlap: existing.start < end AND existing.end > start."""
     query = {
@@ -27,6 +27,7 @@ async def resource_is_free(resource_id: str, start: str, end: str,
         "status": {"$in": list(ACTIVE_STATUSES)},
         "start_time": {"$lt": end},
         "end_time": {"$gt": start},
+        "test": True if test_mode else {"$ne": True},
     }
     if exclude_booking_id:
         query["id"] = {"$ne": exclude_booking_id}
@@ -35,7 +36,8 @@ async def resource_is_free(resource_id: str, start: str, end: str,
 
 
 async def allocate_resource(venue_id: str, party_size: int, start: str, end: str,
-                            exclude_booking_id: Optional[str] = None) -> Optional[dict]:
+                            exclude_booking_id: Optional[str] = None,
+                            test_mode: bool = False) -> Optional[dict]:
     """Pick the best free resource for a party: smallest table that fits,
     so large tables stay available for large parties. Returns None if the
     venue can't seat this party at this time."""
@@ -49,7 +51,7 @@ async def allocate_resource(venue_id: str, party_size: int, start: str, end: str
     ).to_list(500)
     candidates.sort(key=lambda r: (r.get("capacity_max", 0), r.get("capacity_min", 0)))
     for res in candidates:
-        if await resource_is_free(res["id"], start, end, exclude_booking_id):
+        if await resource_is_free(res["id"], start, end, exclude_booking_id, test_mode):
             return res
     return None
 
@@ -70,7 +72,8 @@ async def availability(venue: dict, date: str, party_size: int,
     while cursor + timedelta(minutes=duration) <= day_end:
         start_iso = cursor.isoformat()
         end_iso = (cursor + timedelta(minutes=duration)).isoformat()
-        res = await allocate_resource(venue["id"], party_size, start_iso, end_iso)
+        res = await allocate_resource(venue["id"], party_size, start_iso, end_iso,
+                                      test_mode=venue.get("test", False))
         if res is not None:
             slots.append({"start_time": start_iso, "end_time": end_iso})
         cursor += timedelta(minutes=slot_minutes)
@@ -78,15 +81,16 @@ async def availability(venue: dict, date: str, party_size: int,
 
 
 async def promote_waitlist(venue_id: str, freed_resource_id: Optional[str],
-                           freed_start: str, freed_end: str) -> Optional[dict]:
+                           freed_start: str, freed_end: str, test_mode: bool = False) -> Optional[dict]:
     """When a booking frees up (cancelled / no-show), seat the longest-waiting
     entry whose party now fits — FIFO fairness, not best-fit, because the guest
     who has waited longest wins even if a later, smaller party packs tighter."""
     waiting = await db.waitlist.find(
-        {"venue_id": venue_id, "status": "waiting"}, {"_id": 0}
+        {"venue_id": venue_id, "status": "waiting", "test": True if test_mode else {"$ne": True}}, {"_id": 0}
     ).sort("joined_at", 1).to_list(200)
     for entry in waiting:
-        res = await allocate_resource(venue_id, entry["party_size"], freed_start, freed_end)
+        res = await allocate_resource(venue_id, entry["party_size"], freed_start, freed_end,
+                                      test_mode=test_mode)
         if res is not None:
             await db.waitlist.update_one(
                 {"id": entry["id"]},

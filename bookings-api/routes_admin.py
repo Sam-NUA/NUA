@@ -33,6 +33,7 @@ async def create_partner(body: PartnerCreate):
     partner_doc, live_key, test_key = _provision_partner(body)
     await db.partners.insert_one(partner_doc)
     out = dict(partner_doc)
+    out.pop("_id", None)
     out.pop("api_key_hash"); out.pop("test_key_hash")
     out["api_key"] = live_key
     out["test_api_key"] = test_key
