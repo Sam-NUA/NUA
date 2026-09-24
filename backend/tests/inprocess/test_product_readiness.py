@@ -69,55 +69,36 @@ def test_mirror_requires_explicit_business_mapping(monkeypatch):
     assert not mirror.enabled('business-a')
 
 
-def test_foreign_or_unowned_reservations_never_schedule_mirror(monkeypatch):
+def test_foreign_or_unowned_reservations_never_enqueue(monkeypatch):
+    from services import reservation_store
     configure(monkeypatch)
-
-    def fail_if_scheduled(coro):
-        coro.close()
-        pytest.fail('unauthorized mirror scheduled')
-    monkeypatch.setattr(mirror.asyncio, 'create_task', fail_if_scheduled)
-    for business_id in [None, '', 'business-b']:
-        reservation = {'id': 'foreign', 'businessId': business_id, 'bookingsPlatformId': 'remote'}
-        mirror.mirror_reservation_created(reservation)
-        mirror.mirror_reservation_status(reservation, 'cancelled')
+    async def scenario():
+        for business_id in [None, '', 'business-b']:
+            await reservation_store._enqueue({'id': 'foreign', 'businessId': business_id}, False, None)
+        assert await db.booking_sync_outbox.count_documents({'reservationId': 'foreign'}) == 0
+    run(scenario())
 
 
-def test_mirror_sends_stable_retry_key_and_scopes_remote_id_write(monkeypatch):
+def test_new_snapshot_invalidates_old_delivery_ack(monkeypatch):
+    from services import reservation_store, booking_sync
     configure(monkeypatch)
-    calls, tasks = [], []
-    real_create_task = asyncio.create_task
+    reservation = {'id': uuid.uuid4().hex, 'businessId': 'business-a', 'date': '2027-01-01', 'time': '18:00'}
 
     class Client:
-        def __init__(self, **kwargs):
-            pass
-
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, *args):
-            pass
-
-        async def post(self, url, json, headers):
+        def __init__(self, **kwargs): pass
+        async def __aenter__(self): return self
+        async def __aexit__(self, *args): pass
+        async def put(self, url, json, headers):
             import httpx
-            calls.append(headers)
-            return httpx.Response(200, json={'id': 'remote-a'})
-
-    monkeypatch.setattr(mirror.httpx, 'AsyncClient', Client)
-    monkeypatch.setattr(mirror.asyncio, 'create_task', lambda coro: tasks.append(real_create_task(coro)))
-
+            assert json['version'] == 1
+            await reservation_store._enqueue(reservation, True, None)
+            return httpx.Response(200)
+    monkeypatch.setattr(booking_sync.httpx, 'AsyncClient', Client)
     async def scenario():
-        reservation = {'id': uuid.uuid4().hex, 'businessId': 'business-a',
-                       'date': '2027-01-01', 'time': '18:00'}
-        await db.reservations.insert_one(dict(reservation))
-        await db.reservations.insert_one({**reservation, 'businessId': 'business-b'})
-        try:
-            mirror.mirror_reservation_created(reservation)
-            await asyncio.gather(*tasks)
-            assert calls[0]['Idempotency-Key'] == 'counter:business-a:' + reservation['id']
-            own = await db.reservations.find_one({'id': reservation['id'], 'businessId': 'business-a'})
-            other = await db.reservations.find_one({'id': reservation['id'], 'businessId': 'business-b'})
-            assert own['bookingsPlatformId'] == 'remote-a'
-            assert 'bookingsPlatformId' not in other
-        finally:
-            await db.reservations.delete_many({'id': reservation['id']})
+        await reservation_store._enqueue(reservation, False, None)
+        await booking_sync.deliver_next()
+        job = await db.booking_sync_outbox.find_one({'reservationId': reservation['id']})
+        assert job['status'] == 'pending' and job['version'] == 2
+        assert job['snapshot']['deleted'] is True
+        await db.booking_sync_outbox.delete_one({'_id': job['_id']})
     run(scenario())

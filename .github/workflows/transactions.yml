@@ -1,0 +1,27 @@
+name: MongoDB transaction proofs
+on:
+  push:
+  pull_request:
+  workflow_call:
+jobs:
+  transactions:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+      - run: pip install -r backend/requirements.txt
+      - name: Start isolated replica set
+        run: |
+          docker run -d --name nua-test-mongo --network host mongo:7 --replSet nua-test --bind_ip 127.0.0.1 --port 27018
+          python scripts/init_test_replica.py
+      - name: Booking contention, replay and rollback
+        run: python -m pytest bookings-api/tests_real -q
+      - name: Native reservation fencing and durable outbox
+        run: python -m pytest backend/tests_real -q
+      - name: MongoDB diagnostics
+        if: failure()
+        run: docker logs nua-test-mongo

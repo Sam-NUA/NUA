@@ -43,3 +43,17 @@ app.include_router(routes_public.router)
 @app.get("/health")
 async def health():
     return {"status": "ok", "service": "nua-bookings"}
+
+
+@app.get('/ready')
+async def ready():
+    from database import client
+    from fastapi import HTTPException
+    from pymongo.errors import PyMongoError
+    try:
+        hello = await client.admin.command('hello')
+    except PyMongoError:
+        raise HTTPException(503, 'Database unavailable')
+    if not hello.get('setName') and hello.get('msg') != 'isdbgrid':
+        raise HTTPException(503, 'MongoDB replica set required')
+    return {'status': 'ready', 'service': 'nua-bookings'}

@@ -5,7 +5,7 @@
 #
 # Then visit:
 #   • Frontend  → http://localhost:3000
-#   • Backend   → http://localhost:8001/api/social/platforms
+#   • Backend   → http://localhost:8001/api/health
 #   • Mongo UI  → http://localhost:8081  (mongo-express, optional)
 #
 # All three services share a private docker network — the SPA talks to the
@@ -14,6 +14,7 @@
 services:
   mongo:
     image: mongo:7
+    command: ["mongod", "--replSet", "nua-local", "--bind_ip_all"]
     container_name: nua-mongo
     restart: unless-stopped
     volumes:
@@ -26,6 +27,16 @@ services:
     ports:
       - "27017:27017"   # comment out if you don't need direct Compass access
 
+  mongo-init:
+    image: mongo:7
+    restart: "no"
+    depends_on:
+      mongo:
+        condition: service_healthy
+    entrypoint: ["mongosh", "--host", "mongo", "--quiet", "--eval"]
+    command:
+      - 'try { rs.status() } catch (e) { rs.initiate({_id:"nua-local",members:[{_id:0,host:"mongo:27017"}]}) }; for (let i=0;i<60;i++) { if (db.hello().isWritablePrimary) quit(0); sleep(500); }; quit(1)'
+
   backend:
     build:
       context: ./backend
@@ -35,8 +46,10 @@ services:
     depends_on:
       mongo:
         condition: service_healthy
+      mongo-init:
+        condition: service_completed_successfully
     environment:
-      MONGO_URL: mongodb://mongo:27017
+      MONGO_URL: mongodb://mongo:27017/?replicaSet=nua-local
       DB_NAME: nua_restaurant
       JWT_SECRET: ${JWT_SECRET:-dev-only-not-for-production-please-rotate}
       EMERGENT_LLM_KEY: ${EMERGENT_LLM_KEY:-}
@@ -44,7 +57,7 @@ services:
     ports:
       - "8001:8001"
     healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://localhost:8001/api/social/platforms"]
+      test: ["CMD", "curl", "-fsS", "http://localhost:8001/api/ready"]
       interval: 15s
       timeout: 5s
       retries: 4

@@ -1,6 +1,7 @@
 """Platform-operator surface: partner provisioning and usage reports.
 Guarded by the deploy-time admin key — partners never see these routes."""
 from datetime import datetime, timezone
+import secrets
 
 from fastapi import APIRouter, Depends, HTTPException
 
@@ -23,7 +24,9 @@ def _provision_partner(body: PartnerCreate) -> tuple[dict, str, str]:
         test_key_hash=hash_key(test_key),
         created_at=datetime.now(timezone.utc).isoformat(),
     )
-    return partner.dict(), live_key, test_key
+    doc = partner.dict()
+    doc["webhook_secret"] = secrets.token_urlsafe(32)
+    return doc, live_key, test_key
 
 
 @router.post("/partners")
@@ -42,7 +45,7 @@ async def create_partner(body: PartnerCreate):
 
 @router.get("/partners")
 async def list_partners():
-    rows = await db.partners.find({}, {"_id": 0, "api_key_hash": 0, "test_key_hash": 0}).to_list(500)
+    rows = await db.partners.find({}, {"_id": 0, "api_key_hash": 0, "test_key_hash": 0, "webhook_secret": 0}).to_list(500)
     return rows
 
 
@@ -106,3 +109,33 @@ async def reject_application(application_id: str, reason: str = ""):
                   "resolved_at": datetime.now(timezone.utc).isoformat()}},
     )
     return {"applicationId": application_id, "status": "rejected"}
+
+
+@router.post("/partners/{partner_id}/rotate-webhook-secret")
+async def rotate_webhook_secret(partner_id: str):
+    secret = secrets.token_urlsafe(32)
+    result = await db.partners.update_one({"id": partner_id}, {"$set": {"webhook_secret": secret}})
+    if not result.matched_count:
+        raise HTTPException(404, "Partner not found")
+    return {"partner_id": partner_id, "webhook_secret": secret}
+
+
+@router.get('/webhook-deliveries')
+async def webhook_deliveries(partner_id: str, status: str = 'failed'):
+    if status not in ('pending', 'retrying', 'delivering', 'failed', 'delivered', 'skipped_no_url'):
+        raise HTTPException(422, 'Invalid delivery status')
+    return await db.webhook_outbox.find(
+        {'partner_id': partner_id, 'status': status},
+        {'_id': 0, 'id': 1, 'event': 1, 'status': 1, 'attempts': 1,
+         'created_at': 1, 'last_error': 1}).sort('created_at', -1).to_list(100)
+
+
+@router.post('/webhook-deliveries/{event_id}/retry')
+async def retry_webhook(event_id: str):
+    now = datetime.now(timezone.utc).isoformat()
+    result = await db.webhook_outbox.update_one({'id': event_id, 'status': 'failed'}, {
+        '$set': {'status': 'pending', 'attempts': 0, 'next_attempt_at': now, 'last_retried_at': now},
+        '$inc': {'operator_retries': 1}, '$unset': {'claim_token': '', 'lease_until': ''}})
+    if result.matched_count != 1:
+        raise HTTPException(404, 'Failed delivery not found')
+    return {'id': event_id, 'status': 'pending'}

@@ -28,6 +28,9 @@ concurrency:
   cancel-in-progress: false   # finish current deploy before starting next (safer than cancelling mid-build)
 
 jobs:
+  transaction-gate:
+    uses: ./.github/workflows/transactions.yml
+
   # ─── Smart change detection ─────────────────────────────────────────
   # Only re-deploy the service whose code actually changed. On manual
   # runs, honour the `target` input instead.
@@ -99,7 +102,7 @@ jobs:
 
   # ─── Backend deploy ─────────────────────────────────────────────────
   deploy-backend:
-    needs: [detect, test-backend]
+    needs: [detect, test-backend, transaction-gate]
     if: needs.detect.outputs.backend == 'true'
     runs-on: ubuntu-latest
     steps:
@@ -120,12 +123,13 @@ jobs:
 
   # ─── Frontend deploy ────────────────────────────────────────────────
   deploy-frontend:
-    needs: [detect, test-frontend, deploy-backend]
+    needs: [detect, test-frontend, deploy-backend, transaction-gate]
     # Run even if backend was skipped (frontend-only change should still ship)
     if: |
       always() &&
       needs.detect.outputs.frontend == 'true' &&
       needs.test-frontend.result == 'success' &&
+      needs.transaction-gate.result == 'success' &&
       (needs.deploy-backend.result == 'success' || needs.deploy-backend.result == 'skipped')
     runs-on: ubuntu-latest
     steps:

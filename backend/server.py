@@ -164,6 +164,8 @@ async def root():
         ],
     }
 
+from routes.booking_sync import router as booking_sync_router
+api_router.include_router(booking_sync_router)
 app.include_router(api_router)
 
 # ============ Per-tenant rate limiter (lightweight in-memory) ============
@@ -252,7 +254,7 @@ PUBLIC_API_PREFIXES = (
 )
 
 PUBLIC_API_PATHS = {
-    "/api/", "/api/health", "/api/healthz",
+    "/api/", "/api/health", "/api/healthz", "/api/ready",
     "/api/ops/device-status",     # login-screen peripheral status — counts/booleans only
     # Auth itself, plus the endpoints the login screen needs before there is a user.
     "/api/auth/login", "/api/auth/register", "/api/auth/logout", "/api/auth/refresh",
@@ -586,6 +588,9 @@ logger = logging.getLogger(__name__)
 
 @app.on_event("startup")
 async def startup():
+    from services import booking_sync
+    if os.environ.get("NUA_BOOKINGS_API_URL"):
+        await booking_sync.start_worker()
     await seed_admin()
     await seed_default_business()
     # Seed 5 demo customers + reservations/transactions/feedback (idempotent).
@@ -699,6 +704,8 @@ async def startup():
 
 @app.on_event("shutdown")
 async def shutdown_db_client():
+    from services import booking_sync
+    await booking_sync.stop_worker()
     try:
         from services.nua_scheduler import stop_scheduler
         stop_scheduler()

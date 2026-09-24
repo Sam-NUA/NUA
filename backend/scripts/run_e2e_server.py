@@ -39,6 +39,15 @@ import mongomock_motor
 import motor.motor_asyncio as motor_asyncio
 motor_asyncio.AsyncIOMotorClient = mongomock_motor.AsyncMongoMockClient
 
+# Only this in-memory test harness replaces transactions. Real transaction
+# isolation is exercised separately by the mandatory MongoDB CI job.
+from services import reservation_store
+
+async def test_transaction(operation):
+    return await operation(None)
+
+reservation_store._transaction = test_transaction
+
 import uvicorn
 
 if __name__ == "__main__":

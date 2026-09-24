@@ -150,3 +150,18 @@ async def backup_drill_status(_: dict = Depends(require_owner)):
     so 'is our backup still good' is something you look up, not assume."""
     from services import backup_scheduler
     return await backup_scheduler.drill_status()
+
+
+@router.get('/ready')
+async def transaction_readiness():
+    """Readiness for releases that require transactional booking writes."""
+    from database import client
+    from fastapi import HTTPException
+    from pymongo.errors import PyMongoError
+    try:
+        hello = await client.admin.command('hello')
+    except PyMongoError:
+        raise HTTPException(503, 'Database unavailable')
+    if not hello.get('setName') and hello.get('msg') != 'isdbgrid':
+        raise HTTPException(503, 'MongoDB replica set required')
+    return {'status': 'ready'}

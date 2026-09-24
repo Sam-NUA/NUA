@@ -25,6 +25,7 @@ from typing import Any, Awaitable, Callable, Dict, List, Optional
 from datetime import datetime, timezone
 from dataclasses import dataclass
 from database import db
+from services import reservation_store
 from middleware.actor_context import tenant_scope_filter, get_actor_context
 from services import audit_service, approval_service
 from pymongo import ReturnDocument
@@ -332,7 +333,7 @@ async def _rollback_dish_86(outcome):
 
 
 async def _tx_cancel_reservation(a):
-    r = await db.reservations.update_one({"id": a["reservationId"], **tenant_scope_filter()},
+    r = await reservation_store.update_one({"id": a["reservationId"], **tenant_scope_filter()},
                                           {"$set": {"status": "cancelled", "cancelledBy": "ash-agent",
                                                     "cancellationReason": a.get("reason")}})
     return {"reservationId": a["reservationId"], "matched": r.matched_count}

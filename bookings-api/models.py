@@ -1,5 +1,5 @@
-from pydantic import BaseModel, Field
-from typing import Optional, List
+from pydantic import BaseModel, Field, field_validator
+from typing import Optional, List, Literal
 import uuid
 
 
@@ -58,16 +58,42 @@ class PartnerApplication(BaseModel):
 
 # ---- Venue ----
 
-class VenueCreate(BaseModel):
+class VenueSettings(BaseModel):
+    @field_validator("timezone", check_fields=False)
+    @classmethod
+    def valid_timezone(cls, value):
+        from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+        try:
+            ZoneInfo(value)
+        except (ZoneInfoNotFoundError, ValueError):
+            raise ValueError("Use a valid IANA timezone")
+        return value
+
+    @field_validator("open_time", "close_time", check_fields=False)
+    @classmethod
+    def valid_clock(cls, value):
+        from datetime import datetime
+        try:
+            parsed = datetime.strptime(value, "%H:%M")
+        except ValueError:
+            raise ValueError("Use HH:MM opening hours")
+        if parsed.strftime("%H:%M") != value:
+            raise ValueError("Use HH:MM opening hours")
+        return value
+
+
+class VenueCreate(VenueSettings):
+    authority: Literal["platform", "external"] = "platform"
     name: str
     timezone: str = "Australia/Sydney"
     address: str = ""
     open_time: str = "11:00"
     close_time: str = "22:00"
-    default_duration_minutes: int = 90
+    default_duration_minutes: int = Field(default=90, ge=1, le=10080)
 
 
-class Venue(BaseModel):
+class Venue(VenueSettings):
+    authority: Literal["platform", "external"] = "platform"
     id: str = Field(default_factory=lambda: _uid("VEN"))
     partner_id: str
     test: bool = False
@@ -76,7 +102,7 @@ class Venue(BaseModel):
     address: str = ""
     open_time: str = "11:00"
     close_time: str = "22:00"
-    default_duration_minutes: int = 90
+    default_duration_minutes: int = Field(default=90, ge=1, le=10080)
     created_at: str = ""
 
 
@@ -84,8 +110,8 @@ class Venue(BaseModel):
 
 class ResourceCreate(BaseModel):
     name: str
-    capacity_min: int = 1
-    capacity_max: int = 4
+    capacity_min: int = Field(default=1, ge=1, le=1000)
+    capacity_max: int = Field(default=4, ge=1, le=1000)
     type: str = "table"                  # table | room | event_space
 
 
@@ -93,8 +119,8 @@ class Resource(BaseModel):
     id: str = Field(default_factory=lambda: _uid("RES"))
     venue_id: str
     name: str
-    capacity_min: int = 1
-    capacity_max: int = 4
+    capacity_min: int = Field(default=1, ge=1, le=1000)
+    capacity_max: int = Field(default=4, ge=1, le=1000)
     type: str = "table"
 
 
@@ -103,7 +129,7 @@ class Resource(BaseModel):
 class BookingCreate(BaseModel):
     venue_id: str
     resource_id: Optional[str] = None    # omit to let the engine auto-allocate
-    party_size: int = 2
+    party_size: int = Field(default=2, ge=1, le=1000)
     start_time: str                      # ISO 8601
     end_time: Optional[str] = None       # defaults to start + venue default duration
     contact_name: str
@@ -114,7 +140,7 @@ class BookingCreate(BaseModel):
 
 class BookingUpdate(BaseModel):
     resource_id: Optional[str] = None
-    party_size: Optional[int] = None
+    party_size: Optional[int] = Field(default=None, ge=1, le=1000)
     start_time: Optional[str] = None
     end_time: Optional[str] = None
     contact_name: Optional[str] = None
@@ -128,7 +154,7 @@ class Booking(BaseModel):
     id: str = Field(default_factory=lambda: _uid("BKG"))
     venue_id: str
     resource_id: Optional[str] = None
-    party_size: int = 2
+    party_size: int = Field(default=2, ge=1, le=1000)
     start_time: str = ""
     end_time: str = ""
     contact_name: str = ""
@@ -146,7 +172,7 @@ class Booking(BaseModel):
 
 class WaitlistCreate(BaseModel):
     venue_id: str
-    party_size: int = 2
+    party_size: int = Field(default=2, ge=1, le=1000)
     contact_name: str
     contact_phone: Optional[str] = None
 
@@ -158,10 +184,30 @@ class WaitlistUpdate(BaseModel):
 class WaitlistEntry(BaseModel):
     id: str = Field(default_factory=lambda: _uid("WTL"))
     venue_id: str
-    party_size: int = 2
+    party_size: int = Field(default=2, ge=1, le=1000)
     contact_name: str = ""
     contact_phone: Optional[str] = None
     status: str = "waiting"
     source_partner_id: str = ""
     test: bool = False
     joined_at: str = ""
+
+
+class ExternalReservation(BaseModel):
+    version: int = Field(ge=1)
+    deleted: bool = False
+    source_timezone: str = "UTC"
+    contact_name: str = "Guest"
+    contact_email: Optional[str] = None
+    contact_phone: Optional[str] = None
+    party_size: int = Field(default=2, ge=1, le=1000)
+    date: Optional[str] = None
+    time: Optional[str] = None
+    duration: int = Field(default=90, ge=1, le=10080)
+    status: str = Field(default="confirmed", max_length=40)
+
+
+class WaitlistSeat(BaseModel):
+    start_time: str
+    end_time: Optional[str] = None
+    resource_id: Optional[str] = None
