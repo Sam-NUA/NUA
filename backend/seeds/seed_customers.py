@@ -11,6 +11,7 @@ from datetime import datetime, timedelta, timezone
 import uuid
 from typing import Any, Dict, List
 from database import db
+from services import reservation_store
 
 
 def _iso(d: datetime) -> str:
@@ -287,7 +288,7 @@ async def seed_demo_customers(business_id: str = "default"):
             for row in res_rows:
                 row["businessId"] = business_id
             if res_rows:
-                await db.reservations.insert_many(res_rows)
+                await reservation_store.insert_many(res_rows)
             tx_rows = _seed_transactions(doc["id"], n_visits, c.get("avgSpendPerVisit", 80.0))
             for row in tx_rows:
                 row["businessId"] = business_id

@@ -2,10 +2,15 @@
 
 A resident process must run the lifespan worker. Delivery is at least once:
 partners deduplicate the stable event id, including after ambiguous timeouts.
-The booking write and emit are still separate operations (see architecture).
+Booking mutations and their events commit in the same MongoDB transaction.
 """
 import asyncio
 import logging
+import hashlib
+import hmac
+import json
+import os
+from urllib.parse import urlsplit
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Optional
@@ -26,7 +31,26 @@ def _now():
     return datetime.now(timezone.utc)
 
 
-async def emit(partner: dict, event: str, payload: dict) -> None:
+def allowed_destination(url):
+    try:
+        parsed = urlsplit(url)
+        allowed = {host.strip().lower() for host in os.environ.get("BOOKINGS_WEBHOOK_ALLOWED_HOSTS", "").split(",") if host.strip()}
+        return (parsed.scheme == "https" and parsed.hostname in allowed
+                and not parsed.username and not parsed.password and parsed.port in (None, 443))
+    except ValueError:
+        return False
+
+
+def signed_message(doc, secret):
+    payload = json.dumps({"id": doc["id"], "event": doc["event"], "created_at": doc["created_at"],
+                          "data": doc["payload"]}, sort_keys=True, separators=(",", ":")).encode()
+    timestamp = str(int(_now().timestamp()))
+    signature = hmac.new(secret.encode(), timestamp.encode() + b"." + payload, hashlib.sha256).hexdigest()
+    return payload, {"Content-Type": "application/json", "X-NUA-Event-Id": doc["id"],
+                     "X-NUA-Timestamp": timestamp, "X-NUA-Signature": "sha256=" + signature}
+
+
+async def emit(partner: dict, event: str, payload: dict, session=None) -> None:
     now = _now().isoformat()
     doc = {
         "id": f"WHK-{uuid.uuid4().hex}",
@@ -38,7 +62,7 @@ async def emit(partner: dict, event: str, payload: dict) -> None:
     if CAPTURE is not None:
         CAPTURE.append({"event": event, "payload": payload, "partner_id": partner["id"]})
         doc["status"] = "delivered"
-    await db.webhook_outbox.insert_one(doc)
+    await db.webhook_outbox.insert_one(doc, session=session)
 
 
 async def deliver_next() -> bool:
@@ -77,15 +101,20 @@ async def deliver_next() -> bool:
         state["status"] = "skipped_no_url"
     else:
         try:
-            async with httpx.AsyncClient(timeout=10) as client:
-                response = await client.post(doc["url"], json={
-                    "id": doc["id"], "event": doc["event"], "created_at": doc["created_at"],
-                    "data": doc["payload"],
-                })
+            partner = await db.partners.find_one({"id": doc["partner_id"]})
+            if not allowed_destination(doc["url"]):
+                raise ValueError("destination_not_allowed")
+            if not partner or not partner.get("webhook_secret"):
+                raise ValueError("signing_secret_missing")
+            payload, headers = signed_message(doc, partner["webhook_secret"])
+            async with httpx.AsyncClient(timeout=10, follow_redirects=False) as client:
+                response = await client.post(doc["url"], content=payload, headers=headers)
             if not 200 <= response.status_code < 300:
                 state["last_error"] = f"http_{response.status_code}"
                 retryable = response.status_code in (408, 429) or response.status_code >= 500
                 state["status"] = "retrying" if retryable else "failed"
+        except ValueError as exc:
+            state = {"status": "failed", "last_error": str(exc)}
         except httpx.HTTPError as exc:
             state = {"status": "retrying", "last_error": type(exc).__name__}
         if state["status"] == "retrying":

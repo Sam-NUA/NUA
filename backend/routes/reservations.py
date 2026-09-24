@@ -3,6 +3,7 @@ from fastapi.responses import StreamingResponse
 from typing import List, Optional
 from datetime import datetime
 from database import db
+from services import reservation_store
 from deps import get_user, require_owner_or_manager, optional_user
 from services import floor_tables
 from models.reservation import Reservation, ReservationCreate, ReservationUpdate
@@ -169,7 +170,7 @@ async def create_reservation(reservation: ReservationCreate, user: Optional[dict
             res_obj = Reservation(**{**reservation.dict(), **enrichment, "businessId": business_id,
                                       "cancellationCutoffHours": cutoff_hours})
             doc = res_obj.dict()
-            await db.reservations.insert_one(doc)
+            await reservation_store.insert_one(doc)
     except BookingRuleViolation as e:
         raise HTTPException(status_code=409, detail=str(e))
     except TimeoutError as e:
@@ -215,13 +216,6 @@ async def create_reservation(reservation: ReservationCreate, user: Optional[dict
             "time": (rd.get("dateTime") or rd.get("time") or ""),
             "customerId": rd.get("customerId"),
         })
-    except Exception:
-        pass
-    # Mirror to the standalone Bookings platform (nua-native partner) — no-op
-    # unless the integration env vars are configured.
-    try:
-        from services.bookings_partner_client import mirror_reservation_created
-        mirror_reservation_created(res_obj.dict())
     except Exception:
         pass
     # Free base identity layer: recognize this guest across modules.
@@ -277,7 +271,7 @@ async def update_reservation(reservation_id: str, update: ReservationUpdate, use
                     business_id=business_id,
                 )
                 update_data.update(enrichment)
-                result = await db.reservations.find_one_and_update(
+                result = await reservation_store.find_one_and_update(
                     {"$and": [{"id": reservation_id}, tenant_scope_filter(user.get("businessId"))]}, {"$set": update_data}, return_document=True
                 )
         except BookingRuleViolation as e:
@@ -285,7 +279,7 @@ async def update_reservation(reservation_id: str, update: ReservationUpdate, use
         except TimeoutError as e:
             raise HTTPException(status_code=409, detail=str(e))
     else:
-        result = await db.reservations.find_one_and_update(
+        result = await reservation_store.find_one_and_update(
             {"$and": [{"id": reservation_id}, tenant_scope_filter(user.get("businessId"))]}, {"$set": update_data}, return_document=True
         )
     if not result:
@@ -303,12 +297,7 @@ async def delete_reservation(reservation_id: str, user: dict = Depends(require_o
         if found:
             _, plan_id = found
             await floor_tables.set_table_status(res["tableId"], plan_id, "available")
-    await db.reservations.delete_one({"$and": [{"id": reservation_id}, tenant_scope_filter(user.get("businessId"))]})
-    try:
-        from services.bookings_partner_client import mirror_reservation_status
-        mirror_reservation_status(res, "cancelled")
-    except Exception:
-        pass
+    await reservation_store.delete_one({"$and": [{"id": reservation_id}, tenant_scope_filter(user.get("businessId"))]})
     return {"message": "Reservation deleted"}
 
 @router.post("/reservations/{reservation_id}/seat")
@@ -339,7 +328,7 @@ async def seat_reservation(reservation_id: str, table_id: Optional[str] = None, 
         if found:
             _, plan_id = found
             await floor_tables.set_table_status(tid, plan_id, "occupied", reservation_id=reservation_id)
-    await db.reservations.update_one({"$and": [{"id": reservation_id}, tenant_scope_filter(user.get("businessId"))]}, {"$set": update_data})
+    await reservation_store.update_one({"$and": [{"id": reservation_id}, tenant_scope_filter(user.get("businessId"))]}, {"$set": update_data})
     return {"message": "Guest seated", "tableId": tid}
 
 @router.post("/reservations/{reservation_id}/complete")
@@ -347,7 +336,7 @@ async def complete_reservation(reservation_id: str, user: dict = Depends(get_use
     res = await db.reservations.find_one({"$and": [{"id": reservation_id}, tenant_scope_filter(user.get("businessId"))]}, {"_id": 0})
     if not res or not tenant_owns_strict(res.get("businessId"), user.get("businessId")):
         raise HTTPException(status_code=404, detail="Reservation not found")
-    await db.reservations.update_one(
+    await reservation_store.update_one(
         {"$and": [{"id": reservation_id}, tenant_scope_filter(user.get("businessId"))]},
         {"$set": {"status": "completed", "completedAt": datetime.utcnow().isoformat(), "updatedAt": datetime.utcnow().isoformat()}}
     )
@@ -425,7 +414,7 @@ async def request_deposit(reservation_id: str, data: dict, http_request: Request
         "createdAt": datetime.utcnow().isoformat(),
     }
     await db.payment_transactions.insert_one(payment_doc)
-    await db.reservations.update_one(
+    await reservation_store.update_one(
         {"$and": [{"id": reservation_id}, tenant_scope_filter(user.get("businessId"))]}, {"$set": {"depositSessionId": session.session_id}}
     )
     result = {"url": session.url, "sessionId": session.session_id}
@@ -461,7 +450,7 @@ async def mark_no_show(reservation_id: str, fee: float = 0, user: dict = Depends
         update_data["depositForfeited"] = True
         forfeited_amount = float(res.get("depositRequired") or 0)
 
-    await db.reservations.update_one({"$and": [{"id": reservation_id}, tenant_scope_filter(user.get("businessId"))]}, {"$set": update_data})
+    await reservation_store.update_one({"$and": [{"id": reservation_id}, tenant_scope_filter(user.get("businessId"))]}, {"$set": update_data})
     if res.get("customerId"):
         await db.customers.update_one({**tenant_scope_filter(user.get("businessId")), "id": res["customerId"]}, {"$inc": {"noShowCount": 1}})
     if res.get("tableId"):
@@ -523,7 +512,7 @@ async def cancel_reservation(reservation_id: str, body: dict = None, user: dict 
         else:
             update_data["depositForfeited"] = True
             cancellation_fee_applied = True
-    await db.reservations.update_one({"$and": [{"id": reservation_id}, tenant_scope_filter(user.get("businessId"))]}, {"$set": update_data})
+    await reservation_store.update_one({"$and": [{"id": reservation_id}, tenant_scope_filter(user.get("businessId"))]}, {"$set": update_data})
 
     if res.get("tableId"):
         found = await floor_tables.get_table_by_id(res["tableId"])
@@ -565,7 +554,7 @@ async def approve_large_booking(reservation_id: str, user: dict = Depends(requir
         "approvalStatus": "approved", "approvedBy": user.get("email") or user.get("id"),
         "approvedAt": datetime.utcnow().isoformat(), "updatedAt": datetime.utcnow().isoformat(),
     }
-    await db.reservations.update_one({"$and": [{"id": reservation_id}, tenant_scope_filter(user.get("businessId"))]}, {"$set": update_data})
+    await reservation_store.update_one({"$and": [{"id": reservation_id}, tenant_scope_filter(user.get("businessId"))]}, {"$set": update_data})
     updated = {**res, **update_data}
     try:
         from services import audit_service
@@ -601,7 +590,7 @@ async def reject_large_booking(reservation_id: str, body: dict = None, user: dic
         "status": "cancelled", "cancellationReason": reason or "Large booking not approved",
         "updatedAt": datetime.utcnow().isoformat(),
     }
-    await db.reservations.update_one({"$and": [{"id": reservation_id}, tenant_scope_filter(user.get("businessId"))]}, {"$set": update_data})
+    await reservation_store.update_one({"$and": [{"id": reservation_id}, tenant_scope_filter(user.get("businessId"))]}, {"$set": update_data})
     if res.get("tableId"):
         found = await floor_tables.get_table_by_id(res["tableId"])
         if found:
@@ -653,7 +642,7 @@ async def restore_reservation(reservation_id: str, body: dict = None, user: dict
         if refunded:
             update_data["depositForfeited"] = False
             update_data["depositRefunded"] = True
-    await db.reservations.update_one({"$and": [{"id": reservation_id}, tenant_scope_filter(user.get("businessId"))]}, {"$set": update_data})
+    await reservation_store.update_one({"$and": [{"id": reservation_id}, tenant_scope_filter(user.get("businessId"))]}, {"$set": update_data})
 
     # Reverse the no-show penalty this booking caused, if any.
     if prior_status == "no_show" and res.get("customerId"):
@@ -693,7 +682,7 @@ async def auto_assign_table(reservation_id: str, user: dict = Depends(get_user))
         return {"assigned": False, "message": "No suitable tables available"}
     candidates.sort(key=lambda t: int(t.get("maxCovers") or t.get("capacity") or 0))
     best = candidates[0]
-    await db.reservations.update_one(
+    await reservation_store.update_one(
         {"$and": [{"id": reservation_id}, tenant_scope_filter(user.get("businessId"))]},
         {"$set": {"tableId": best["id"], "tableNumber": best.get("number", ""), "updatedAt": datetime.utcnow().isoformat()}}
     )
@@ -1173,7 +1162,7 @@ async def ai_assign_table(reservation_id: str, user: dict = Depends(get_user)):
 
     candidates.sort(key=lambda x: x[0])
     chosen = candidates[0][1]
-    await db.reservations.update_one(
+    await reservation_store.update_one(
         {"$and": [{"id": reservation_id}, tenant_scope_filter(user.get("businessId"))]},
         {"$set": {"tableId": chosen["id"], "tableNumber": chosen.get("number") or chosen.get("name"), "updatedAt": datetime.utcnow().isoformat()}}
     )

@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from database import db
 
 
-async def log_usage(partner_id: str, venue_id: str, event_type: str, test: bool = False) -> None:
+async def log_usage(partner_id: str, venue_id: str, event_type: str, test: bool = False, session=None) -> None:
     # Sandbox traffic is logged for observability but excluded from invoices.
     await db.usage_events.insert_one({
         "id": f"USG-{uuid.uuid4().hex[:10].upper()}",
@@ -17,7 +17,7 @@ async def log_usage(partner_id: str, venue_id: str, event_type: str, test: bool 
         "type": event_type,
         "test": test,
         "ts": datetime.now(timezone.utc).isoformat(),
-    })
+    }, session=session)
 
 
 async def monthly_report(month: str) -> list[dict]:

@@ -102,6 +102,18 @@ def test_bookings_inbox_conversion_matches_an_existing_customer(client, owner_he
                   json={"convertToReservation": True})
         assert ack.status_code == 200, ack.text
         reservation_id = ack.json()["reservationId"]
+        replay = req(client, "POST", f"/api/bookings/inbox/{item_id}/ack", headers=owner_headers,
+                     json={"convertToReservation": True})
+        assert replay.status_code == 200
+        assert replay.json()["reservationId"] == reservation_id
+        assert _run(db.reservations.count_documents({"id": reservation_id})) == 1
+        # Recover a crash after booking commit but before inbox acknowledgement.
+        _run(db.booking_inbox.update_one({"id": item_id}, {"$set": {"status": "new"}}))
+        recovered = req(client, "POST", f"/api/bookings/inbox/{item_id}/ack", headers=owner_headers,
+                        json={"convertToReservation": True})
+        assert recovered.status_code == 200
+        assert recovered.json()["reservationId"] == reservation_id
+        assert _run(db.reservations.count_documents({"id": reservation_id})) == 1
 
         res = _run(db.reservations.find_one({"id": reservation_id}, {"_id": 0}))
         assert res["customerId"] == "CUST-MATCH-2"

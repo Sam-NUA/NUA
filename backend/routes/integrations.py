@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from typing import Optional
 from datetime import datetime, timedelta
 from database import db
+from services import reservation_store
 from deps import get_user, require_owner_or_manager
 import logging
 import os
@@ -43,7 +44,7 @@ async def _mark_reservation_deposit_paid_if_applicable(session_id: str):
     payment = await db.payment_transactions.find_one({"sessionId": session_id}, {"_id": 0})
     if not payment or payment.get("kind") != "booking_deposit" or not payment.get("reservationId"):
         return
-    await db.reservations.update_one(
+    await reservation_store.update_one(
         {"id": payment["reservationId"]},
         {"$set": {"depositPaid": True, "updatedAt": datetime.utcnow().isoformat()}},
     )

@@ -42,6 +42,7 @@ TIER 1-5 EXTRAS
 from fastapi import APIRouter, HTTPException, Request, Depends
 from deps import get_user, optional_user, require_owner, require_owner_or_manager
 from database import db
+from services import reservation_store
 from routes.products import GUEST_HIDDEN_PRODUCT_FIELDS
 from middleware.actor_context import tenant_scope_filter, tenant_owns, tenant_owns_strict
 from datetime import datetime, timezone, timedelta
@@ -1430,7 +1431,16 @@ async def concierge(data: dict, user: dict = Depends(get_user)):
             "notes": notes, "status": "confirmed", "source": "ai_concierge",
             "createdAt": _now(), "businessId": user.get("businessId"),
         }
-        await db.reservations.insert_one(r)
+        from services.booking_rules_engine import capacity_lock, validate_and_enrich_booking, BookingRuleViolation
+        try:
+            async with capacity_lock(user.get("businessId"), r["date"]):
+                enrichment = await validate_and_enrich_booking(
+                    date=r["date"], time=r["time"], party_size=r["partySize"],
+                    source=r["source"], business_id=user.get("businessId"))
+                r.update(enrichment)
+                await reservation_store.insert_one(r)
+        except (BookingRuleViolation, TimeoutError) as exc:
+            raise HTTPException(409, str(exc)) from exc
         return {"created": True, "reservationId": r["id"], "reply": reply, "intent": "reservation",
                 "matchedCustomer": {"id": customer["id"], "name": customer.get("name"),
                                      "isVip": customer.get("isVip", False)} if customer else None}

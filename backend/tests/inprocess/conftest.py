@@ -125,3 +125,12 @@ def owner_headers(client):
     assert "token" in body, f"owner login failed: {r.status_code} {r.text[:200]}"
     client.cookies.clear()
     return {"Authorization": f"Bearer {body['token']}"}
+
+
+@pytest.fixture(autouse=True)
+def mock_reservation_transaction(monkeypatch):
+    # mongomock has no transactions. The replica-set suite proves atomicity.
+    from services import reservation_store
+    async def execute(operation):
+        return await operation(None)
+    monkeypatch.setattr(reservation_store, '_transaction', execute)

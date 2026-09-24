@@ -1,4 +1,7 @@
 import asyncio
+import json
+import hashlib
+import hmac
 from datetime import timedelta
 
 import httpx
@@ -13,6 +16,8 @@ def outbox(monkeypatch):
     database = AsyncMongoMockClient().webhook_recovery
     monkeypatch.setattr(webhooks, 'db', database)
     monkeypatch.setattr(webhooks, 'CAPTURE', None)
+    monkeypatch.setenv('BOOKINGS_WEBHOOK_ALLOWED_HOSTS', 'example.test')
+    asyncio.run(database.partners.insert_one({'id': 'partner', 'webhook_secret': 'test-signing-secret'}))
     return database.webhook_outbox
 
 
@@ -27,9 +32,12 @@ def transport(monkeypatch, status=200, error=None, calls=None):
         async def __aexit__(self, *args):
             pass
 
-        async def post(self, url, json):
+        async def post(self, url, content, headers):
+            expected = hmac.new(b'test-signing-secret', headers['X-NUA-Timestamp'].encode() + b'.' + content, hashlib.sha256).hexdigest()
+            assert headers['X-NUA-Signature'] == 'sha256=' + expected
+            payload = json.loads(content)
             if calls is not None:
-                calls.append(json['id'])
+                calls.append(payload['id'])
             if error:
                 raise error
             return httpx.Response(status)
@@ -126,4 +134,16 @@ def test_network_failure_exhausts_retry_budget_without_losing_record(outbox, mon
         assert doc['status'] == 'failed'
         assert doc['attempts'] == webhooks.MAX_ATTEMPTS
         assert not await webhooks.deliver_next()
+    asyncio.run(scenario())
+
+
+def test_unapproved_destination_never_contacts_network(outbox, monkeypatch):
+    calls = []
+    transport(monkeypatch, calls=calls)
+    monkeypatch.delenv('BOOKINGS_WEBHOOK_ALLOWED_HOSTS')
+    async def scenario():
+        await enqueue()
+        await webhooks.deliver_next()
+        assert not calls
+        assert (await outbox.find_one({}))['last_error'] == 'destination_not_allowed'
     asyncio.run(scenario())

@@ -15,11 +15,13 @@ from typing import Optional
 from datetime import datetime, timezone, date as date_cls
 from pydantic import BaseModel
 from database import db
+from services import reservation_store
 from deps import get_user, require_owner_or_manager
 from middleware.actor_context import tenant_scope_filter, tenant_owns_strict
 import os
 import json
 import uuid
+import hashlib
 
 router = APIRouter()
 
@@ -99,6 +101,9 @@ async def acknowledge_booking(item_id: str, body: dict, user: dict = Depends(req
     if not row or not tenant_owns_strict(row.get("businessId"), user.get("businessId")):
         raise HTTPException(status_code=404, detail="Inbox item not found")
 
+    if row.get("status") == "converted":
+        return {"ok": True, "status": "converted", "reservationId": row.get("reservationId")}
+
     now = datetime.now(timezone.utc).isoformat()
     patch = {"status": "acknowledged", "acknowledgedAt": now, "acknowledgedBy": user_name}
 
@@ -111,9 +116,9 @@ async def acknowledge_booking(item_id: str, body: dict, user: dict = Depends(req
         if customer:
             notes = f"{notes} [Returning guest — {guest_context(customer)}]".strip()
         res = {
-            "id": f"res-{uuid.uuid4().hex[:8]}",
-            "customerName": parsed.get("name") or row.get("fromHandle") or "Guest",
-            "customerPhone": parsed.get("phone") or (customer or {}).get("phone") or "",
+            "id": "res-inbox-" + hashlib.sha256(f"{user.get('businessId')}:{item_id}".encode()).hexdigest(),
+            "guestName": parsed.get("name") or row.get("fromHandle") or "Guest",
+            "guestPhone": parsed.get("phone") or (customer or {}).get("phone") or "",
             "customerId": (customer or {}).get("id"),
             "date": parsed.get("date") or "",
             "time": parsed.get("time") or "",
@@ -124,7 +129,22 @@ async def acknowledge_booking(item_id: str, body: dict, user: dict = Depends(req
             "createdAt": now,
             "businessId": user.get("businessId"),
         }
-        await db.reservations.insert_one(dict(res))
+        from services.booking_rules_engine import capacity_lock, validate_and_enrich_booking, BookingRuleViolation
+        try:
+            async with capacity_lock(user.get("businessId"), res["date"]):
+                existing = await db.reservations.find_one({"id": res["id"], "businessId": user.get("businessId")})
+                if existing:
+                    await db.booking_inbox.update_one({"id": item_id, "businessId": user.get("businessId")},
+                        {"$set": {"status": "converted", "reservationId": existing["id"]}})
+                    return {"ok": True, "status": "converted", "reservationId": existing["id"]}
+                res["_id"] = res["id"]
+                enrichment = await validate_and_enrich_booking(
+                    date=res["date"], time=res["time"], party_size=res["partySize"],
+                    source=res["source"], business_id=user.get("businessId"))
+                res.update(enrichment)
+                await reservation_store.insert_one(res)
+        except (BookingRuleViolation, TimeoutError) as exc:
+            raise HTTPException(409, str(exc)) from exc
         patch["status"] = "converted"
         patch["reservationId"] = res["id"]
 

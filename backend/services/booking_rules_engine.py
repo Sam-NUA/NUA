@@ -46,12 +46,15 @@ import asyncio
 import time
 import uuid
 from contextlib import asynccontextmanager
+from contextvars import ContextVar
 from datetime import datetime, date as date_cls, timezone, timedelta
 from typing import Any, Dict, List, Optional
 
 from database import db
 from services import floor_tables
 from middleware.actor_context import tenant_scope_filter
+
+active_capacity_leases: ContextVar[tuple] = ContextVar("capacity_leases", default=())
 
 _LOCK_TTL_SECONDS = 10
 _LOCK_MAX_WAIT_SECONDS = 5
@@ -94,7 +97,11 @@ async def _acquire_one(lock_id: str):
                 raise TimeoutError(
                     "Another booking for this date is being confirmed — please try again")
             await asyncio.sleep(_LOCK_POLL_INTERVAL_SECONDS)
-        yield
+        context_token = active_capacity_leases.set(active_capacity_leases.get() + ((lock_id, token),))
+        try:
+            yield
+        finally:
+            active_capacity_leases.reset(context_token)
     finally:
         if acquired:
             await db.booking_capacity_locks.delete_one({"_id": lock_id, "token": token})

@@ -7,6 +7,7 @@ F: AI Phone Agent, auto-PO generation, live menu A/B testing, guest 'your usual'
 from fastapi import APIRouter, HTTPException, Request, Response, Depends
 from deps import get_user, require_owner, require_owner_or_manager
 from database import db
+from services import reservation_store
 from middleware.actor_context import tenant_scope_filter, tenant_owns, tenant_owns_strict
 from datetime import datetime, timezone
 from typing import Optional, Any
@@ -105,7 +106,7 @@ async def auto_confirm_reservation(reservation_id: str, user: dict = Depends(get
     body = (f"Hi {name}, your booking for {res.get('partySize','?')} on "
             f"{res.get('date','?')} at {res.get('time','?')} is confirmed at NUA. Reply C to cancel.")
     msg = await queue_sms(phone, name, body, "reservation_confirm", business_id=user.get("businessId"))
-    await db.reservations.update_one({"$and": [{"id": reservation_id}, tenant_scope_filter(user.get("businessId"))]}, {"$set": {"confirmationSent": True, "confirmationAt": msg["createdAt"]}})
+    await reservation_store.update_one({"$and": [{"id": reservation_id}, tenant_scope_filter(user.get("businessId"))]}, {"$set": {"confirmationSent": True, "confirmationAt": msg["createdAt"]}})
     return msg
 
 
@@ -386,7 +387,7 @@ async def simulate_call(data: dict, user: dict = Depends(get_user)):
                             {**tenant_scope_filter(user.get("businessId")), "id": known_guest["customerId"]},
                             {"$push": {"reservationIds": r["id"]}},
                         )
-                    await db.reservations.insert_one(r)
+                    await reservation_store.insert_one(r)
             except BookingRuleViolation as e:
                 intent_result["actions"].append({"action": "reservation_rejected", "reason": str(e)})
                 r = None

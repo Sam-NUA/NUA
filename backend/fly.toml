@@ -21,11 +21,11 @@ primary_region = "syd"   # syd=Sydney, lax=Los Angeles, lhr=London, fra=Frankfur
     hard_limit = 250
     soft_limit = 200
 
-[[services.http_checks]]
+[[http_service.checks]]
   interval = "30s"
   grace_period = "10s"
   method = "get"
-  path = "/api/social/platforms"   # returns 401 when alive — that's fine, it proves Python is up
+  path = "/api/ready"
   protocol = "http"
   timeout = "5s"
 
