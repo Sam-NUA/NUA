@@ -252,6 +252,9 @@ async def update_reservation(reservation_id: str, update: ReservationUpdate, use
     # different size tier, silently keeping the OLD tier's deposit/pre-
     # order/approval flags) all went straight through unchecked.
     rule_dependent_fields = ("date", "time", "partySize", "experienceId")
+    reactivating = update_data.get("status") in ("confirmed", "seated") and existing.get("status") not in ("confirmed", "seated")
+    if reactivating:
+        raise HTTPException(409, "Use the restore action to recheck capacity and reconcile cancellation effects")
     if any(f in update_data for f in rule_dependent_fields):
         from services.booking_rules_engine import (
             validate_and_enrich_booking, BookingRuleViolation, capacity_lock)
@@ -633,6 +636,22 @@ async def restore_reservation(reservation_id: str, body: dict = None, user: dict
         raise HTTPException(status_code=400, detail="Can only restore to confirmed or seated")
 
     update_data = {"status": restored_status, "cancellationReason": None, "updatedAt": datetime.utcnow().isoformat()}
+    from services.booking_rules_engine import capacity_lock, validate_and_enrich_booking, BookingRuleViolation
+    try:
+        async with capacity_lock(res.get("businessId"), res["date"]):
+            await validate_and_enrich_booking(
+                date=res["date"], time=res["time"], party_size=res["partySize"],
+                source="staff_restore", experience_id=res.get("experienceId"),
+                reservation_id_to_exclude=reservation_id, business_id=res.get("businessId"))
+            result = await reservation_store.update_one(
+                {"$and": [{"id": reservation_id, "status": prior_status,
+                            "date": res["date"], "time": res["time"], "partySize": res["partySize"]},
+                           tenant_scope_filter(user.get("businessId"))]}, {"$set": update_data})
+            if result.matched_count != 1:
+                raise HTTPException(409, "Booking changed while restoring; refresh and retry")
+    except (BookingRuleViolation, TimeoutError) as exc:
+        raise HTTPException(409, str(exc)) from exc
+
     # A no-show that forfeited a real deposit gets that money genuinely
     # refunded on restore — "this was a mistake" must undo the actual
     # capture, not just the status label. Best-effort, same as cancel's.
@@ -642,7 +661,10 @@ async def restore_reservation(reservation_id: str, body: dict = None, user: dict
         if refunded:
             update_data["depositForfeited"] = False
             update_data["depositRefunded"] = True
-    await reservation_store.update_one({"$and": [{"id": reservation_id}, tenant_scope_filter(user.get("businessId"))]}, {"$set": update_data})
+    if update_data.get("depositRefunded"):
+        await reservation_store.update_one(
+            {"$and": [{"id": reservation_id}, tenant_scope_filter(user.get("businessId"))]},
+            {"$set": {"depositForfeited": False, "depositRefunded": True}})
 
     # Reverse the no-show penalty this booking caused, if any.
     if prior_status == "no_show" and res.get("customerId"):

@@ -759,3 +759,28 @@ def test_booking_validity_is_judged_by_the_venues_own_timezone_not_the_servers(c
     finally:
         _run(db.reservations.delete_many({"guestName": "Honolulu Near Future Guest"}))
         _run(db.businesses.delete_one({"id": biz_id}))
+
+
+def test_restore_cannot_reclaim_capacity_taken_after_cancellation(client, owner_headers):
+    rules = req(client, 'GET', '/api/booking/rules?business=default').json()
+    day = _future_date(18)
+    req(client, 'POST', '/api/booking/rules', headers=owner_headers,
+        json={**rules, 'enforceCapacity': True, 'maxCoversPerSlot': 2, 'slotBufferMinutes': 30})
+    names = ['Restore capacity A', 'Restore capacity B']
+    try:
+        a = req(client, 'POST', '/api/reservations', headers=owner_headers,
+                json={'guestName': names[0], 'partySize': 2, 'date': day, 'time': '18:00', 'source': 'walk_in'})
+        assert a.status_code == 200, a.text
+        key = a.json()['id']
+        assert req(client, 'POST', f'/api/reservations/{key}/cancel', headers=owner_headers, json={}).status_code == 200
+        b = req(client, 'POST', '/api/reservations', headers=owner_headers,
+                json={'guestName': names[1], 'partySize': 2, 'date': day, 'time': '18:00', 'source': 'walk_in'})
+        assert b.status_code == 200, b.text
+        restored = req(client, 'POST', f'/api/reservations/{key}/restore', headers=owner_headers, json={})
+        assert restored.status_code == 409, restored.text
+        bypass = req(client, 'PUT', f'/api/reservations/{key}', headers=owner_headers, json={'status': 'confirmed'})
+        assert bypass.status_code == 409, bypass.text
+        assert _run(db.reservations.find_one({'id': key}))['status'] == 'cancelled'
+    finally:
+        _cleanup_reservations(*names)
+        req(client, 'POST', '/api/booking/rules', headers=owner_headers, json=rules)
