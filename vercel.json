@@ -5,9 +5,17 @@
       "root": "frontend",
       "framework": "create-react-app",
       "installCommand": "yarn install --frozen-lockfile",
-      "buildCommand": "REACT_APP_BACKEND_URL= yarn build",
+      "buildCommand": "PUBLIC_URL=/ REACT_APP_BACKEND_URL= yarn build",
       "outputDirectory": "build",
-      "rewrites": [{ "source": "/(.*)", "destination": "/index.html" }]
+      "routes": [
+        {
+          "handle": "filesystem"
+        },
+        {
+          "src": "/(.*)",
+          "dest": "/index.html"
+        }
+      ]
     },
     "pos": {
       "root": "backend",
@@ -21,8 +29,26 @@
     }
   },
   "rewrites": [
-    { "source": "/api/:path*", "destination": { "service": "pos" } },
-    { "source": "/bookings-api/:path*", "destination": { "service": "bookings" } },
-    { "source": "/:path*", "destination": { "service": "web" } }
+    {
+      "source": "/api/(.*)",
+      "destination": {
+        "service": "pos"
+      }
+    },
+    {
+      "source": "/bookings-api/(.*)",
+      "destination": {
+        "service": "bookings"
+      }
+    },
+    {
+      "source": "/(.*)",
+      "destination": {
+        "service": "web"
+      }
+    }
+  ],
+  "regions": [
+    "syd1"
   ]
 }
