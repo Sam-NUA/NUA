@@ -24,7 +24,12 @@ including its lifespan and generated documentation.
 
 ## Not yet a launch-ready Vercel deployment
 
-The project currently has no application environment variables. Configure
+The free MongoDB Atlas integration was provisioned in Sydney and connected to
+the staging project. Its secret is injected as `MONGO_MONGODB_URI`; both services
+accept that name, while explicit service-specific URLs retain priority. POS and
+Bookings use separate database names on the staging cluster.
+
+Configure
 `MONGO_URL`, `DB_NAME`, `JWT_SECRET`, `FRONTEND_URL`, bootstrap owner secrets,
 `BOOKINGS_MONGO_URL`, `BOOKINGS_DB_NAME`, and `BOOKINGS_ADMIN_KEY` securely.
 Use separate staging databases with MongoDB replica-set transaction support.
