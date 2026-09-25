@@ -1,0 +1,54 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "services": {
+    "web": {
+      "root": "frontend",
+      "framework": "create-react-app",
+      "installCommand": "yarn install --frozen-lockfile",
+      "buildCommand": "PUBLIC_URL=/ REACT_APP_BACKEND_URL= yarn build",
+      "outputDirectory": "build",
+      "routes": [
+        {
+          "handle": "filesystem"
+        },
+        {
+          "src": "/(.*)",
+          "dest": "/index.html"
+        }
+      ]
+    },
+    "pos": {
+      "root": "backend",
+      "framework": "fastapi",
+      "entrypoint": "server:app"
+    },
+    "bookings": {
+      "root": "bookings-api",
+      "framework": "fastapi",
+      "entrypoint": "vercel_app:app"
+    }
+  },
+  "rewrites": [
+    {
+      "source": "/api/(.*)",
+      "destination": {
+        "service": "pos"
+      }
+    },
+    {
+      "source": "/bookings-api/(.*)",
+      "destination": {
+        "service": "bookings"
+      }
+    },
+    {
+      "source": "/(.*)",
+      "destination": {
+        "service": "web"
+      }
+    }
+  ],
+  "regions": [
+    "syd1"
+  ]
+}
