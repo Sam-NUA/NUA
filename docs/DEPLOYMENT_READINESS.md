@@ -1,10 +1,11 @@
 # Deployment and recovery contract
 
 This branch is a tested release candidate, not a verified production deployment.
-The supported deployment path is the existing resident Docker/Fly runtime.
-Schedulers, WebSockets and delivery workers require a runtime that stays alive.
-A request-only function deployment has not been validated. Do not promote the
-separate Vercel staging branch merely because it builds.
+The selected hosting target is now Vercel only; see VERCEL_ONLY.md for the
+current configuration and migration gates. The existing Docker/Fly path is a
+previously tested alternative, not a required account. In-process schedulers
+and workers still need durable Vercel execution before launch. A successful
+build alone does not establish runtime readiness.
 
 ## Required environment
 

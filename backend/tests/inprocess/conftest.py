@@ -25,6 +25,7 @@ os.environ.setdefault("ADMIN_EMAIL", "owner@nua.com")
 # fallback password while this suite's fixtures keep working unchanged.
 os.environ.setdefault("ADMIN_PASSWORD", "NuaOwner2026!")
 os.environ.setdefault("DEMO_STAFF_PASSWORD", "Staff2026!")
+os.environ.setdefault("SEED_DEMO_STAFF", "true")
 os.environ.setdefault("SUPPORT_OVERRIDE_KEY", "test-only-support-override-key")
 
 # Swap the Mongo driver for an in-memory one before anything imports database.py.
