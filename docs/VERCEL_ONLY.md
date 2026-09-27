@@ -1,4 +1,4 @@
-# Vercel-only deployment — 2026-09-25
+# Vercel-only deployment — verified 2026-09-27 UTC
 
 The requested application hosting target is Vercel only. Railway and Fly are
 not required accounts for this deployment. Earlier Docker/Fly deployment
@@ -22,19 +22,41 @@ Frontend requests use the same origin. Python is pinned to the tested 3.12
 series. The Bookings wrapper preserves the original API routes under a mount,
 including its lifespan and generated documentation.
 
-## Not yet a launch-ready Vercel deployment
+## Staging verification
+
+Deployment `dpl_CiQyC8pynCqrD3XBX5mC1outjM7y`, commit `7137ab8`,
+is Ready (Preview). Its frontend renders the NUA sign-in screen:
+https://nua-pos-staging-erm36xo6y-sam-nua.vercel.app/.
+Live `/api/ready` returned `{"status":"ready"}` and
+`/bookings-api/ready` returned `{"status":"ready","service":"nua-bookings"}`.
+The latter verifies a transaction-capable MongoDB topology. These checks do
+not establish authenticated user workflows, payment processing, or job delivery.
+All CI checks on that commit passed, including real MongoDB transaction tests.
+
+## Remaining launch gates
 
 The free MongoDB Atlas integration was provisioned in Sydney and connected to
 the staging project. Its secret is injected as `MONGO_MONGODB_URI`; both services
 accept that name, while explicit service-specific URLs retain priority. POS and
 Bookings use separate database names on the staging cluster.
 
-Configure
-`MONGO_URL`, `DB_NAME`, `JWT_SECRET`, `FRONTEND_URL`, bootstrap owner secrets,
-`BOOKINGS_MONGO_URL`, `BOOKINGS_DB_NAME`, and `BOOKINGS_ADMIN_KEY` securely.
-Use separate staging databases with MongoDB replica-set transaction support.
+`DB_NAME`, `JWT_SECRET`, `BOOKINGS_DB_NAME`, and `BOOKINGS_ADMIN_KEY` are
+configured for both Preview and Production in this isolated staging project.
+`REPO_SYNC_ENABLED=false`. The integration-provided URI supplies both services;
+separate `MONGO_URL` and `BOOKINGS_MONGO_URL` are optional overrides.
+The frontend uses same-origin APIs. Configure `FRONTEND_URL` when a specific
+cross-origin frontend is needed.
 Vercel-only application hosting still needs a managed database; do not put
 MongoDB data on ephemeral function storage.
+
+The owner has not been bootstrapped. The operator must securely configure
+`ADMIN_EMAIL` and a unique `ADMIN_PASSWORD`, then redeploy and sign in. Do not
+send secrets in chat. Bootstrap creates the account only when absent; subsequent
+starts preserve its password, role and status. Remove the bootstrap password
+after creating and verifying the owner. Credential resets must use the account
+management flow, not changes to the bootstrap variable. `SEED_DEMO_STAFF` is off
+by default and must remain off for deployed environments; local test/demo runners
+explicitly enable it. No demo accounts are needed to configure real staff.
 
 For native projection, the Bookings URL ends in `/bookings-api`; provision a
 partner key, external-authority venue and the explicit native mapping described

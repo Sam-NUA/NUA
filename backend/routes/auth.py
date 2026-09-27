@@ -567,56 +567,53 @@ async def get_labor_cost_report(request: Request):
     }
 
 # --- Seeding ---
+async def _insert_seed_user(user):
+    """Create once; concurrent cold starts must never reset an existing account."""
+    from pymongo.errors import DuplicateKeyError
+
+    try:
+        await db.auth_users.update_one(
+            {"email": user["email"]}, {"$setOnInsert": user}, upsert=True
+        )
+    except DuplicateKeyError:
+        # A concurrent instance can win the unique-email insert. Only ignore
+        # that race if the intended account now exists; propagate other errors.
+        if not await db.auth_users.find_one({"email": user["email"]}):
+            raise
+
+
 async def seed_admin():
+    import uuid
+
     email = os.environ.get("ADMIN_EMAIL", "owner@nua.com")
     password = os.environ.get("ADMIN_PASSWORD")
     await db.auth_users.create_index("email", unique=True)
     if not password:
-        # No hardcoded fallback here on purpose: a default password baked into
-        # source means every fresh deployment that forgets to set one ships a
-        # public, guessable owner login. Skip seeding entirely instead — an
-        # operator sets ADMIN_PASSWORD (and optionally ADMIN_EMAIL) to
-        # bootstrap the first owner account. Local dev/test tooling
-        # (tests/inprocess/conftest.py, run_demo_backend.py) sets an
-        # explicit test-only ADMIN_PASSWORD so this never blocks them.
         logger.warning(
-            "ADMIN_PASSWORD not set — skipping owner/demo-staff account seed. "
-            "Set ADMIN_PASSWORD (and optionally ADMIN_EMAIL) to bootstrap the owner account."
+            "ADMIN_PASSWORD not set — skipping owner bootstrap. "
+            "Set ADMIN_PASSWORD and ADMIN_EMAIL to create the initial owner."
         )
         return
-    existing = await db.auth_users.find_one({"email": email})
-    if not existing:
-        import uuid
-        await db.auth_users.insert_one({
-            "id": str(uuid.uuid4()), "name": "Owner", "email": email,
-            "password_hash": hash_password(password),
-            "role": "owner", "businessId": "default", "payRate": 0,
-            "status": "active", "createdAt": datetime.now(timezone.utc).isoformat(),
-        })
-    elif not verify_password(password, existing.get("password_hash", "")):
-        await db.auth_users.update_one({"email": email}, {"$set": {"password_hash": hash_password(password)}})
-    # Seed demo staff — reuses ADMIN_PASSWORD unless DEMO_STAFF_PASSWORD is set
-    # separately, so a single env var still bootstraps a working demo/staging
-    # environment without a hardcoded literal in source.
+    await _insert_seed_user({
+        "id": str(uuid.uuid4()), "name": "Owner", "email": email,
+        "password_hash": hash_password(password),
+        "role": "owner", "businessId": "default", "payRate": 0,
+        "status": "active", "createdAt": datetime.now(timezone.utc).isoformat(),
+    })
+    # Demo users are local/test conveniences, never an implicit consequence
+    # of bootstrapping a deployed owner account.
+    if os.environ.get("SEED_DEMO_STAFF", "").lower() != "true":
+        return
     demo_password = os.environ.get("DEMO_STAFF_PASSWORD", password)
     demo_staff = [
         {"name": "Sarah Manager", "email": "manager@nua.com", "role": "manager", "payRate": 35},
         {"name": "Tom Cashier", "email": "cashier@nua.com", "role": "cashier", "payRate": 25},
         {"name": "Chef Kim", "email": "kitchen@nua.com", "role": "kitchen", "payRate": 30},
     ]
-    for s in demo_staff:
-        exists = await db.auth_users.find_one({"email": s["email"]})
-        if not exists:
-            import uuid
-            await db.auth_users.insert_one({
-                "id": str(uuid.uuid4()), "name": s["name"], "email": s["email"],
-                "password_hash": hash_password(demo_password),
-                "role": s["role"], "businessId": "default", "payRate": s["payRate"],
-                "status": "active", "createdAt": datetime.now(timezone.utc).isoformat(),
-            })
-        elif exists.get("role") != s["role"]:
-            # Heal seed data — ensure demo accounts always have their canonical role
-            await db.auth_users.update_one(
-                {"email": s["email"]},
-                {"$set": {"role": s["role"], "name": s["name"]}}
-            )
+    for staff in demo_staff:
+        await _insert_seed_user({
+            **staff, "id": str(uuid.uuid4()),
+            "password_hash": hash_password(demo_password),
+            "businessId": "default", "status": "active",
+            "createdAt": datetime.now(timezone.utc).isoformat(),
+        })
