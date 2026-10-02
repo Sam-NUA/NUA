@@ -49,14 +49,29 @@ cross-origin frontend is needed.
 Vercel-only application hosting still needs a managed database; do not put
 MongoDB data on ephemeral function storage.
 
-The owner has not been bootstrapped. The operator must securely configure
-`ADMIN_EMAIL` and a unique `ADMIN_PASSWORD`, then redeploy and sign in. Do not
-send secrets in chat. Bootstrap creates the account only when absent; subsequent
-starts preserve its password, role and status. Remove the bootstrap password
-after creating and verifying the owner. Credential resets must use the account
-management flow, not changes to the bootstrap variable. `SEED_DEMO_STAFF` is off
-by default and must remain off for deployed environments; local test/demo runners
-explicitly enable it. No demo accounts are needed to configure real staff.
+The operator must securely configure `ADMIN_EMAIL` and a unique
+`ADMIN_PASSWORD`, then redeploy and sign in. Do not send secrets in chat.
+Bootstrap creates the account only when absent; subsequent starts preserve
+its password, role and status (`emergent/owner-recovery`, 2026-10-02: fixed
+the race where a mismatch used to overwrite the password on every cold
+start, and self-heals an owner stored with different `ADMIN_EMAIL` casing
+than login's lowercased lookup expects — the two never used to match).
+Credential resets must use the account management flow, not changes to the
+bootstrap variable. `SEED_DEMO_STAFF` is off by default and must remain off
+for deployed environments; local test/demo runners explicitly enable it. No
+demo accounts are needed to configure real staff.
+
+If the owner is locked out (wrong/forgotten password) and SendGrid isn't
+configured yet so `/auth/forgot-password` can't help, set `OWNER_RECOVERY_KEY`
+(a long random secret, separate from `ADMIN_PASSWORD`, never shared outside
+Vercel) and use `POST /api/auth/owner-recovery/initiate` (recoveryKey + email)
+then `POST /api/auth/owner-recovery/complete` (token + new password). Single
+shared lockout bucket after 5 wrong keys, 15-minute single-use token, every
+attempt audited to `db.owner_recovery_audit`, and it can only ever reach the
+one existing owner account — a key that's valid but names a different email
+than the current owner is rejected (409), so it cannot be used to retarget or
+duplicate the account. Remove `OWNER_RECOVERY_KEY` from Vercel once access is
+restored; it is a standing secret while set.
 
 For native projection, the Bookings URL ends in `/bookings-api`; provision a
 partner key, external-authority venue and the explicit native mapping described

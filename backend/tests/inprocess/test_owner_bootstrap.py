@@ -73,3 +73,40 @@ def test_duplicate_insert_race_only_ignored_for_existing_email(bootstrap, monkey
     users.find_one.return_value = None
     with pytest.raises(DuplicateKeyError):
         asyncio.get_event_loop().run_until_complete(auth._insert_seed_user({"email": "owner@example.test"}))
+
+
+def test_admin_email_env_is_normalized_to_lowercase(bootstrap, monkeypatch):
+    """ADMIN_EMAIL saved with any uppercase in Vercel must still match the
+    lowercased email login() always queries with."""
+    auth, db = bootstrap
+    monkeypatch.setenv("ADMIN_EMAIL", "Bootstrap@Example.TEST")
+
+    async def scenario():
+        await auth.seed_admin()
+        owner = await db.auth_users.find_one({"role": "owner"})
+        assert owner["email"] == "bootstrap@example.test"
+
+    asyncio.get_event_loop().run_until_complete(scenario())
+
+
+def test_existing_owner_email_casing_is_self_healed_without_duplicate(bootstrap, monkeypatch):
+    """An owner created before email normalization (or typed in with the
+    wrong case by hand) must become reachable by the lowercased ADMIN_EMAIL
+    login always queries with — without ever minting a second owner account
+    or touching its password."""
+    auth, db = bootstrap
+
+    async def scenario():
+        await auth.seed_admin()
+        owner = await db.auth_users.find_one({"role": "owner"})
+        # Simulate a pre-normalization account stored with mixed case.
+        await db.auth_users.update_one({"id": owner["id"]}, {"$set": {"email": "Bootstrap@Example.TEST"}})
+        await auth.seed_admin()
+        assert await db.auth_users.count_documents({"role": "owner"}) == 1
+        healed = await db.auth_users.find_one({"role": "owner"})
+        assert healed["id"] == owner["id"]
+        assert healed["email"] == "bootstrap@example.test"
+        # Password/role/status from the self-heal itself are untouched.
+        assert auth.verify_password("initial-test-secret", healed["password_hash"])
+
+    asyncio.get_event_loop().run_until_complete(scenario())

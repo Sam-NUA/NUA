@@ -262,6 +262,10 @@ PUBLIC_API_PATHS = {
     # A locked-out staff member has no session by definition — both steps of
     # self-service password recovery have to be reachable with no token.
     "/api/auth/forgot-password", "/api/auth/reset-password",
+    # Operator-only owner recovery (routes/auth.py) — same "no session yet"
+    # story, gated by OWNER_RECOVERY_KEY inside the route itself rather than
+    # a user token.
+    "/api/auth/owner-recovery/initiate", "/api/auth/owner-recovery/complete",
     # The second half of login: password passed, code still owed. It carries
     # its own short-lived challenge token in the body instead of a session
     # token, which this middleware doesn't know how to read — the endpoint
