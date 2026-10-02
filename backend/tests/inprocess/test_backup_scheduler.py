@@ -2,8 +2,18 @@
 its status endpoint — the scheduled analog of the existing manual
 POST /ops/backup/drill."""
 import asyncio
+import pytest
+from unittest.mock import AsyncMock
 
 from conftest import req
+
+
+@pytest.fixture(autouse=True)
+def private_backup_store(monkeypatch):
+    from services import durable_backups
+    async def retain(archive, business_id=None):
+        return {"id": "scheduler-test", "verified": True}, archive
+    monkeypatch.setattr(durable_backups, "retain", AsyncMock(side_effect=retain))
 
 
 def test_force_drill_now_records_a_passing_drill():

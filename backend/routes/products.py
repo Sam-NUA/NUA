@@ -394,13 +394,15 @@ class ImageUploadBody(BaseModel):
 MAX_IMAGE_BYTES = 1_500_000  # ~1.5MB after base64 — keep db lean
 
 @router.get("/product-images", response_model=List[ImageLibraryEntry])
-async def list_images(_: dict = Depends(get_user), search: Optional[str] = None, tag: Optional[str] = None, limit: int = 100):
+async def list_images(user: dict = Depends(get_user), search: Optional[str] = None, tag: Optional[str] = None, limit: int = 100):
     # Any signed-in staff can browse the library (cashiers need to see images);
     # owner/manager required for mutations below.
     # Cap list size — each entry can carry ~1.5MB base64 so a large list quickly
     # exhausts response bandwidth. Default 100 is plenty for a hand-curated library.
     limit = max(1, min(500, limit))
-    query: dict = {}
+    if not user.get("businessId"):
+        raise HTTPException(403, "Business scope is required")
+    query: dict = {"businessId": user["businessId"]}
     if search:
         query["name"] = {"$regex": search, "$options": "i"}
     if tag:
@@ -432,12 +434,16 @@ async def upload_image(body: ImageUploadBody, user: dict = Depends(require_owner
         createdBy=body.createdBy or user.get("name"),
         sizeBytes=size,
     )
-    await db.product_images.insert_one(entry.dict())
+    if not user.get("businessId"):
+        raise HTTPException(403, "Business scope is required")
+    await db.product_images.insert_one({**entry.dict(), "businessId": user["businessId"]})
     return entry
 
 @router.delete("/product-images/{image_id}")
-async def delete_image(image_id: str, _: dict = Depends(require_owner_or_manager)):
-    res = await db.product_images.delete_one({"id": image_id})
+async def delete_image(image_id: str, user: dict = Depends(require_owner_or_manager)):
+    if not user.get("businessId"):
+        raise HTTPException(403, "Business scope is required")
+    res = await db.product_images.delete_one({"id": image_id, "businessId": user["businessId"]})
     if res.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Image not found")
     return {"deleted": True}

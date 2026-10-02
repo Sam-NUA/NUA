@@ -91,6 +91,9 @@ def test_a_forged_host_header_cannot_smuggle_a_protected_path_past_the_gate(anon
     for spoofed_prefix in PUBLIC_PREFIXES:
         host = f"x{spoofed_prefix}"
         for method, path in MUST_BE_SHUT:
+            # Exercise auth instead of stopping at the shared rate limiter.
+            from database import db
+            anon.portal.call(db.rate_limit_windows.delete_many, {})
             r = req(anon, method, path, json={}, headers={"Host": host})
             assert r.status_code in (401, 403), (
                 f"{method} {path} with Host: {host!r} answered {r.status_code} "
@@ -108,6 +111,8 @@ def test_no_get_route_answers_anonymously_unless_allow_listed(anon, app):
     })
     leaking = []
     for path in paths:
+        from database import db
+        anon.portal.call(db.rate_limit_windows.delete_many, {})
         try:
             r = req(anon, "GET", path)
         except Exception:

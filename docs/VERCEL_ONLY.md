@@ -131,3 +131,9 @@ https://vercel.com/docs/services/routing,
 https://vercel.com/docs/functions/container-images,
 https://vercel.com/docs/cron-jobs/usage-and-pricing,
 https://vercel.com/docs/cron-jobs/manage-cron-jobs.
+
+## October 2 staging reliability follow-up
+
+See [STAGING_RELIABILITY_2026-10-02.md](STAGING_RELIABILITY_2026-10-02.md) for
+confirmed Hobby/cron incompatibility, stale deployment diagnostics, shared
+coordination proofs, durable storage changes, and outstanding live gates.

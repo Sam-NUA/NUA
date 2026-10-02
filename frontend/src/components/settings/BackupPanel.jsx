@@ -96,7 +96,7 @@ export default function BackupPanel() {
                          style={{ backgroundColor: theme.background }}>
                       <span>{name}</span>
                       <span className={c.matches ? 'text-green-500' : 'text-red-500'}>
-                        {c.restoredCount}/{c.liveCount}
+                        {c.restoredCount}/{c.archiveCount ?? c.liveCount}
                       </span>
                     </div>
                   ))}

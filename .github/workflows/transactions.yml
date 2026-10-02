@@ -22,6 +22,10 @@ jobs:
         run: python -m pytest bookings-api/tests_real -q
       - name: Native reservation fencing and durable outbox
         run: python -m pytest backend/tests_real -q
+      - name: Cross-process coordination and cold restart
+        env:
+          TEST_MONGO_URL: mongodb://127.0.0.1:27018/?replicaSet=nua-test
+        run: python scripts/verify_shared_runtime.py
       - name: MongoDB diagnostics
         if: failure()
         run: docker logs nua-test-mongo

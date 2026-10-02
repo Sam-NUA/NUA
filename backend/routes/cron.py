@@ -20,6 +20,7 @@ simply unused in that environment.
 from __future__ import annotations
 import hmac
 import os
+import uuid
 from fastapi import APIRouter, Header, HTTPException
 from typing import Optional
 
@@ -79,8 +80,11 @@ async def cron_booking_sync_drain(authorization: Optional[str] = Header(None)):
     # Short lock: this job's real cadence is "as often as possible" (it's
     # draining a delivery queue), the claim only stops two invocations
     # processing the queue at the exact same instant.
-    if not await cron_jobs.try_claim("booking-sync-drain", ttl_seconds=10):
+    owner_token = uuid.uuid4().hex
+    if not await cron_jobs.try_claim("booking-sync-drain", ttl_seconds=300, owner_token=owner_token):
         return {"ran": False, "reason": "already claimed by another invocation"}
-    delivered = await booking_sync.drain(limit=50)
-    await cron_jobs.release("booking-sync-drain")
+    try:
+        delivered = await booking_sync.drain(limit=50)
+    finally:
+        await cron_jobs.release("booking-sync-drain", owner_token)
     return {"ran": True, "delivered": delivered}

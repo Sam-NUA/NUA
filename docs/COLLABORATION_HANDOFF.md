@@ -228,3 +228,37 @@ time of this handoff: #3 `platform-reliability→main`, #4
 all open/unmerged. #1 `trust-release/p0-security-foundation→main` merged
 2026-09-20. #2 `vercel-staging→main` open, superseded by the #3-5 chain per
 `VERCEL_ONLY.md`.)_
+
+### Codex staging reliability pass — 2026-10-02
+Working branch `codex/staging-reliability`, based on PR #7. Taking ownership
+of shared rate limiting, dashboard realtime feed, private backup retention,
+and upload durability audit. Also correcting PR #6's requirements freeze
+regression (Vercel build cannot resolve emergentintegrations). Changes to
+backup_scheduler/backup-drill cron will add durable backup retention before
+restore verification; existing route names and schedules will remain.
+Verified dashboard: sam-nua is Hobby. Minute AND hourly crons require Pro;
+Hobby rejects these expressions at deployment, it does not clamp them.
+Vercel Cron runs Production deployments only. No paid upgrade performed.
+
+Also updating cron claim release to fence by invocation token: a slow, expired
+booking-sync invocation must not release a newer invocation's lease.
+
+Smoke script updates: read-only --health-only mode, generated test passwords,
+explicit sandbox-payment prerequisite, and missing tenant coverage fails the
+release gate instead of printing all checks passed. Full mutation mode still
+needs a controlled staging run with cleanup verified.
+
+Verification update: five-process real-Mongo proof passed (100 attempts, 25
+allowed, cold restart preserves exhaustion, 50 unique cross-process events,
+tenant isolation and cursor overflow). Full in-process suite: 843 passed and
+one auth-sweep harness failure after the shared limiter correctly enforced
+120/min. Fixed the sweep to reset only test counters per auth case; focused
+rerun passed all 69 tests. Frontend production build passed; lint passed;
+type gate remains 814/814 with no new error codes. Full Vercel cold-start,
+Blob recovery and authenticated payment/role/tenant smoke remain release gates.
+See `docs/STAGING_RELIABILITY_2026-10-02.md` for operational setup and limits.
+
+The real staging CLI health smoke was attempted: all three readiness checks
+failed because Vercel deployment protection returned a login redirect/HTML.
+Add a securely supplied automation bypass secret for the CLI, keeping
+deployment protection enabled; owner credentials alone are not sufficient.

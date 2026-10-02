@@ -9,7 +9,7 @@ import os
 import re
 from typing import Optional
 
-from database import client
+from database import client, db
 
 from routes.products import router as products_router
 from routes.stock_transfers import router as stock_transfers_router
@@ -194,7 +194,7 @@ def _rate_limit_identity(request) -> str:
             payload = jwt.decode(token, os.environ["JWT_SECRET"], algorithms=["HS256"])
             sub = payload.get("sub")
             if sub:
-                return f"user:{sub}"
+                return f"user:{payload.get('businessId', 'unscoped')}:{sub}"
         except Exception:
             pass
     ip = request.client.host if request.client else "?"
@@ -480,10 +480,8 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
 
     def __init__(self, app):
         super().__init__(app)
-        self.buckets = defaultdict(list)
         self.limit = 120
         self.window = 60
-        self._last_evict = time()
 
     async def dispatch(self, request, call_next):
         # scope["path"], not request.url.path — see RequireAuthMiddleware's
@@ -516,20 +514,19 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             key = f"guest:{ip}:{table_id or business or 'na'}"
         else:
             limit, window = self.limit, self.window
-            tenant = request.headers.get("X-Tenant-Id", "default")
             identity = _rate_limit_identity(request)
-            key = f"{tenant}:{identity}"
+            key = identity
         now = time()
-        # Evict idle clients every 5 min so the bucket dict can't grow unbounded
-        if now - self._last_evict > 300:
-            self._last_evict = now
-            stale = [k for k, ts in self.buckets.items() if not ts or now - ts[-1] > self.window]
-            for k in stale:
-                del self.buckets[k]
-        self.buckets[key] = [t for t in self.buckets[key] if now - t < window]
-        if len(self.buckets[key]) >= limit:
-            return JSONResponse(status_code=429, content={"detail": f"Rate limit exceeded — {limit} req/{window}s"})
-        self.buckets[key].append(now)
+        from services.shared_runtime import SharedRuntime
+        try:
+            allowed, retry_after = await SharedRuntime(db).allow(key, limit, window, now)
+        except Exception:
+            logger.error("Shared rate limiter unavailable")
+            return JSONResponse(status_code=503, content={"detail": "Request protection unavailable"},
+                                headers={"Retry-After": "5"})
+        if not allowed:
+            return JSONResponse(status_code=429, content={"detail": f"Rate limit exceeded — {limit} req/{window}s"},
+                                headers={"Retry-After": str(retry_after)})
         return await call_next(request)
 
 # Added before RateLimit so RateLimit ends up the outer of the two: an
@@ -692,6 +689,9 @@ async def startup():
             start_repo_sync()
         except Exception as exc:
             logger.warning("Repo-sync scheduler failed to start: %s", exc)
+    from services.shared_runtime import SharedRuntime
+    await SharedRuntime(db).ensure_indexes()
+
     # Daily automatic backup restore-drill — catches a silently-broken
     # backup before the day it's actually needed. In-process only off
     # Vercel; Vercel Cron drives /api/cron/backup-drill-check instead.
