@@ -13,6 +13,7 @@ import LicensePage, { LicenseLockScreen, LicenseBanner } from './pages/LicensePa
 const Login = lazy(() => import('./pages/Login'));
 const OnboardingWizard = lazy(() => import('./pages/OnboardingWizard'));
 const ResetPassword = lazy(() => import('./pages/ResetPassword'));
+const OwnerRecovery = lazy(() => import('./pages/OwnerRecovery'));
 const Today = lazy(() => import('./pages/Today'));
 import CommandBar from './components/CommandBar';
 import VoiceCommandButton from './components/VoiceCommandButton';
@@ -404,6 +405,7 @@ function App() {
                   <Route path="/waitlist-track/:code" element={<TrackWaitlist />} />
                   <Route path="/rewards" element={<LoyaltyGuestPortal />} />
                   <Route path="/reset-password" element={<ResetPassword />} />
+                  <Route path="/owner-recovery" element={<OwnerRecovery />} />
                   {/* Staff routes — auth required */}
                   <Route path="/*" element={<ProtectedRoutes />} />
                 </Routes>
