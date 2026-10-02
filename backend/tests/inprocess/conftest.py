@@ -28,6 +28,7 @@ os.environ.setdefault("DEMO_STAFF_PASSWORD", "Staff2026!")
 os.environ.setdefault("SEED_DEMO_STAFF", "true")
 os.environ.setdefault("SUPPORT_OVERRIDE_KEY", "test-only-support-override-key")
 os.environ.setdefault("OWNER_RECOVERY_KEY", "test-only-owner-recovery-key")
+os.environ.setdefault("CRON_SECRET", "test-only-cron-secret")
 
 # Swap the Mongo driver for an in-memory one before anything imports database.py.
 import mongomock_motor                     # noqa: E402

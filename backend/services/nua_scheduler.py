@@ -83,6 +83,48 @@ async def _maybe_send_daily_digest(*, force: bool = False) -> None:
     await db.ash_digests.insert_one({"businessId": get_actor_context().get("businessId"), "date": today_key, "sentAt": now.isoformat(), "summary": weekly, "topInsights": top})
 
 
+async def run_tick_once() -> dict:
+    """One full pass over every active business — insights, predictive
+    stockouts, ops signals, daily digest. Shared by the in-process loop
+    (local/pod dev) and the Vercel-cron entry point (routes/cron.py) so
+    there's exactly one implementation of what a tick does."""
+    try:
+        businesses = await db.businesses.find({"status": {"$ne": "inactive"}}, {"id": 1}).to_list(10000)
+    except Exception:
+        logger.exception("[ash] cannot load businesses for scheduled work")
+        businesses = []
+    scanned = 0
+    for business in businesses:
+        if not business.get("id"):
+            continue
+        token = _actor_ctx.set({"businessId": business["id"], "email": "system"})
+        try:
+            try:
+                result = await nua_intelligence.run_all_insights(include_summary=False)
+                logger.info(f"[ash] hourly scan generated={result['generated']} categories={list(result['perCategory'].keys())}")
+                await _maybe_send_daily_digest()
+            except Exception as e:
+                logger.warning(f"[ash] scheduler loop error: {e}")
+            try:
+                from services import predictive_signals
+                pred = await predictive_signals.scan_and_emit_predicted_stockouts()
+                if pred["emitted"]:
+                    logger.info(f"[ash] predictive scan emitted {pred['emitted']} stockout warning(s)")
+            except Exception as e:
+                logger.warning(f"[ash] predictive scan error: {e}")
+            try:
+                from services import ops_signals
+                ops = await ops_signals.scan_and_emit()
+                if ops["server"]["emitted"] or ops["client"]["emitted"]:
+                    logger.info(f"[ash] ops scan: server_emitted={ops['server']['emitted']} client_emitted={ops['client']['emitted']}")
+            except Exception as e:
+                logger.warning(f"[ash] ops scan error: {e}")
+            scanned += 1
+        finally:
+            _actor_ctx.reset(token)
+    return {"businessesScanned": scanned}
+
+
 async def _loop() -> None:
     interval = _hourly_interval_seconds()
     logger.info(f"[ash] scheduler starting — hourly interval {interval}s, digest hour {_digest_hour()}")
@@ -90,37 +132,9 @@ async def _loop() -> None:
     await asyncio.sleep(15)
     while True:
         try:
-            businesses = await db.businesses.find({"status": {"$ne": "inactive"}}, {"id": 1}).to_list(10000)
-        except Exception:
-            logger.exception("[ash] cannot load businesses for scheduled work")
-            businesses = []
-        for business in businesses:
-            if not business.get("id"):
-                continue
-            token = _actor_ctx.set({"businessId": business["id"], "email": "system"})
-            try:
-                try:
-                    result = await nua_intelligence.run_all_insights(include_summary=False)
-                    logger.info(f"[ash] hourly scan generated={result['generated']} categories={list(result['perCategory'].keys())}")
-                    await _maybe_send_daily_digest()
-                except Exception as e:
-                    logger.warning(f"[ash] scheduler loop error: {e}")
-                try:
-                    from services import predictive_signals
-                    pred = await predictive_signals.scan_and_emit_predicted_stockouts()
-                    if pred["emitted"]:
-                        logger.info(f"[ash] predictive scan emitted {pred['emitted']} stockout warning(s)")
-                except Exception as e:
-                    logger.warning(f"[ash] predictive scan error: {e}")
-                try:
-                    from services import ops_signals
-                    ops = await ops_signals.scan_and_emit()
-                    if ops["server"]["emitted"] or ops["client"]["emitted"]:
-                        logger.info(f"[ash] ops scan: server_emitted={ops['server']['emitted']} client_emitted={ops['client']['emitted']}")
-                except Exception as e:
-                    logger.warning(f"[ash] ops scan error: {e}")
-            finally:
-                _actor_ctx.reset(token)
+            await run_tick_once()
+        except Exception as e:
+            logger.warning(f"[ash] scheduler loop error: {e}")
         try:
             await asyncio.sleep(interval)
         except asyncio.CancelledError:

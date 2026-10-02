@@ -12,9 +12,13 @@ here first.
 | Area | Owner | Notes |
 |---|---|---|
 | `backend/routes/auth.py` seeding/login/2FA/reset | Emergent (this pass) | Owner-recovery endpoints added 2026-10-02. Codex: coordinate before touching `seed_admin`/`_insert_seed_user`. |
-| `backend/services/booking_sync.py`, `bookings-api/*` | Codex | Untouched by this pass. |
+| `backend/services/booking_sync.py` | Shared as of 2026-10-02 | Codex owns delivery logic (`deliver_next`/`drain`); Emergent added the `run_loop` param so Vercel can skip the perpetual loop — coordinate before changing `start_worker`'s signature again. |
+| `bookings-api/*` | Codex | Untouched by this pass. |
+| `backend/services/nua_scheduler.py`, `coursing_scheduler.py`, `backup_scheduler.py`, `cron_jobs.py`, `routes/cron.py` | Emergent (2026-10-02) | New Vercel-cron entry points — see this section below. |
 | `docs/VERCEL_ONLY.md`, `docs/DEPLOYMENT_READINESS.md` | Shared | Append, don't rewrite — both agents have standing context in these. |
 | `frontend/src/pages/OwnerRecovery.jsx`, `/owner-recovery` route | Emergent | New, not linked from Login.jsx by design. |
+| `vercel.json` `crons` array | Emergent (2026-10-02) | Coordinate before adding/removing entries — paths must match `routes/cron.py`. |
+| `scripts/smoke_test_live_edge.py` | Emergent (2026-10-02) | New, standalone — no dependency on either agent's in-flight work. |
 | Everything else | Whoever's PR chain currently owns it | See open PR list below before editing a file already in flight. |
 
 ## Emergent section
@@ -124,6 +128,97 @@ this pass).
   limiting, durable uploads/backups, live role/tenant/payment checks) are
   untouched — explicitly out of scope until owner access is confirmed
   restored on the real deployment.
+
+### Branch: `emergent/durable-jobs-and-smoke-tests` (based on `emergent/owner-recovery`)
+Second pass, same day. Scope: convert perpetual in-process schedulers to
+Vercel-cron-safe endpoints, add a live multi-tenant/role/payment smoke test,
+and set a working owner PIN. Follows PR #6 (owner-recovery) in the stack.
+
+#### Durable background jobs
+- New `services/cron_jobs.py`: `try_claim(job_name, ttl_seconds)` — atomic
+  Mongo claim (`db.scheduler_locks`, upsert collides on `_id` if still
+  locked, same pattern as `_insert_seed_user`), `release(job_name)` for jobs
+  whose lock exists only to stop overlap, not to throttle cadence.
+- New `routes/cron.py`: `GET/POST /api/cron/{ash-hourly,coursing-tick,
+  backup-drill-check,booking-sync-drain}`. Each requires `Authorization:
+  Bearer $CRON_SECRET` (the header Vercel Cron sends automatically when
+  `CRON_SECRET` is set), then claims its lock and calls straight into the
+  existing tick logic — `coursing_scheduler._tick_once()` and
+  `backup_scheduler._maybe_run_drill()`/`drill_status()` were already
+  reusable; `nua_scheduler`'s per-tick body was extracted into a new
+  `run_tick_once()` so the in-process loop and the cron route share one
+  implementation; `booking_sync.drain()` was already lease-based and safe
+  to call concurrently.
+- `server.py`: `IS_VERCEL = os.environ.get("VERCEL") == "1"` (Vercel sets
+  this automatically in every deployment) gates the four perpetual
+  `start_scheduler()`/`start_worker()` calls — skipped on Vercel, kept
+  everywhere else (this pod's supervisor-managed process is long-lived, so
+  the original design is still correct there). `repo_sync_scheduler` is
+  also skipped on Vercel outright (it shells out to git against a local
+  checkout — meaningless on Vercel's filesystem regardless of its own
+  `REPO_SYNC_ENABLED` flag).
+- `booking_sync.start_worker()` gained a `run_loop: bool = True` param —
+  coordinate with Codex before changing that signature again (see
+  ownership table above).
+- `vercel.json`: added a `crons` array — `coursing-tick`/`booking-sync-drain`
+  at `*/1 * * * *`, `ash-hourly` at `0 * * * *`, `backup-drill-check` at
+  `0 3 * * *`.
+- **Real, unresolved blocker — read before relying on this**: Vercel Hobby
+  plan clamps cron to once a day; `*/1 * * * *` will not run as written
+  unless `nua-pos-staging` is on Pro or higher. I did not verify which plan
+  the project is on and would not upgrade it unilaterally even if I could —
+  that's a cost decision for the operator. Until confirmed, coursing timing
+  and booking-sync delivery are not actually durable on Vercel; they're
+  only correctly *not crashing* (the in-process loops are safely skipped,
+  cron will just run far less often than configured on Hobby).
+- Tests: new `backend/tests/inprocess/test_cron_jobs.py` (5 cases — claim/
+  release/race behavior, auth rejection, claimed-by-another-invocation,
+  booking-sync-drain's immediate re-claimability). All passed.
+
+#### Live smoke test
+- New `scripts/smoke_test_live_edge.py` — standalone, run against any
+  `SMOKE_BASE_URL` over real HTTP (not the mongomock in-process suite).
+  Covers: health, owner login, manager/cashier role boundaries (owner-only
+  report + staff list), a Stripe sandbox checkout session, and two-tenant
+  customer-list isolation.
+- **Tenant-isolation caveat, read before reusing this**: the live product
+  has no self-service way to create a second, independently-owned tenant —
+  `register()` always forces an enrolled staff account onto the enrolling
+  owner's own `businessId` (see `routes/auth.py`), and `/business/create`
+  adds a second business still owned by the *same* owner account, with no
+  "switch active business" login path. The script's isolation section
+  therefore needs direct Mongo access (`SMOKE_MONGO_URL`/`SMOKE_DB_NAME`) to
+  flip a second staff account's `businessId` — exactly the same shortcut
+  `tests/inprocess/*_tenant_isolation.py` already takes internally. Without
+  Mongo access it still runs the role + payment sections, just skips
+  isolation. A real operator-facing "provision a second tenant" admin
+  endpoint would remove this caveat — not built this pass, noted as backlog.
+- Run against the local preview edge (not yet the real Vercel URL — no
+  access this pass): **19/19 checks passed**.
+
+#### Owner PIN
+- Set the owner's PIN to `0311` via the existing owner-authenticated
+  `POST /auth/staff/{id}/set-pin` (no new code — this endpoint already
+  existed). Verified `POST /auth/pin-login` with PIN `0311` returns the
+  owner, locally. **This only touched the local pod's database** — the
+  real `nua-pos-staging` owner's PIN is untouched; whoever has owner access
+  there needs to set it themselves via Settings → Staff, or the same API
+  call, once logged in.
+- `memory/test_credentials.md` updated.
+
+#### Not done this pass
+- Re-ran `backend/tests/inprocess/` in full after all changes above: same
+  4 pre-existing/environment-caused failures as the owner-recovery pass
+  (Stripe-key-present assumptions, one mongomock-concurrency flake), 831
+  passed (826 + the 5 new cron tests) — no regressions.
+- Distributed rate limiting across multiple Vercel instances is unverified
+  (this pod is one process; login/recovery lockout buckets live in Mongo
+  so they're *shared* correctly in principle, but nothing here proves it
+  under real concurrent cold starts).
+- Multi-instance realtime fan-out (`services/realtime.py`,
+  `routes/realtime.py`) untouched.
+- Durable upload/backup storage (object storage vs. ephemeral function
+  storage) untouched.
 
 ## Codex section
 

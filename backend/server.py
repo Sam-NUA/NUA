@@ -27,6 +27,7 @@ from routes.public import router as public_router
 from routes.table_ordering import router as table_ordering_router
 from routes.integrations import router as integrations_router
 from routes.auth import router as auth_router, seed_admin
+from routes.cron import router as cron_router
 from routes.ai_pantry import router as ai_pantry_router
 from routes.multi_tenant import router as multi_tenant_router, seed_default_business
 from routes.advanced_features import router as advanced_features_router
@@ -85,6 +86,7 @@ api_router = APIRouter(prefix="/api")
 
 # Include all route modules
 api_router.include_router(auth_router)
+api_router.include_router(cron_router)
 api_router.include_router(products_router)
 api_router.include_router(stock_transfers_router)
 api_router.include_router(appointments_router)
@@ -251,6 +253,11 @@ PUBLIC_API_PREFIXES = (
     # no trailing slash there would have also matched every one of those
     # staff-only sub-paths.
     "/api/voice/inbound/gather/",
+    # Vercel Cron invokes these directly — no user token exists for a
+    # platform-triggered request. Each route (routes/cron.py) is
+    # independently gated on CRON_SECRET inside the handler, the same "not
+    # a user token" trust model as the webhook prefixes above.
+    "/api/cron/",
 )
 
 PUBLIC_API_PATHS = {
@@ -590,11 +597,18 @@ app.add_middleware(ObservabilityMiddleware)
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
+# Vercel sets this automatically in every deployed environment. An instance
+# there can be retired between requests, so the perpetual
+# `while True: await asyncio.sleep(...)` loops below (designed for this
+# pod's long-lived supervisor-managed process) are skipped in favor of
+# routes/cron.py's endpoints, driven by Vercel Cron (see vercel.json).
+IS_VERCEL = os.environ.get("VERCEL") == "1"
+
 @app.on_event("startup")
 async def startup():
     from services import booking_sync
     if os.environ.get("NUA_BOOKINGS_API_URL"):
-        await booking_sync.start_worker()
+        await booking_sync.start_worker(run_loop=not IS_VERCEL)
     await seed_admin()
     await seed_default_business()
     # Seed 5 demo customers + reservations/transactions/feedback (idempotent).
@@ -641,12 +655,14 @@ async def startup():
                           r["categoriesInserted"], r["productsInserted"], r["stockUnitsInserted"])
     except Exception as exc:
         logger.warning("Alcohol seed skipped: %s", exc)
-    # Start Ash background scheduler
-    try:
-        from services.nua_scheduler import start_scheduler
-        start_scheduler()
-    except Exception as exc:
-        logger.warning("Ash scheduler failed to start: %s", exc)
+    # Start Ash background scheduler — in-process only off Vercel; Vercel
+    # Cron drives /api/cron/ash-hourly instead (see routes/cron.py).
+    if not IS_VERCEL:
+        try:
+            from services.nua_scheduler import start_scheduler
+            start_scheduler()
+        except Exception as exc:
+            logger.warning("Ash scheduler failed to start: %s", exc)
     # Analytics filters the course-event trail on time, and the trail needs a
     # TTL so it can't grow forever.
     try:
@@ -655,28 +671,36 @@ async def startup():
     except Exception as exc:
         logger.warning("Course event indexes failed: %s", exc)
     # Course timing rules need minute-level granularity, so they get their own
-    # loop rather than riding the hourly Ash scheduler.
-    try:
-        from services.coursing_scheduler import start_scheduler as start_coursing
-        start_coursing()
-    except Exception as exc:
-        logger.warning("Coursing scheduler failed to start: %s", exc)
+    # loop rather than riding the hourly Ash scheduler. In-process only off
+    # Vercel; Vercel Cron drives /api/cron/coursing-tick instead.
+    if not IS_VERCEL:
+        try:
+            from services.coursing_scheduler import start_scheduler as start_coursing
+            start_coursing()
+        except Exception as exc:
+            logger.warning("Coursing scheduler failed to start: %s", exc)
     # Daily GitHub auto-sync — see services/repo_sync_scheduler.py.
     # Polls every 30 min; performs one fetch+merge inside the target hour in
     # the configured timezone (default: 04:00 Australia/Sydney).
-    # Disable with REPO_SYNC_ENABLED=false.
-    try:
-        from services.repo_sync_scheduler import start_scheduler as start_repo_sync
-        start_repo_sync()
-    except Exception as exc:
-        logger.warning("Repo-sync scheduler failed to start: %s", exc)
+    # Disable with REPO_SYNC_ENABLED=false. Also skipped on Vercel outright —
+    # it shells out to git against a local filesystem checkout, which has no
+    # meaning on Vercel's ephemeral/read-only function filesystem regardless
+    # of that flag.
+    if not IS_VERCEL:
+        try:
+            from services.repo_sync_scheduler import start_scheduler as start_repo_sync
+            start_repo_sync()
+        except Exception as exc:
+            logger.warning("Repo-sync scheduler failed to start: %s", exc)
     # Daily automatic backup restore-drill — catches a silently-broken
-    # backup before the day it's actually needed.
-    try:
-        from services.backup_scheduler import start_scheduler as start_backup_drills
-        start_backup_drills()
-    except Exception as exc:
-        logger.warning("Backup drill scheduler failed to start: %s", exc)
+    # backup before the day it's actually needed. In-process only off
+    # Vercel; Vercel Cron drives /api/cron/backup-drill-check instead.
+    if not IS_VERCEL:
+        try:
+            from services.backup_scheduler import start_scheduler as start_backup_drills
+            start_backup_drills()
+        except Exception as exc:
+            logger.warning("Backup drill scheduler failed to start: %s", exc)
     # Burned TOTP codes and trusted devices both expire on their own.
     try:
         from services.two_factor import ensure_indexes as ensure_2fa_indexes

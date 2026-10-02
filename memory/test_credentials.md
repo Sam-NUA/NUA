@@ -7,7 +7,7 @@
 - **Kitchen**: kitchen@nua.com / Staff2026! (name: Jim)
 
 ## PIN Login
-- Owner PIN: 25
+- Owner PIN: 0311 (updated 2026-10-02, was 25)
 - Manager PIN: 00
 - Cashier PIN: 11
 - Kitchen PIN: 22
