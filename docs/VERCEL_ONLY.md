@@ -86,9 +86,41 @@ Hobby Cron is limited to daily execution and cannot meet minute-level coursing
 or timely delivery requirements. Do not hide this limitation by declaring a
 successful build to be a completed product.
 
+**Update 2026-10-02 (`emergent/durable-jobs-and-smoke-tests`):** implemented.
+`routes/cron.py` exposes `/api/cron/{ash-hourly,coursing-tick,backup-drill-check,
+booking-sync-drain}`, each gated on a `CRON_SECRET` env var compared against
+the `Authorization: Bearer` header Vercel Cron sends automatically, and each
+guarded by a Mongo-based atomic claim (`services/cron_jobs.try_claim`, new
+`db.scheduler_locks` collection) so two overlapping invocations — a slow
+previous run, or two instances cron fired at once — can't both execute the
+same tick. `server.py` only starts the old perpetual in-process loops when
+`os.environ.get("VERCEL") != "1"` (Vercel sets `VERCEL=1` automatically in
+every deployment) — on Vercel, `vercel.json`'s `crons` array drives these
+endpoints instead. **Still a real blocker, not fully closed**: the Hobby-plan
+daily-only limitation above is a Vercel platform limit, not something this
+code change can work around — `coursing-tick` and `booking-sync-drain` are
+configured for `*/1 * * * *` (every minute) in `vercel.json`, which Vercel
+will silently fail to honor on Hobby (it clamps to once a day). This repo
+cannot confirm or change the Vercel plan — the operator needs to verify
+`nua-pos-staging` is on a plan that supports sub-daily cron (Pro or higher)
+before relying on these for real timing-sensitive work, and that is a cost
+decision for the operator to make, not this agent's to assume.
+
 Other platform-specific gates: shared real-time fan-out across instances,
 distributed rate limiting, durable upload/backup storage, cold-start bootstrap
 behaviour, runtime dependency size and live role/tenant/payment tests.
+
+**Update 2026-10-02:** `scripts/smoke_test_live_edge.py` runs a live
+login/role/tenant-isolation/payment-sandbox smoke test against any `SMOKE_BASE_URL`
+over real HTTP (see the script's own docstring for exact env vars and what
+each section needs). Run against the local preview edge: 19/19 checks
+passed (owner/manager/cashier role boundaries, Stripe sandbox checkout
+session creation, two-tenant customer-list isolation). **Not yet run
+against the real `nua-pos-staging` Vercel URL** — no Vercel access was
+available this pass. Distributed rate limiting and multi-instance realtime
+fan-out remain unverified under actual Vercel concurrency (this pod is a
+single long-lived process, which can't reproduce "two cold-started
+instances handling requests at once").
 
 No production promotion is authorized by passing a build alone. Deploy and
 inspect a staging candidate first, then verify readiness and these jobs under
@@ -97,4 +129,5 @@ instance termination before promotion.
 Sources checked: https://vercel.com/docs/services,
 https://vercel.com/docs/services/routing,
 https://vercel.com/docs/functions/container-images,
-https://vercel.com/docs/cron-jobs/usage-and-pricing.
+https://vercel.com/docs/cron-jobs/usage-and-pricing,
+https://vercel.com/docs/cron-jobs/manage-cron-jobs.

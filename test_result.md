@@ -101,3 +101,102 @@
 #====================================================================================================
 # Testing Data - Main Agent and testing sub agent both should log testing data below this section
 #====================================================================================================
+
+user_problem_statement: "Test the new owner-recovery flow on this NUA POS app. This is a last-resort, operator-only password recovery page at route /owner-recovery, intentionally NOT linked from the main Login page."
+
+frontend:
+  - task: "Owner Recovery Page - Step 1 (Initiate)"
+    implemented: true
+    working: true
+    file: "/app/frontend/src/pages/OwnerRecovery.jsx"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: "NA"
+          agent: "testing"
+          comment: "Initial testing - verifying page renders with recovery key and email inputs, testing wrong key rejection, testing correct key acceptance and progression to step 2"
+        - working: true
+          agent: "testing"
+          comment: "✅ PASSED - Page renders correctly at /owner-recovery with all required fields (recovery key input, email input, submit button). Wrong recovery key 'wrong-key-123' correctly rejected with error message 'Invalid recovery key'. Correct recovery key 'FF3Fb3VlHwltio0eDby9Xrqo9Eomzna3I1_200OunGc' successfully advances to step 2. All data-testid attributes present and working."
+
+  - task: "Owner Recovery Page - Step 2 (Complete)"
+    implemented: true
+    working: true
+    file: "/app/frontend/src/pages/OwnerRecovery.jsx"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: "NA"
+          agent: "testing"
+          comment: "Initial testing - verifying password fields render, testing mismatched password validation, testing successful password reset"
+        - working: true
+          agent: "testing"
+          comment: "✅ PASSED - Step 2 renders correctly with new password and confirm password fields. Client-side validation working: mismatched passwords ('TestRecoveryPass2026!' vs 'DifferentPass123!') correctly show error 'Passwords do not match' without calling backend. Matching passwords successfully complete recovery with success state showing 'Owner password updated' message and 'Back to sign in' link."
+
+  - task: "Owner Recovery - Login with New Password"
+    implemented: true
+    working: true
+    file: "/app/frontend/src/pages/Login.jsx"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: "NA"
+          agent: "testing"
+          comment: "Initial testing - verifying login works with newly set password after recovery"
+        - working: true
+          agent: "testing"
+          comment: "✅ PASSED - Successfully logged in with new password 'TestRecoveryPass2026!' for owner@nua.com. After clicking 'Back to sign in' link, navigated to login page (defaults to PIN login tab), switched to Email tab, entered credentials, and successfully reached /today dashboard. Login flow working correctly end-to-end."
+
+backend:
+  - task: "Owner Recovery API - Initiate Endpoint"
+    implemented: true
+    working: true
+    file: "/app/backend/routes/auth.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: "NA"
+          agent: "testing"
+          comment: "Testing /api/auth/owner-recovery/initiate endpoint with correct and incorrect recovery keys"
+        - working: true
+          agent: "testing"
+          comment: "✅ PASSED - Endpoint correctly validates recovery key against OWNER_RECOVERY_KEY env var. Wrong key rejected with 401 'Invalid recovery key'. Correct key returns token for step 2. Lockout mechanism working (5 attempts = 15 min lockout). Email validation working correctly."
+
+  - task: "Owner Recovery API - Complete Endpoint"
+    implemented: true
+    working: true
+    file: "/app/backend/routes/auth.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: "NA"
+          agent: "testing"
+          comment: "Testing /api/auth/owner-recovery/complete endpoint with valid token and new password"
+        - working: true
+          agent: "testing"
+          comment: "✅ PASSED - Endpoint correctly validates token, updates owner password, and returns success message. Password successfully changed from 'NuaOwner2026!' to 'TestRecoveryPass2026!'. Token is single-use and expires in 15 minutes as designed. Login with new password works correctly."
+
+metadata:
+  created_by: "testing_agent"
+  version: "1.0"
+  test_sequence: 2
+
+test_plan:
+  current_focus:
+    - "Owner Recovery Page - Step 1 (Initiate)"
+    - "Owner Recovery Page - Step 2 (Complete)"
+    - "Owner Recovery - Login with New Password"
+  stuck_tasks: []
+  test_all: true
+  test_priority: "high_first"
+
+agent_communication:
+    - agent: "testing"
+      message: "Starting comprehensive testing of owner-recovery flow. Will test: 1) Page rendering, 2) Wrong key rejection, 3) Correct key acceptance, 4) Password mismatch validation, 5) Successful password reset, 6) Login with new password."
+    - agent: "testing"
+      message: "✅ ALL TESTS PASSED - Owner recovery flow is fully functional. Tested all 6 scenarios successfully: (1) Page renders with all required fields and data-testids, (2) Wrong recovery key rejected with proper error, (3) Correct key advances to step 2, (4) Mismatched passwords show client-side validation error, (5) Matching passwords complete successfully with success message, (6) Login with new password works and reaches dashboard. No console errors or broken layouts found. UX is clean and intuitive. The flow is intentionally not linked from main login page as designed (operator-only access)."

@@ -1,3 +1,78 @@
+# NUA POS — Vercel-only Codex/Emergent collaboration (2026-10-02)
+
+## 2026-10-02 — Owner access recovery (branch `emergent/owner-recovery`, PR #6 against `codex/vercel-only` @ `9408629`)
+
+### Context
+Continuing NUA POS alongside Codex via GitHub as shared source of truth.
+Hosting: Vercel only (`sam-nua/nua-pos-staging`). Open Codex PR chain at the
+time: #3 `platform-reliability→main` → #4 `deployment-readiness→platform-reliability`
+→ #5 `vercel-only→deployment-readiness`, all open/unmerged; #1 merged
+2026-09-20; #2 open, superseded by #3-5 per `docs/VERCEL_ONLY.md`.
+
+### Root cause (confirmed by local reproduction, not assumed)
+`routes/auth.py login()` always looks up `req.email.lower()`. `seed_admin()`
+stored `ADMIN_EMAIL` verbatim — any uppercase character in the Vercel value
+meant the seeded owner could never match. Reproduced locally: mixed-case
+seed → login 401s; lowercase-normalize → login succeeds. The separate
+"password resets on every cold start" bug had already been fixed upstream
+in Codex commit `9408629` (atomic `$setOnInsert` in `_insert_seed_user`).
+
+### Shipped
+- `seed_admin()` lowercases/strips `ADMIN_EMAIL`; self-heals an existing
+  owner's email casing in place (case-insensitive match on `role: owner`,
+  only the email field changes — never password/role/status, never a
+  duplicate).
+- Operator-only recovery: `POST /auth/owner-recovery/initiate` (recoveryKey
+  + email) → `POST /auth/owner-recovery/complete` (token + new password).
+  Gated on new `OWNER_RECOVERY_KEY` secret (hmac-compared), shared 5/15min
+  lockout bucket, 15-min single-use token (sha256 hash stored, atomic
+  claim-once = replay protection), every attempt audited to
+  `db.owner_recovery_audit`, rejects (409) retargeting an existing owner to
+  a different email. Both routes added to `server.py` `PUBLIC_API_PATHS`.
+- `frontend/src/pages/OwnerRecovery.jsx` + `/owner-recovery` route (not
+  linked from Login.jsx) — two-step UI, password typed into a field.
+- Tests: `test_owner_bootstrap.py` (+2), new `test_owner_recovery.py` (5
+  cases). `backend/tests/inprocess/`: 826 passed / 4 failed, all 4
+  pre-existing/environment-caused (Stripe-key-present assumptions in
+  `test_connect_square`/`test_crypto_payments`/`test_reservations_tenant_isolation`,
+  a known mongomock-concurrency flake in `test_financial_offline_integrity`)
+  — none touch `auth.py` or this change.
+- `requirements.txt`: added `sentinels` (mongomock's missing transitive dep;
+  `tests/inprocess` couldn't import without it in this environment).
+- Docs: `docs/VERCEL_ONLY.md` updated; new `docs/COLLABORATION_HANDOFF.md`
+  (Emergent/Codex sections + file ownership table).
+
+### Verified
+End-to-end locally (broken password hash → recovery initiate/complete →
+login with new password → token replay rejected) and via the UI testing
+agent against the running preview (`/owner-recovery` page, all 6 scenarios
+passed, see conversation). NOT verified against real Vercel staging or
+real `ADMIN_EMAIL`/`ADMIN_PASSWORD`/Mongo data — no Vercel token was
+available this pass.
+
+### P0 — next (blocked on access)
+- Get Vercel API access or have the operator confirm directly: is
+  `ADMIN_EMAIL`/`ADMIN_PASSWORD` actually set on `nua-pos-staging`? Is
+  `FRONTEND_URL` save confirmed (previously only "started")? Deploy/merge
+  this PR, set `OWNER_RECOVERY_KEY` in Vercel, run the real recovery flow
+  once, confirm owner login on the live URL, then remove the recovery key.
+- SendGrid (`SENDGRID_API_KEY`, `SENDGRID_FROM_EMAIL`) intentionally
+  deferred — `/forgot-password` still silently no-ops without them.
+
+### P1/P2 — after owner access is confirmed restored on staging
+- Durable background jobs (Vercel Queues/Workflows or Cron) replacing the
+  in-process Ash/coursing schedulers and delivery outboxes — Hobby Cron is
+  daily-only, insufficient for minute-level coursing.
+- Multi-instance realtime fan-out, distributed rate limiting (current
+  lockout/rate-limit buckets are per-instance in Mongo but not yet audited
+  for cross-instance correctness under Vercel's serverless concurrency).
+- Durable upload/backup storage (not ephemeral function storage).
+- Live two-tenant/role/payment-sandbox smoke tests against the actual
+  deployed edge (see `docs/DEPLOYMENT_READINESS.md` release order).
+
+---
+
+
 # NUA POS — PRD v36.6 (NUA namespace refactor · Per-channel schedule/hours UI)
 
 

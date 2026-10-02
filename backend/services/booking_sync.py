@@ -80,10 +80,18 @@ async def _run():
         await asyncio.sleep(1)
 
 
-async def start_worker():
+async def start_worker(run_loop: bool = True):
     global _worker
     await db.booking_sync_outbox.create_index([('status', 1), ('next_attempt_at', 1)])
     await db.booking_sync_outbox.create_index([('businessId', 1), ('status', 1)])
+    # On Vercel an instance can be retired between requests, so a perpetual
+    # `_run()` loop here isn't guaranteed to still be alive when the next
+    # delivery is due — routes/cron.py's /cron/booking-sync-drain (driven
+    # by Vercel Cron) calls drain() directly instead. deliver_next()'s
+    # atomic claim+lease already makes that safe to invoke concurrently
+    # from multiple short-lived function calls, same as from this loop.
+    if not run_loop:
+        return
     if _worker is None or _worker.done():
         _worker = asyncio.create_task(_run())
 
