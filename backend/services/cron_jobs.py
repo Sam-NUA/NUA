@@ -11,15 +11,16 @@ cron schedule that drives them (e.g. an hourly job polled every minute).
 """
 from __future__ import annotations
 from datetime import datetime, timedelta, timezone
-from typing import Optional
+from typing import Optional, Any, cast
 from database import db
 from pymongo.errors import DuplicateKeyError
 import logging
+import uuid
 
 logger = logging.getLogger(__name__)
 
 
-async def try_claim(job_name: str, ttl_seconds: int) -> bool:
+async def try_claim(job_name: str, ttl_seconds: int, owner_token: str | None = None) -> bool:
     """True if this invocation now owns job_name for ttl_seconds.
 
     An expired or never-claimed lock is claimed atomically. A lock still
@@ -36,7 +37,7 @@ async def try_claim(job_name: str, ttl_seconds: int) -> bool:
                 {"lockedUntil": {"$lt": now_iso}},
             ]},
             {"$set": {"lockedUntil": (now + timedelta(seconds=ttl_seconds)).isoformat(),
-                      "claimedAt": now_iso}},
+                      "claimedAt": now_iso, "ownerToken": owner_token or uuid.uuid4().hex}},
             upsert=True,
         )
         return True
@@ -44,14 +45,15 @@ async def try_claim(job_name: str, ttl_seconds: int) -> bool:
         return False
 
 
-async def release(job_name: str) -> None:
+async def release(job_name: str, owner_token: str) -> None:
     """Free the lock early so the next real-cadence tick isn't blocked by
     the full ttl_seconds — used by short jobs (e.g. the booking-sync drain)
     where the lock exists only to stop two overlapping invocations, not to
     throttle how often the job itself may run."""
     now_iso = datetime.now(timezone.utc).isoformat()
-    await db.scheduler_locks.update_one({"_id": job_name}, {"$set": {"lockedUntil": now_iso}})
+    await db.scheduler_locks.update_one({"_id": job_name, "ownerToken": owner_token}, {"$set": {"lockedUntil": now_iso}})
 
 
 async def last_run(job_name: str) -> Optional[dict]:
-    return await db.scheduler_locks.find_one({"_id": job_name}, {"_id": 0})
+    # Motor's stub for this dynamic collection loses the document return type.
+    return await cast(Any, db.scheduler_locks).find_one({"_id": job_name}, {"_id": 0})

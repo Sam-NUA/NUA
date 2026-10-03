@@ -149,12 +149,15 @@ export default function FloorPlan() {
     } catch (e) { console.error(e); toast.error('Could not load the floor plan'); }
   }, [activePlanId]);
 
-  useEffect(() => { fetchPlans(); }, [fetchPlans]);
+  useEffect(() => {
+    fetchPlans();
+    const timer = setInterval(fetchPlans, 30000);
+    return () => clearInterval(timer);
+  }, [fetchPlans]);
   // Any staff device that moves/seats/clears a table pushes here — this
-  // page has no baseline poll interval, so without this the floor plan only
-  // ever updates on this device's own actions.
+  // shared feed refreshes promptly, with a 30s reconciliation poll above.
   useLiveFeed(useCallback((event) => {
-    if (event.type === 'floor_plan.updated') fetchPlans();
+    if (event.type === 'sync.required' || event.type === 'floor_plan.updated') fetchPlans();
   }, [fetchPlans]));
 
   const switchPlan = (planId) => {

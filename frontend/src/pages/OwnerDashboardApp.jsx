@@ -82,7 +82,7 @@ export default function OwnerDashboardApp() {
   // Live sync: a completed sale or roster change refreshes the pulse tiles
   // right away instead of waiting up to 60s for the next poll.
   const { connected: liveConnected } = useLiveFeed(useCallback((event) => {
-    if (event.type === 'sale.completed' || event.type === 'roster.updated') load();
+    if (event.type === 'sync.required' || event.type === 'sale.completed' || event.type === 'roster.updated') load();
   }, [load]));
 
   const handleRegenerateBriefing = async () => {

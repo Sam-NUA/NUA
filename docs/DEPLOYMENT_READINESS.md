@@ -75,3 +75,9 @@ backup restore, edge trust, sustained workers and browser/device smoke. Pulse,
 Crew, entitlement expansion, external POS adapters and other architecture backlog
 items remain separate unfinished workstreams; booking reliability does not
 complete the entire product roadmap.
+
+## October 2 staging reliability follow-up
+
+See [STAGING_RELIABILITY_2026-10-02.md](STAGING_RELIABILITY_2026-10-02.md) for
+confirmed Hobby/cron incompatibility, stale deployment diagnostics, shared
+coordination proofs, durable storage changes, and outstanding live gates.

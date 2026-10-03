@@ -165,3 +165,42 @@ async def transaction_readiness():
     if not hello.get('setName') and hello.get('msg') != 'isdbgrid':
         raise HTTPException(503, 'MongoDB replica set required')
     return {'status': 'ready'}
+
+
+@router.post("/ops/backups")
+async def retain_backup(user: dict = Depends(require_owner)):
+    from services import durable_backups
+    business_id = user.get("businessId")
+    if not business_id:
+        raise HTTPException(403, "Business scope is required")
+    try:
+        archive = await backup.create_backup(business_id=business_id)
+        metadata, _ = await durable_backups.retain(archive, business_id)
+        return metadata
+    except Exception:
+        raise HTTPException(503, "Durable backup storage unavailable")
+
+
+@router.get("/ops/backups")
+async def retained_backups(user: dict = Depends(require_owner)):
+    if not user.get("businessId"):
+        raise HTTPException(403, "Business scope is required")
+    return await db.durable_backups.find(
+        {"businessId": user["businessId"]}, {"_id": 0, "url": 0, "pathname": 0}
+    ).sort("createdAt", -1).to_list(100)
+
+
+@router.get("/ops/backups/{backup_id}")
+async def retained_backup_download(backup_id: str, user: dict = Depends(require_owner)):
+    from services import durable_backups
+    if not user.get("businessId"):
+        raise HTTPException(403, "Business scope is required")
+    try:
+        archive = await durable_backups.read(backup_id, user["businessId"])
+    except Exception:
+        raise HTTPException(503, "Durable backup storage unavailable")
+    if archive is None:
+        raise HTTPException(404, "Backup not found")
+    return Response(archive, media_type="application/gzip", headers={
+        "Content-Disposition": 'attachment; filename="nua-backup.tar.gz"',
+        "Cache-Control": "private, no-store"})

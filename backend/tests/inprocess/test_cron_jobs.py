@@ -19,12 +19,12 @@ def test_try_claim_blocks_until_expiry_then_releases_immediately():
 
     async def scenario():
         await db.scheduler_locks.delete_many({"_id": "unit-test-job"})
-        assert await cron_jobs.try_claim("unit-test-job", ttl_seconds=60) is True
+        assert await cron_jobs.try_claim("unit-test-job", ttl_seconds=60, owner_token="test-owner") is True
         # Still held — a second claim attempt must not also succeed.
         assert await cron_jobs.try_claim("unit-test-job", ttl_seconds=60) is False
         # Releasing frees it immediately, before the ttl would have.
-        await cron_jobs.release("unit-test-job")
-        assert await cron_jobs.try_claim("unit-test-job", ttl_seconds=60) is True
+        await cron_jobs.release("unit-test-job", "test-owner")
+        assert await cron_jobs.try_claim("unit-test-job", ttl_seconds=60, owner_token="test-owner") is True
         await db.scheduler_locks.delete_many({"_id": "unit-test-job"})
 
     _run(scenario())
@@ -81,3 +81,18 @@ def test_booking_sync_drain_releases_its_lock_so_it_can_run_again_immediately(an
     assert second.status_code == 200
     assert second.json()["ran"] is True
     _run(db.scheduler_locks.delete_many({"_id": "booking-sync-drain"}))
+
+
+def test_expired_invocation_cannot_release_new_owner_lease():
+    from database import db
+    from services import cron_jobs
+    async def scenario():
+        job = "fencing-test"
+        await db.scheduler_locks.delete_one({"_id": job})
+        assert await cron_jobs.try_claim(job, -1, owner_token="old")
+        assert await cron_jobs.try_claim(job, 60, owner_token="new")
+        await cron_jobs.release(job, "old")
+        assert not await cron_jobs.try_claim(job, 60)
+        await cron_jobs.release(job, "new")
+        assert await cron_jobs.try_claim(job, 60)
+    _run(scenario())
