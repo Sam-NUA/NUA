@@ -61,7 +61,7 @@ multidict==6.7.1
 mypy==1.18.2
 mypy_extensions==1.1.0
 numpy==2.3.4
-oauthlib==3.3.1
+oauthlib==4.0.0
 openai==1.99.9
 openpyxl==3.1.5
 packaging==26.3
@@ -82,11 +82,11 @@ pydantic==2.13.5
 pydantic_core==2.46.5
 pyflakes==3.4.0
 Pygments==2.21.0
-PyJWT==2.13.0
+PyJWT==2.15.0
 pyotp==2.10.0
 pymongo==4.6.3
 pyparsing==3.3.2
-pypdf==6.16.1
+pypdf==6.19.0
 pyserial==3.5
 pytest==9.1.1
 python-dateutil==2.9.0.post0
@@ -121,7 +121,7 @@ typing-inspection==0.4.4
 typing_extensions==4.16.0
 tzdata==2025.2
 uritemplate==4.2.0
-urllib3==2.7.0
+urllib3==2.8.0
 uvicorn==0.25.0
 watchfiles==1.1.1
 websockets==16.0

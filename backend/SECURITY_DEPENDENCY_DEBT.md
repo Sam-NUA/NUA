@@ -110,3 +110,13 @@ Pass 1 (below) took a "bump anything low-risk" approach and explicitly deferred 
 ## Recommended next step
 
 Only `starlette` (blocked on a coordinated FastAPI bump) and `cryptography`'s remaining major-version jump are left as real, reachable, unresolved debt. Schedule a dedicated task that: (1) bumps FastAPI to a version whose `starlette` constraint reaches a fixed release, running the full route surface's tests plus a manual smoke test; (2) separately walks `cryptography` 46→48→49→50 one major at a time, auditing this app's direct crypto call sites against each changelog between bumps.
+# Staging retry — 2026-10-03
+
+PR #8 CI identified new advisories in four pinned packages. Upgrade urllib3
+2.7.0 to 2.8.0, OAuthLib 3.3.1 to 4.0.0, PyJWT 2.13.0 to 2.15.0, and pypdf
+6.16.1 to 6.19.0. Keep the vulnerability gate and accepted baseline unchanged.
+PyJWT is used for authentication; pypdf also parses uploaded menus in
+`routes/menu_features.py`, so its parser fixes matter (the older export-only
+description below is incomplete). OAuthLib has no direct application imports
+but remains a requests-oauthlib dependency. Validate the resolved requirements,
+dependency gate, and in-process backend suite before promotion.
