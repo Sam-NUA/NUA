@@ -1,0 +1,35 @@
+const { test, expect } = require('@playwright/test');
+
+test('standalone Booking: signup, publish, book, cancel and retain export', async ({ page, context }) => {
+  await page.goto('/booking-app');
+  await page.getByRole('button', { name: 'Create a Booking account', exact: true }).click();
+  await page.getByLabel('Your name').fill('Booking Pilot');
+  await page.getByLabel('Venue name', { exact: true }).fill('Independent Venue');
+  await page.getByLabel('Email', { exact: true }).fill(`booking-${Date.now()}@example.com`);
+  await page.getByLabel('Password (12–72 characters)').fill('browser-test-password');
+  await page.getByRole('button', { name: 'Create Booking account', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'Independent Venue', exact: true })).toBeVisible();
+  await page.getByLabel('Publish guest booking page').check();
+  await page.getByRole('button', { name: 'Save venue settings' }).click();
+  const url = await page.getByRole('link', { name: 'Open guest booking page' }).getAttribute('href');
+  const guest = await context.newPage();
+  await guest.goto(url);
+  await guest.getByLabel('Guest name').fill('Pilot Guest');
+  await guest.getByLabel('Email', { exact: true }).fill('guest@example.com');
+  const date = new Date(Date.now() + 2 * 86400000).toISOString().slice(0, 10);
+  await guest.getByLabel('Date', { exact: true }).fill(date);
+  await guest.getByLabel(/^Time \(/).fill('18:00');
+  await guest.getByRole('button', { name: 'Confirm booking', exact: true }).click();
+  await expect(guest.getByRole('status')).toContainText('Booking confirmed');
+  await page.getByLabel('Service date').fill(date);
+  await expect(page.getByRole('cell', { name: /Pilot Guest/ })).toBeVisible();
+  await page.getByRole('button', { name: 'Cancel Booking trial', exact: true }).click();
+  await page.getByRole('button', { name: 'Confirm cancellation', exact: true }).click();
+  await expect(page.getByText('Your trial is no longer active.', { exact: false })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Export all bookings' })).toBeEnabled();
+  const download = page.waitForEvent('download');
+  await page.getByRole('button', { name: 'Export all bookings' }).click();
+  expect((await download).suggestedFilename()).toBe('nua-booking-export.json');
+  await guest.reload();
+  await expect(guest.getByRole('alert')).toContainText('Booking page is not available');
+});
