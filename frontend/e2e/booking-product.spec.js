@@ -1,6 +1,6 @@
 const { test, expect } = require('@playwright/test');
 
-test('standalone Booking: signup, publish, book, cancel and retain export', async ({ page, context }) => {
+test('standalone Booking: signup, publish, book, cancel and retain export', async ({ page, browser }) => {
   await page.goto('/booking-app');
   await page.getByRole('button', { name: 'Create a Booking account', exact: true }).click();
   await page.getByLabel('Your name').fill('Booking Pilot');
@@ -12,8 +12,10 @@ test('standalone Booking: signup, publish, book, cancel and retain export', asyn
   await page.getByLabel('Publish guest booking page').check();
   await page.getByRole('button', { name: 'Save venue settings' }).click();
   const url = await page.getByRole('link', { name: 'Open guest booking page' }).getAttribute('href');
-  const guest = await context.newPage();
-  await guest.goto(url);
+  // A guest opens the shared deep link without the owner's cookies or token.
+  const guestContext = await browser.newContext();
+  const guest = await guestContext.newPage();
+  await guest.goto(new URL(url, page.url()).href);
   await guest.getByLabel('Guest name').fill('Pilot Guest');
   await guest.getByLabel('Email', { exact: true }).fill('guest@example.com');
   const date = new Date(Date.now() + 2 * 86400000).toISOString().slice(0, 10);
@@ -32,4 +34,5 @@ test('standalone Booking: signup, publish, book, cancel and retain export', asyn
   expect((await download).suggestedFilename()).toBe('nua-booking-export.json');
   await guest.reload();
   await expect(guest.getByRole('alert')).toContainText('Booking page is not available');
+  await guestContext.close();
 });

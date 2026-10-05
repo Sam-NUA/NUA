@@ -2,6 +2,17 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
+    <script>
+      // Web routes may be opened directly at /book/v/:venue or /track/:id.
+      // Resolve the initial relative CRA assets from the web root before
+      // loading them; publicPath.js can only fix chunks after JS has loaded.
+      // Preserve relative assets for native/file builds.
+      if (/^https?:$/.test(window.location.protocol)) {
+        var assetBase = document.createElement('base');
+        assetBase.href = '/';
+        document.head.appendChild(assetBase);
+      }
+    </script>
     <!-- NUA brand favicons — see brand/BRAND-SPEC.md -->
     <link rel="icon" href="%PUBLIC_URL%/favicon.ico" sizes="any" />
     <link rel="icon" type="image/png" sizes="16x16" href="%PUBLIC_URL%/favicon-16x16.png" />

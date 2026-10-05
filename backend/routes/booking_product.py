@@ -11,6 +11,11 @@ from services import booking_product as product
 
 router = APIRouter(prefix='/booking-product')
 Text = Annotated[str, Field(min_length=1, max_length=120)]
+def validate_timezone(value: str) -> str:
+    try: ZoneInfo(value)
+    except (ZoneInfoNotFoundError, ValueError): raise ValueError('Choose a valid timezone')
+    return value
+
 class StrictModel(BaseModel):
     model_config = ConfigDict(extra='forbid', str_strip_whitespace=True)
 
@@ -26,12 +31,7 @@ class Signup(StrictModel):
         if len(value.encode()) > 72:
             raise ValueError('Password must be at most 72 UTF-8 bytes')
         return value
-    @field_validator('timezone')
-    @classmethod
-    def valid_timezone(cls, value):
-        try: ZoneInfo(value)
-        except (ZoneInfoNotFoundError, ValueError): raise ValueError('Choose a valid timezone')
-        return value
+    _timezone = field_validator('timezone')(validate_timezone)
 
 class Venue(StrictModel):
     name: Text
@@ -41,7 +41,7 @@ class Venue(StrictModel):
     capacity: Annotated[int, Field(ge=1, le=500)]
     maxPartySize: Annotated[int, Field(ge=1, le=50)]
     published: bool
-    _timezone = field_validator('timezone')(Signup.valid_timezone.__func__)
+    _timezone = field_validator('timezone')(validate_timezone)
     @model_validator(mode='after')
     def hours(self):
         if self.closeTime <= self.openTime:
