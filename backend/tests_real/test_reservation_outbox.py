@@ -9,6 +9,7 @@ import pytest
 from fastapi import HTTPException
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+os.environ.setdefault('JWT_SECRET', 'isolated-replica-test-secret-not-for-production')
 os.environ['DB_NAME'] = 'nua_reservation_test_' + uuid.uuid4().hex
 os.environ['MONGO_URL'] = os.environ.get('TEST_MONGO_URL', 'mongodb://127.0.0.1:27018/?replicaSet=nua-test')
 os.environ.update({'NUA_BOOKINGS_API_URL': 'https://bookings.example.test',
@@ -30,7 +31,9 @@ def run(coro):
 def clean():
     run(client.drop_database(db.name))
     async def prepare():
-        for name in ('reservations', 'booking_sync_outbox', 'booking_capacity_locks', 'businesses'):
+        for name in ('reservations', 'booking_sync_outbox', 'booking_capacity_locks', 'businesses',
+                     'auth_users', 'product_accounts', 'loyalty_product_members',
+                     'loyalty_product_rewards', 'loyalty_product_ledger', 'loyalty_product_redemptions'):
             await db.create_collection(name)
     run(prepare())
     yield
@@ -100,4 +103,78 @@ def test_native_capacity_contention_commits_one_record():
                 return True
         assert sum(await asyncio.gather(*(attempt(i) for i in range(8)))) == 1
         assert await db.booking_sync_outbox.count_documents({}) == 1
+    run(scenario())
+
+
+# Standalone Loyalty uses the same isolated replica set and real transactions.
+def loyalty_setup():
+    from types import SimpleNamespace
+    from services import loyalty_product as product
+    from routes.loyalty_product import Program, Join, Adjustment, Reward
+    async def scenario():
+        os.environ['LOYALTY_PRODUCT_SIGNUP_ENABLED'] = 'true'
+        user = await product.signup(SimpleNamespace(name='Owner', venueName='Club',
+            email=uuid.uuid4().hex+'@example.com', password='real-test-password'))
+        bid = user['businessId']
+        account = await product.account_for(bid)
+        await product.configure(bid, Program(**{**account['program'], 'published': True}))
+        email = uuid.uuid4().hex+'@example.com'
+        await product.join(bid, Join(name='Member', email=email, password='real-member-password', acceptTerms=True))
+        mid = product.member_id(bid, email)
+        await product.mutate_points(bid, mid, Adjustment(requestId=uuid.uuid4(), points=100, reason='Receipt test'), user['id'])
+        rid = str(uuid.uuid4())
+        await product.save_reward(bid, rid, Reward(name='Coffee', points=100))
+        return product, bid, mid, rid
+    return run(scenario())
+
+
+def test_loyalty_real_concurrent_claims_cannot_overspend():
+    product, bid, mid, rid = loyalty_setup()
+    from routes.loyalty_product import Claim
+    async def scenario():
+        async def claim():
+            try:
+                return await product.mutate_points(bid, mid, Claim(requestId=uuid.uuid4()), mid, reward_id=rid)
+            except HTTPException as exc:
+                assert exc.status_code == 409
+                return None
+        results = await asyncio.gather(*(claim() for _ in range(8)))
+        assert sum(r is not None for r in results) == 1
+        assert (await product.member_for(bid, mid))['points'] == 0
+        assert await db.loyalty_product_redemptions.count_documents({'businessId':bid}) == 1
+        assert await db.loyalty_product_ledger.count_documents({'businessId':bid}) == 2
+    run(scenario())
+
+
+def test_loyalty_real_replay_and_concurrent_refund_are_exactly_once():
+    product, bid, mid, rid = loyalty_setup()
+    from routes.loyalty_product import Claim
+    async def scenario():
+        data = Claim(requestId=uuid.uuid4())
+        results = await asyncio.gather(*(product.mutate_points(bid, mid, data, mid, reward_id=rid) for _ in range(4)))
+        assert all(r == results[0] for r in results)
+        receipt = results[0]['redemptionId']
+        await asyncio.gather(*(product.resolve_redemption(bid, receipt, 'cancel', 'owner') for _ in range(4)))
+        member = await product.member_for(bid, mid)
+        assert member['points'] == 100 and member['earnedPoints'] == 100
+        assert await db.loyalty_product_ledger.count_documents({'businessId':bid}) == 3
+    run(scenario())
+
+
+def test_loyalty_transaction_failure_rolls_back_points_and_receipt(monkeypatch):
+    product, bid, mid, rid = loyalty_setup()
+    from routes.loyalty_product import Claim
+    original = product.transaction
+    async def failing(operation):
+        async def write_then_fail(session):
+            await operation(session)
+            raise RuntimeError('injected failure before commit')
+        return await original(write_then_fail)
+    monkeypatch.setattr(product, 'transaction', failing)
+    async def scenario():
+        with pytest.raises(RuntimeError):
+            await product.mutate_points(bid, mid, Claim(requestId=uuid.uuid4()), mid, reward_id=rid)
+        assert (await product.member_for(bid, mid))['points'] == 100
+        assert await db.loyalty_product_redemptions.count_documents({'businessId':bid}) == 0
+        assert await db.loyalty_product_ledger.count_documents({'businessId':bid}) == 1
     run(scenario())

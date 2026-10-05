@@ -177,10 +177,10 @@ async def _resolve_business_id(business: Optional[str]) -> str:
     if business:
         biz = await db.businesses.find_one(
             {"$or": [{"id": business}, {"slug": business}]}, {"_id": 0, "id": 1})
-        if not biz or str(biz["id"]).startswith("nb_"):
+        if not biz or str(biz["id"]).startswith(("nb_", "nl_")):
             raise HTTPException(status_code=404, detail="Business not found")
         return biz["id"]
-    candidates = await db.businesses.find({"id": {"$not": {"$regex": "^nb_"}}}, {"_id": 0, "id": 1}).to_list(2)
+    candidates = await db.businesses.find({"id": {"$not": {"$regex": "^(nb_|nl_)"}}}, {"_id": 0, "id": 1}).to_list(2)
     if len(candidates) != 1:
         raise HTTPException(status_code=400, detail="Specify a valid business (?business=<slug-or-id>)")
     return candidates[0]["id"]
