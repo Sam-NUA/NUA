@@ -19,7 +19,7 @@ test('standalone Loyalty: enrol, award, claim, refund, fulfil and retain access'
   const url = new URL(await page.getByRole('link', { name: 'Open member portal' }).getAttribute('href'), page.url()).href;
   const memberContext = await browser.newContext({ viewport: { width: 390, height: 844 } });
   const member = await memberContext.newPage();
-  await member.goto('/members');
+  await member.goto(new URL('/members', url).href);
   await expect(member.getByRole('heading', { name: 'Open your venue’s rewards' })).toBeVisible();
   await expect(member.getByLabel('Password', { exact: true })).toHaveCount(0);
   await member.getByLabel('Venue code').fill('https://example.com');
