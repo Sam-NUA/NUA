@@ -12,6 +12,6 @@ installErrorReporting();
 const root = ReactDOM.createRoot(document.getElementById("root"));
 root.render(
   <React.StrictMode>
-    {(window.location.pathname.startsWith("/loyalty-app") || window.location.pathname.startsWith("/members/v/") || ["loyalty.nuapos.com.au", "members.nuapos.com.au"].includes(window.location.hostname)) ? <LoyaltyProduct /> : (window.location.pathname.startsWith("/booking-app") || window.location.pathname.startsWith("/book/v/") || window.location.hostname === "booking.nuapos.com.au") ? <BookingProduct /> : <App />}
+    {(window.location.pathname.startsWith("/loyalty-app") || /^\/members(?:\/|$)/.test(window.location.pathname) || ["loyalty.nuapos.com.au", "members.nuapos.com.au"].includes(window.location.hostname)) ? <LoyaltyProduct /> : (window.location.pathname.startsWith("/booking-app") || window.location.pathname.startsWith("/book/v/") || window.location.hostname === "booking.nuapos.com.au") ? <BookingProduct /> : <App />}
   </React.StrictMode>,
 );

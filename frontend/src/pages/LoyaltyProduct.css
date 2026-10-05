@@ -21,3 +21,7 @@
 .loyalty-terms { white-space: pre-wrap; }
 .loyalty-footer { padding: 32px 0; font-size: .8rem; text-align: center; color: #685858; }
 @media(max-width:600px) { .loyalty-stats { grid-template-columns: 1fr; gap: 8px; } .loyalty-stats > div { padding: 16px; } .loyalty-hero { padding-top: 20px; } }
+
+.loyalty-portal-qr { margin: 24px 0; }
+.loyalty-portal-qr svg { display: block; max-width: 100%; height: auto; }
+.loyalty-portal-qr figcaption { margin-top: 8px; color: #685858; }

@@ -19,7 +19,15 @@ test('standalone Loyalty: enrol, award, claim, refund, fulfil and retain access'
   const url = new URL(await page.getByRole('link', { name: 'Open member portal' }).getAttribute('href'), page.url()).href;
   const memberContext = await browser.newContext({ viewport: { width: 390, height: 844 } });
   const member = await memberContext.newPage();
-  await member.goto(url);
+  await member.goto('/members');
+  await expect(member.getByRole('heading', { name: 'Open your venue’s rewards' })).toBeVisible();
+  await expect(member.getByLabel('Password', { exact: true })).toHaveCount(0);
+  await member.getByLabel('Venue code').fill('https://example.com');
+  await member.getByRole('button', { name: 'Continue to my venue' }).click();
+  await expect(member.getByRole('alert')).toContainText('Enter the venue code');
+  await member.getByLabel('Venue code').fill(new URL(url).pathname.split('/').pop());
+  await member.getByRole('button', { name: 'Continue to my venue' }).click();
+  await expect(member).toHaveURL(url);
   await member.getByRole('button', { name: 'Join this program', exact: true }).click();
   await member.getByLabel('Your name', { exact: true }).fill('Pilot Member');
   await member.getByLabel('Email', { exact: true }).fill(`member-${Date.now()}@example.com`);

@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import axios from 'axios';
+import { QRCodeSVG } from 'qrcode.react';
 import { AuthProvider, useAuth } from '../contexts/AuthContext';
 import './BookingProduct.css';
 import './LoyaltyProduct.css';
@@ -59,6 +60,9 @@ function MerchantWorkspace() {
   async function act(fn) { setBusy(true); setError(''); setNotice(''); try { await fn(); } catch (e) { setError(errorText(e)); } finally { setBusy(false); } }
   if (!account) return <><Notice error={error} /><p>Loading Loyalty workspace…</p><button onClick={logout}>Sign out</button></>;
   const canWrite = account.canWrite;
+  const memberOrigin = ['loyalty.nuapos.com.au', 'members.nuapos.com.au'].includes(window.location.hostname)
+    ? 'https://members.nuapos.com.au' : window.location.origin;
+  const memberUrl = new URL(account.memberPath, memberOrigin).href;
   return <><div className="booking-top"><div><p className="loyalty-eyebrow">LOYALTY WORKSPACE</p><h1>{account.program.name}</h1><p>{canWrite ? '14-day pilot' : 'Read-only'} · Trial ends {new Date(account.products.loyalty.trialEndsAt).toLocaleDateString()}</p></div><button className="booking-secondary" onClick={logout}>Sign out</button></div>
     <Notice error={error} notice={notice} />{!canWrite && <p className="booking-card">New enrolments, points changes and reward claims are paused. Existing records, exports and pending reward fulfilment remain available.</p>}
     <div className="loyalty-stats"><div><strong>{total}</strong><span>Members in current search</span></div><div><strong>{rewards.filter(r => r.active).length}</strong><span>Active reward options</span></div><div><strong>{account.program.published && canWrite ? 'Open' : 'Closed'}</strong><span>Member enrolment</span></div></div>
@@ -76,7 +80,7 @@ function MerchantWorkspace() {
       {resolution && <div className="loyalty-confirm"><p>{resolution.action === 'fulfil' ? 'Confirm you have supplied this reward. This action cannot be undone.' : 'Cancel this reward claim and return the points?'} Reference: {resolution.id}</p><button disabled={busy} onClick={() => act(async () => { await merchant('post', `/redemptions/${resolution.id}/resolve`, { action: resolution.action }); setResolution(null); await loadReceipts(); await loadMembers(); if (selected) await loadSelected(selected.member.id); setNotice('Reward claim updated.'); })}>Confirm reward action</button><button className="booking-secondary" onClick={() => setResolution(null)}>Go back</button></div>}
       <div className="booking-actions"><button disabled={busy || !receiptOffset} onClick={() => act(() => loadReceipts(Math.max(0, receiptOffset - 50)))}>Previous claims</button><button disabled={busy || receipts.length < 50} onClick={() => act(() => loadReceipts(receiptOffset + 50))}>Next claims</button></div>
     </section>
-    <form className="booking-card" onSubmit={e => { e.preventDefault(); act(async () => { const r = await merchant('put', '/program', program); setAccount(r.data); setProgram(r.data.program); await loadMembers(); setNotice('Program settings saved.'); }); }}><h2>Program and member portal</h2><Field label="Program name" required maxLength={120} value={program.name} onChange={e => setProgram({ ...program, name: e.target.value })} /><Area label="Program description" maxLength={500} value={program.description} onChange={e => setProgram({ ...program, description: e.target.value })} /><Area label="Program terms" required minLength={10} maxLength={5000} value={program.terms} onChange={e => setProgram({ ...program, terms: e.target.value })} /><h3>Lifetime earned-points tiers</h3>{program.tiers.map((t, i) => <div className="booking-grid" key={i}><Field label={`Tier ${i + 1} name`} required value={t.name} onChange={e => setProgram({ ...program, tiers: program.tiers.map((v, j) => j === i ? { ...v, name: e.target.value } : v) })} /><Field label={`Tier ${i + 1} threshold`} type="number" required min="0" max="1000000000" value={t.threshold} onChange={e => setProgram({ ...program, tiers: program.tiers.map((v, j) => j === i ? { ...v, threshold: Number(e.target.value) } : v) })} /></div>)}<label><input type="checkbox" checked={program.published} onChange={e => setProgram({ ...program, published: e.target.checked })} /> Open member enrolment</label><p><button disabled={busy || !canWrite}>Save program settings</button></p><a href={account.memberPath} target="_blank" rel="noreferrer">Open member portal</a><p className="loyalty-link">{window.location.origin}{account.memberPath}</p></form>
+    <form className="booking-card" onSubmit={e => { e.preventDefault(); act(async () => { const r = await merchant('put', '/program', program); setAccount(r.data); setProgram(r.data.program); await loadMembers(); setNotice('Program settings saved.'); }); }}><h2>Program and member portal</h2><Field label="Program name" required maxLength={120} value={program.name} onChange={e => setProgram({ ...program, name: e.target.value })} /><Area label="Program description" maxLength={500} value={program.description} onChange={e => setProgram({ ...program, description: e.target.value })} /><Area label="Program terms" required minLength={10} maxLength={5000} value={program.terms} onChange={e => setProgram({ ...program, terms: e.target.value })} /><h3>Lifetime earned-points tiers</h3>{program.tiers.map((t, i) => <div className="booking-grid" key={i}><Field label={`Tier ${i + 1} name`} required value={t.name} onChange={e => setProgram({ ...program, tiers: program.tiers.map((v, j) => j === i ? { ...v, name: e.target.value } : v) })} /><Field label={`Tier ${i + 1} threshold`} type="number" required min="0" max="1000000000" value={t.threshold} onChange={e => setProgram({ ...program, tiers: program.tiers.map((v, j) => j === i ? { ...v, threshold: Number(e.target.value) } : v) })} /></div>)}<label><input type="checkbox" checked={program.published} onChange={e => setProgram({ ...program, published: e.target.checked })} /> Open member enrolment</label><p><button disabled={busy || !canWrite}>Save program settings</button></p><a href={memberUrl} target="_blank" rel="noreferrer">Open member portal</a><p className="loyalty-link">{memberUrl}</p><figure className="loyalty-portal-qr"><QRCodeSVG value={memberUrl} size={180} marginSize={4} title="Scan to open this venue’s member portal" /><figcaption>Scan to join or view your rewards.</figcaption></figure><p>Venue code: <code>{account.businessId}</code></p></form>
     <section className="booking-card"><h2>Loyalty subscription</h2><p>This no-charge pilot uses manual points updates. No automatic Square sync, cash payments, SMS or email delivery is active. Cancelling closes enrolment and new claims, while existing claims can still be fulfilled or refunded.</p>{canWrite && (cancel ? <div className="booking-actions"><button disabled={busy} onClick={() => act(async () => { await merchant('post', '/cancel'); await loadAccount(); setCancel(false); })}>Confirm trial cancellation</button><button className="booking-secondary" onClick={() => setCancel(false)}>Keep trial</button></div> : <button className="booking-secondary" onClick={() => setCancel(true)}>Cancel Loyalty trial</button>)}</section>
   </>;
 }
@@ -110,7 +114,25 @@ function MemberPortal({ businessId }) {
     </>}
   </>;
 }
+function MemberEntry() {
+  const [code, setCode] = useState(''), [error, setError] = useState('');
+  function openVenue(e) {
+    e.preventDefault();
+    const venue = code.trim();
+    if (!/^nl_[a-zA-Z0-9-]{1,80}$/.test(venue)) {
+      setError('Enter the venue code supplied by your venue, beginning with nl_.');
+      return;
+    }
+    window.location.assign(`/members/v/${encodeURIComponent(venue)}`);
+  }
+  return <><div className="loyalty-hero"><p className="loyalty-eyebrow">YOUR LOCAL FAVOURITES. YOUR REWARDS.</p><h1>A little more to<br />look forward to.</h1><p>View your points and claim rewards with the places you love.</p></div>
+    <section className="booking-card"><h2>Open your venue’s rewards</h2><p>Scan the QR code at your venue or follow the membership link they shared with you. Each venue has its own program and member sign-in.</p>
+      <form onSubmit={openVenue}><Field label="Venue code" autoComplete="off" spellCheck={false} value={code} onChange={e => setCode(e.target.value)} placeholder="nl_…" required maxLength={83} /><button>Continue to my venue</button><Notice error={error} /></form>
+      <p>Don’t have a link or code? Ask your venue to share its NUA member portal.</p></section>
+    <p>Run a business? <a href={window.location.hostname === 'members.nuapos.com.au' ? 'https://loyalty.nuapos.com.au/' : '/loyalty-app'}>Manage your loyalty program</a></p></>;
+}
 export default function LoyaltyProduct() {
-  const match = window.location.pathname.match(/^\/members\/v\/([^/]+)\/?$/);
-  return <main className="booking-product loyalty-product"><header className="booking-brand">NUA <span>{match ? 'Members' : 'Loyalty'}</span></header>{match ? <MemberPortal businessId={decodeURIComponent(match[1])} /> : <AuthProvider><MerchantContent /></AuthProvider>}<footer className="loyalty-footer">NUA · Your community, rewarded.</footer></main>;
+  const match = window.location.pathname.match(/^\/members\/v\/(nl_[a-zA-Z0-9-]{1,80})\/?$/);
+  const memberSurface = window.location.hostname === 'members.nuapos.com.au' || /^\/members(?:\/|$)/.test(window.location.pathname);
+  return <main className="booking-product loyalty-product"><header className="booking-brand">NUA <span>{memberSurface ? 'Members' : 'Loyalty'}</span></header>{match ? <MemberPortal businessId={match[1]} /> : memberSurface ? <MemberEntry /> : <AuthProvider><MerchantContent /></AuthProvider>}<footer className="loyalty-footer">NUA · Your community, rewarded.</footer></main>;
 }

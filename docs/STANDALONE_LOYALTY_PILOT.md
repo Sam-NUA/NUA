@@ -34,13 +34,17 @@ extension of a Booking-only entitlement.
 | Venue membership | `/members/v/<businessId>` | `members.nuapos.com.au/members/v/<businessId>` |
 | Booking | `/booking-app` | `booking.nuapos.com.au` |
 
-No DNS changes are included. All three can be tested from the existing Vercel
-preview before domain setup. The UI selects Loyalty on `loyalty.nuapos.com.au`
-and `members.nuapos.com.au`; members must follow the full venue-specific path,
-which identifies the merchant. The root of the members hostname currently shows
-the Loyalty sign-in, not a cross-business member directory. Portal links generated
-in management use the current origin. Once the members domain is configured,
-retain `/members/v/<businessId>` when sharing that domain with customers.
+All three custom domains were verified in Vercel on 6 October 2026 and their
+HTTPS entry pages loaded. They target the `codex/standalone-loyalty` preview branch.
+This is not evidence of authenticated live journeys or payment readiness.
+
+The members hostname and `/members` show a customer entry page, not merchant
+sign-in. Customers scan the venue QR, follow its link, or enter its `nl_` venue code.
+Only a valid code becomes a same-origin member path; arbitrary URLs are rejected.
+On the custom Loyalty domain, management generates portal links and QR codes for
+`https://members.nuapos.com.au/members/v/<businessId>`. Other previews and local
+runs retain their own origin so tests do not accidentally use the live service.
+Each venue remains a separate membership and login; there is no public directory.
 
 Use the same Vercel project/build for the pilot and add both domains to that project.
 Use the DNS records Vercel supplies for that project, not guessed CNAME values.
@@ -105,3 +109,20 @@ staging database; exercise multiple instances/cold starts; verify backup readbac
 and restore including these four new collections; finish email ownership and
 recovery, incident support, and privacy/retention processes. Existing paid-launch
 and Booking operational gates still apply.
+
+## Incoming payments scope (6 October 2026)
+
+The owner requested accepting payments; outgoing payments, merchant payouts and
+Stripe Connect setup are deferred. Stripe account connection is pending. Use a
+sandbox for integration tests before enabling live charges. Existing checkout
+code reads `STRIPE_API_KEY`; generic `STRIPE_SECRET_KEY` provisioning is not
+sufficient. Existing payment checkout and licensing webhook handlers currently
+share `STRIPE_WEBHOOK_SECRET`; separate endpoint signing secrets before registering
+both with Stripe. Standalone product subscriptions and booking deposits are not
+yet wired to this existing POS integration. Do not enable paid acquisition based
+solely on domain verification.
+
+Email delivery uses SendGrid (`SENDGRID_API_KEY`, `SENDGRID_FROM_EMAIL`). Sender
+verification and actual delivery must be confirmed before launching email
+verification or forgotten-password recovery. No new public registration or live
+payment flags have been enabled by the customer-entry change.
