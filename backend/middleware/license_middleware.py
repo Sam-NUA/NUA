@@ -33,6 +33,7 @@ logger = logging.getLogger(__name__)
 # Routes that must always succeed regardless of license state.
 ALWAYS_OPEN_PREFIXES = (
     "/api/auth/",
+    "/api/booking-product/",  # independent product lifecycle, enforced by its own routes
     "/api/license/",            # licensing itself
     "/api/payments/",           # payment / billing flows
     "/api/webhook/",            # webhooks

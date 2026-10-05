@@ -11,6 +11,7 @@ import BottomDock from './components/BottomDock';
 import BackButton from './components/BackButton';
 import LicensePage, { LicenseLockScreen, LicenseBanner } from './pages/LicensePage';
 const Login = lazy(() => import('./pages/Login'));
+const BookingProduct = lazy(() => import('./pages/BookingProduct'));
 const OnboardingWizard = lazy(() => import('./pages/OnboardingWizard'));
 const ResetPassword = lazy(() => import('./pages/ResetPassword'));
 const OwnerRecovery = lazy(() => import('./pages/OwnerRecovery'));
@@ -193,6 +194,7 @@ function ProtectedRoutes() {
   const shell = getAppShell();
   if (loading) return <div className="min-h-screen flex items-center justify-center"><div className="animate-pulse text-gray-500 text-lg">Loading...</div></div>;
   if (!user) return <Login />;
+  if (user.businessId?.startsWith("nb_")) return <BookingProduct />;
 
   // First-login setup wizard — owner only (a cashier/manager logging in
   // before the owner has finished setup just uses the app normally; there's

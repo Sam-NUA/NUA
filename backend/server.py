@@ -85,6 +85,8 @@ app = FastAPI()
 api_router = APIRouter(prefix="/api")
 
 # Include all route modules
+from routes.booking_product import router as booking_product_router
+api_router.include_router(booking_product_router)
 api_router.include_router(auth_router)
 api_router.include_router(cron_router)
 api_router.include_router(products_router)
@@ -261,6 +263,7 @@ PUBLIC_API_PREFIXES = (
 )
 
 PUBLIC_API_PATHS = {
+    "/api/booking-product/signup", "/api/booking-product/availability",
     "/api/", "/api/health", "/api/healthz", "/api/ready",
     "/api/ops/device-status",     # login-screen peripheral status — counts/booleans only
     # Auth itself, plus the endpoints the login screen needs before there is a user.
@@ -352,7 +355,7 @@ PUBLIC_API_PATHS = {
 
 
 def _is_public_api(path: str) -> bool:
-    return path in PUBLIC_API_PATHS or path.startswith(PUBLIC_API_PREFIXES)
+    return path in PUBLIC_API_PATHS or path.startswith(PUBLIC_API_PREFIXES) or path.startswith("/api/booking-product/public/")
 
 
 class RequireAuthMiddleware(BaseHTTPMiddleware):
@@ -430,6 +433,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
     instead of no limit at all.
     """
     PATH_OVERRIDES = {
+        "/api/booking-product/signup": (5, 3600),
         "/api/vouchers/public-check": (10, 60),  # 10 req/min per IP
         # Same rationale as vouchers/public-check — an unauthenticated
         # caller with no identity beyond "some IP" shouldn't get the
@@ -459,6 +463,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         # Booking/waitlist creation — a real, moderately-costly write on a
         # fully anonymous surface; same tier as the guest-lookup overrides
         # above.
+        ("/api/booking-product/public/", 10, 60),
         ("/api/public/book", 10, 60),
         ("/api/public/join-waitlist", 10, 60),
         # Twilio's own webhook-delivery IPs are a shared pool across every
@@ -535,6 +540,8 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
 app.add_middleware(RequireAuthMiddleware)
 app.add_middleware(RateLimitMiddleware)
 app.add_middleware(LicenseEnforcementMiddleware)
+from middleware.product_access import ProductAccessMiddleware
+app.add_middleware(ProductAccessMiddleware)
 app.add_middleware(ActorContextMiddleware)
 
 
