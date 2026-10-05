@@ -4,6 +4,7 @@ import { QRCodeSVG } from 'qrcode.react';
 import { AuthProvider, useAuth } from '../contexts/AuthContext';
 import './BookingProduct.css';
 import './LoyaltyProduct.css';
+import { ProductHeader, ProductFooter, ProductStory, ProductBenefits, MemberBenefits } from '../components/product/ProductStory';
 
 const root = `${process.env.REACT_APP_BACKEND_URL || ''}/api/loyalty-product`;
 const api = axios.create({ baseURL: root });
@@ -33,8 +34,8 @@ function MerchantAccess() {
     } catch (e) { setError(errorText(e)); } finally { setBusy(false); }
   }
   const field = (name, label, type = 'text') => <Field label={label} type={type} value={form[name]} onChange={e => setForm({ ...form, [name]: e.target.value })} required maxLength={name === 'password' ? 72 : 120} minLength={name === 'password' && signup ? 12 : 1} />;
-  return <><div className="loyalty-hero"><p className="loyalty-eyebrow">YOUR COMMUNITY. YOUR REWARDS.</p><h1>Give them a reason<br />to come back.</h1><p>Run your own loyalty program. Keep the POS you already use.</p></div>
-    <form className="booking-card" onSubmit={submit}><h2>{challenge ? 'Verify your sign-in' : signup ? 'Start your 14-day Loyalty pilot' : 'Sign in to NUA Loyalty'}</h2>
+  return <><ProductStory product="loyalty" enabled={enabled} onStart={() => { setSignup(true); setError(''); }} /><ProductBenefits product="loyalty" />
+    <form id="product-access" className="booking-card" onSubmit={submit}><h2>{challenge ? 'Verify your sign-in' : signup ? 'Start your 14-day Loyalty pilot' : 'Sign in to NUA Loyalty'}</h2>
       {challenge ? <Field label="Authenticator or recovery code" value={code} onChange={e => setCode(e.target.value)} required /> : <>{signup && <>{field('name', 'Your name')}{field('venueName', 'Business name')}</>}{field('email', 'Email', 'email')}{field('password', signup ? 'Password (12–72 characters)' : 'Password', 'password')}</>}
       {signup && <p>No card required. Manual points and venue-fulfilled rewards are included. POS sync and paid plans are not enabled.</p>}
       <button disabled={busy}>{busy ? 'Please wait…' : challenge ? 'Verify' : signup ? 'Create Loyalty account' : 'Sign in'}</button><Notice error={error} />
@@ -125,8 +126,8 @@ function MemberEntry() {
     }
     window.location.assign(`/members/v/${encodeURIComponent(venue)}`);
   }
-  return <><div className="loyalty-hero"><p className="loyalty-eyebrow">YOUR LOCAL FAVOURITES. YOUR REWARDS.</p><h1>A little more to<br />look forward to.</h1><p>View your points and claim rewards with the places you love.</p></div>
-    <section className="booking-card"><h2>Open your venue’s rewards</h2><p>Scan the QR code at your venue or follow the membership link they shared with you. Each venue has its own program and member sign-in.</p>
+  return <><div className="loyalty-hero"><p className="loyalty-eyebrow">YOUR LOCAL FAVOURITES. YOUR REWARDS.</p><h1>Your usual spot.<br />Your next little reward.</h1><p>The coffee stop. The dinner spot. The place that knows your name. Make your next visit a little more rewarding with your venue’s loyalty program.</p></div>
+    <MemberBenefits /><section className="booking-card"><h2>Open your venue’s rewards</h2><p>Scan the QR code at your venue or follow the membership link they shared with you. Each venue has its own program and member sign-in.</p>
       <form onSubmit={openVenue}><Field label="Venue code" autoComplete="off" spellCheck={false} value={code} onChange={e => setCode(e.target.value)} placeholder="nl_…" required maxLength={83} /><button>Continue to my venue</button><Notice error={error} /></form>
       <p>Don’t have a link or code? Ask your venue to share its NUA member portal.</p></section>
     <p>Run a business? <a href={window.location.hostname === 'members.nuapos.com.au' ? 'https://loyalty.nuapos.com.au/' : '/loyalty-app'}>Manage your loyalty program</a></p></>;
@@ -134,5 +135,6 @@ function MemberEntry() {
 export default function LoyaltyProduct() {
   const match = window.location.pathname.match(/^\/members\/v\/(nl_[a-zA-Z0-9-]{1,80})\/?$/);
   const memberSurface = window.location.hostname === 'members.nuapos.com.au' || /^\/members(?:\/|$)/.test(window.location.pathname);
-  return <main className="booking-product loyalty-product"><header className="booking-brand">NUA <span>{memberSurface ? 'Members' : 'Loyalty'}</span></header>{match ? <MemberPortal businessId={match[1]} /> : memberSurface ? <MemberEntry /> : <AuthProvider><MerchantContent /></AuthProvider>}<footer className="loyalty-footer">NUA · Your community, rewarded.</footer></main>;
+  useEffect(() => { document.title = memberSurface ? 'NUA Members | Your next little reward' : 'NUA Loyalty | Give regulars a reason to return'; }, [memberSurface]);
+  return <main className="booking-product loyalty-product"><ProductHeader name={memberSurface ? 'Members' : 'Loyalty'} />{match ? <MemberPortal businessId={match[1]} /> : memberSurface ? <MemberEntry /> : <AuthProvider><MerchantContent /></AuthProvider>}<ProductFooter /></main>;
 }

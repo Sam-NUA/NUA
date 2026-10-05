@@ -221,7 +221,7 @@ export default function Login() {
             <Logo variant="product" background="light" size={40} />
           </div>
 
-          <StatusStrip />
+          <p className="text-center text-nua-chromeInk font-medium mb-1">Good service starts here.</p><p className="text-center text-nua-chromeMuted text-sm mb-5">Your team. Your venue. Your next great shift.</p><StatusStrip />
 
           {/* Off-roster approval — replaces the PIN form rather than sitting
               alongside it, same "no half-signed-in" reasoning as 2FA below.

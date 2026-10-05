@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import axios from 'axios';
 import { AuthProvider, useAuth } from '../contexts/AuthContext';
 import './BookingProduct.css';
+import { ProductHeader, ProductFooter, ProductStory, ProductBenefits } from '../components/product/ProductStory';
 
 const base = process.env.REACT_APP_BACKEND_URL || '';
 const api = axios.create({ baseURL: `${base}/api/booking-product` });
@@ -61,7 +62,7 @@ function Guest({ businessId }) {
   useEffect(() => { let live = true; api.get(`/public/${encodeURIComponent(businessId)}`).then(r => { if (live) setVenue(r.data); }).catch(e => { if (live) setError(message(e)); }); return () => { live = false; }; }, [businessId]);
   if (error) return <p role="alert">{error}</p>;
   if (!venue) return <p>Loading booking page…</p>;
-  return <><h1>{venue.name}</h1><BookingForm venue={venue} onSubmit={async data => (await api.post(`/public/${encodeURIComponent(businessId)}`, data)).data} /></>;
+  return <><p className="product-eyebrow">GOOD COMPANY STARTS WITH A PLAN</p><h1>{venue.name}</h1><p>Your next catch-up, date night or just-because dinner starts here. Choose your details below and make time for something lovely.</p><BookingForm venue={venue} onSubmit={async data => (await api.post(`/public/${encodeURIComponent(businessId)}`, data)).data} /></>;
 }
 function Access() {
   const { login, checkAuth, completeTwoFactor } = useAuth();
@@ -89,8 +90,8 @@ function Access() {
     } catch (e) { setError(message(e)); }
     finally { setBusy(false); }
   }
-  return <><h1>Bookings that fit your business.</h1><p>Keep your existing POS. Manage your reservations with NUA.</p>
-    <form onSubmit={submit} className="booking-card">
+  return <><ProductStory product="booking" enabled={enabled} onStart={() => { setSignup(true); setError(''); }} /><ProductBenefits product="booking" />
+    <form id="product-access" onSubmit={submit} className="booking-card">
       <h2>{challenge ? 'Verify your sign-in' : signup ? 'Start your 14-day Booking pilot' : 'Sign in to NUA Booking'}</h2>
       {challenge ? <Field label="Authenticator or recovery code" value={code} onChange={e => setCode(e.target.value)} required autoComplete="one-time-code" /> : <>
         {signup && <><Field label="Your name" name="name" value={form.name} onChange={change} required maxLength={120} /><Field label="Venue name" name="venueName" value={form.venueName} onChange={change} required maxLength={120} /><Field label="Venue timezone" name="timezone" value={form.timezone} onChange={change} required /></>}
@@ -156,5 +157,6 @@ function Content() {
   return <Workspace />;
 }
 export default function BookingProduct() {
-  return <AuthProvider><main className="booking-product"><header className="booking-brand">NUA <span>Booking</span></header><Content /></main></AuthProvider>;
+  useEffect(() => { document.title = 'NUA Booking | Make room for more good nights'; }, []);
+  return <AuthProvider><main className="booking-product"><ProductHeader name="Booking" /><Content /><ProductFooter /></main></AuthProvider>;
 }
