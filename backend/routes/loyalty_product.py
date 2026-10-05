@@ -72,6 +72,7 @@ class Adjustment(Strict):
 
 class Claim(Strict):
     requestId: UUID
+    expectedPoints: Annotated[int, Field(strict=True, ge=1, le=1000000)]
 
 class MemberStatus(Strict):
     status: Literal['active', 'paused']

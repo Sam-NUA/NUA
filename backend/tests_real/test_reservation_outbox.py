@@ -134,7 +134,7 @@ def test_loyalty_real_concurrent_claims_cannot_overspend():
     async def scenario():
         async def claim():
             try:
-                return await product.mutate_points(bid, mid, Claim(requestId=uuid.uuid4()), mid, reward_id=rid)
+                return await product.mutate_points(bid, mid, Claim(requestId=uuid.uuid4(), expectedPoints=100), mid, reward_id=rid)
             except HTTPException as exc:
                 assert exc.status_code == 409
                 return None
@@ -150,7 +150,7 @@ def test_loyalty_real_replay_and_concurrent_refund_are_exactly_once():
     product, bid, mid, rid = loyalty_setup()
     from routes.loyalty_product import Claim
     async def scenario():
-        data = Claim(requestId=uuid.uuid4())
+        data = Claim(requestId=uuid.uuid4(), expectedPoints=100)
         results = await asyncio.gather(*(product.mutate_points(bid, mid, data, mid, reward_id=rid) for _ in range(4)))
         assert all(r == results[0] for r in results)
         receipt = results[0]['redemptionId']
@@ -173,7 +173,7 @@ def test_loyalty_transaction_failure_rolls_back_points_and_receipt(monkeypatch):
     monkeypatch.setattr(product, 'transaction', failing)
     async def scenario():
         with pytest.raises(RuntimeError):
-            await product.mutate_points(bid, mid, Claim(requestId=uuid.uuid4()), mid, reward_id=rid)
+            await product.mutate_points(bid, mid, Claim(requestId=uuid.uuid4(), expectedPoints=100), mid, reward_id=rid)
         assert (await product.member_for(bid, mid))['points'] == 100
         assert await db.loyalty_product_redemptions.count_documents({'businessId':bid}) == 0
         assert await db.loyalty_product_ledger.count_documents({'businessId':bid}) == 1

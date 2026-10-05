@@ -24,6 +24,8 @@ async def transaction(operation):
 
 PREFIX = 'nl_'
 AUDIENCE = 'nua-loyalty-member'
+# Public dummy bcrypt hash; never an account credential. Match normal login cost.
+DUMMY_HASH = '$2b$12$.kgpXQlOVlGd7qJ0.pQle.RxIq9aKgq6SLjhyaHEsRigCj3aUgOF2'
 MEMBER_PUBLIC = {'_id': 0, 'passwordHash': 0, 'sessionVersion': 0, 'emailKey': 0}
 
 
@@ -146,11 +148,11 @@ async def join(bid, data):
 
 
 async def login(bid, data):
-    from routes.auth import verify_password, hash_password
+    from routes.auth import verify_password
     await account_for(bid)
     member = await db.loyalty_product_members.find_one({'_id': member_id(bid, data.email), 'businessId': bid})
     # Constant-cost password verification also for unknown identities.
-    hashed = member['passwordHash'] if member else hash_password('unmatched-member-password')
+    hashed = member['passwordHash'] if member else DUMMY_HASH
     valid = verify_password(data.password, hashed)
     if not member or not valid or member['status'] != 'active':
         raise HTTPException(401, 'Email or password is incorrect, or membership is paused.')
@@ -215,6 +217,8 @@ async def mutate_points(bid, mid, data, actor, *, reward_id=None):
             reward = await db.loyalty_product_rewards.find_one({'id': reward_id, 'businessId': bid, 'active': True}, session=session)
             if not reward:
                 raise HTTPException(404, 'Reward is not available')
+            if reward['points'] != data.expectedPoints:
+                raise HTTPException(409, 'Reward cost changed. Refresh and confirm the new points cost.')
             delta, reason, kind = -reward['points'], 'Reward: ' + reward['name'], 'redeem'
         else:
             delta, reason, kind = data.points, data.reason, 'adjustment'

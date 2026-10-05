@@ -1,4 +1,4 @@
-.loyalty-product { max-width: 1120px; }
+.loyalty-product { width: 100%; }
 .loyalty-hero { padding: 36px 0 24px; max-width: 750px; }
 .loyalty-hero h1 { font-size: clamp(2.4rem, 5vw, 4.1rem); line-height: 1.08; letter-spacing: -.04em; margin: 12px 0 24px; }
 .loyalty-eyebrow { font-size: .72rem; letter-spacing: .16em; font-weight: 700; color: #6b1738; }

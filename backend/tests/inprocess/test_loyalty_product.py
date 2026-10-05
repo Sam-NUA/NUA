@@ -50,7 +50,7 @@ def test_ledger_redemption_refund_and_password_lifecycle(client,loyalty):
     body,result=award(client,h,member['id'],600);path='/api/loyalty-product/members/'+member['id']+'/points'
     assert client.post(path,headers=h,json=body).json()==result
     assert client.post(path,headers=h,json={**body,'points':601}).status_code==409
-    rid=reward(client,h);claim={'requestId':str(uuid.uuid4())};path=base+'/rewards/'+rid+'/claim'
+    rid=reward(client,h);claim={'requestId':str(uuid.uuid4()),'expectedPoints':100};path=base+'/rewards/'+rid+'/claim'
     r=client.post(path,headers=m,json=claim);assert r.status_code==200,r.text
     assert client.post(path,headers=m,json=claim).json()==r.json()
     state=client.get(base+'/me',headers=m).json()
@@ -85,18 +85,19 @@ def test_tenant_and_member_isolation(client,loyalty):
 
 def test_cancel_preserves_pending_commitments(client,loyalty):
     bid,h=loyalty();base,m,member,_=join(client,bid);award(client,h,member['id']);rid=reward(client,h)
-    r=client.post(base+'/rewards/'+rid+'/claim',headers=m,json={'requestId':str(uuid.uuid4())})
+    r=client.post(base+'/rewards/'+rid+'/claim',headers=m,json={'requestId':str(uuid.uuid4()),'expectedPoints':100})
     client.portal.call(db.product_accounts.update_one,{'_id':bid},{'$set':{'products.booking':{'state':'active'}}})
     assert client.post('/api/loyalty-product/cancel',headers=h).json()['products']['booking']['state']=='active'
     assert client.get(base).json()['canJoin'] is False
     assert client.get(base+'/export',headers=m).status_code==200
     assert client.get('/api/loyalty-product/export',headers=h).status_code==200
-    assert client.post(base+'/rewards/'+rid+'/claim',headers=m,json={'requestId':str(uuid.uuid4())}).status_code==403
+    assert client.post(base+'/rewards/'+rid+'/claim',headers=m,json={'requestId':str(uuid.uuid4()),'expectedPoints':100}).status_code==403
     assert client.post('/api/loyalty-product/redemptions/'+r.json()['redemptionId']+'/resolve',headers=h,json={'action':'fulfil'}).status_code==200
 
 def test_balance_pause_and_expiry(client,loyalty):
     bid,h=loyalty();base,m,member,_=join(client,bid);rid=reward(client,h)
-    assert client.post(base+'/rewards/'+rid+'/claim',headers=m,json={'requestId':str(uuid.uuid4())}).status_code==409
+    assert client.post(base+'/rewards/'+rid+'/claim',headers=m,json={'requestId':str(uuid.uuid4()),'expectedPoints':101}).status_code==409
+    assert client.post(base+'/rewards/'+rid+'/claim',headers=m,json={'requestId':str(uuid.uuid4()),'expectedPoints':100}).status_code==409
     assert client.put('/api/loyalty-product/rewards/'+rid,headers=h,json={'name':'Bad','points':-1}).status_code==422
     for status in ('paused','active'):
         assert client.put('/api/loyalty-product/members/'+member['id']+'/status',headers=h,json={'status':status}).status_code==200
