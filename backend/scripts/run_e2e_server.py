@@ -38,6 +38,8 @@ os.environ.setdefault("FRONTEND_URL", "http://127.0.0.1:3100")
 
 import mongomock_motor
 import motor.motor_asyncio as motor_asyncio
+from scripts.mongomock_compat import install as install_mongomock_compat
+install_mongomock_compat()
 motor_asyncio.AsyncIOMotorClient = mongomock_motor.AsyncMongoMockClient
 
 # Only this in-memory test harness replaces transactions. Real transaction
