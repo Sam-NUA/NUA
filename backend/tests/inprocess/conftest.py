@@ -37,6 +37,9 @@ motor_asyncio.AsyncIOMotorClient = mongomock_motor.AsyncMongoMockClient
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
+from scripts.mongomock_compat import install as install_mongomock_compat  # noqa: E402
+install_mongomock_compat()
+
 OWNER = {"email": "owner@nua.com", "password": "NuaOwner2026!"}
 
 

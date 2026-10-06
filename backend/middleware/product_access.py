@@ -6,6 +6,7 @@ Neither a tenant header nor the licensing development switch can disable it.
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse
 from services.booking_product import is_booking_account
+from services.loyalty_product import is_account as is_loyalty_account
 
 AUTH_PATHS = {
     '/api/auth/login', '/api/auth/logout', '/api/auth/me', '/api/auth/refresh',
@@ -16,6 +17,8 @@ class ProductAccessMiddleware(BaseHTTPMiddleware):
         path = request.scope['path'].rstrip('/')
         if request.method == 'OPTIONS' or not path.startswith('/api/'):
             return await call_next(request)
+        if path.startswith(('/api/loyalty-product/portal/', '/api/booking-product/public/')):
+            return await call_next(request)  # Each public/member route enforces its own scope.
         token = request.cookies.get('access_token')
         if not token:
             value = request.headers.get('authorization', '')
@@ -26,8 +29,10 @@ class ProductAccessMiddleware(BaseHTTPMiddleware):
                 payload = jwt.decode(token, os.environ['JWT_SECRET'], algorithms=['HS256'])
             except jwt.InvalidTokenError:
                 payload = {}
-            if is_booking_account(payload.get('businessId')):
-                if path not in AUTH_PATHS and not path.startswith('/api/booking-product/'):
-                    return JSONResponse({'detail': 'This account has Booking access only.',
+            bid = payload.get('businessId')
+            prefix = '/api/booking-product/' if is_booking_account(bid) else '/api/loyalty-product/' if is_loyalty_account(bid) else None
+            if prefix:
+                if path not in AUTH_PATHS and not path.startswith(prefix):
+                    return JSONResponse({'detail': 'This account does not include this product.',
                         'errorCode': 'PRODUCT_NOT_ENTITLED'}, status_code=403)
         return await call_next(request)
