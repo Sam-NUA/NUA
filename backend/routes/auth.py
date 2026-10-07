@@ -170,6 +170,7 @@ class OwnerRecoveryInitiateRequest(BaseModel):
 class OwnerRecoveryCompleteRequest(BaseModel):
     token: str
     password: str
+    pin: Optional[str] = None
 
 # --- Endpoints ---
 @router.post("/login")
@@ -699,12 +700,24 @@ async def seed_admin():
     if existing_ci and existing_ci.get("email") != email:
         await db.auth_users.update_one({"id": existing_ci["id"]}, {"$set": {"email": email}})
         logger.warning("owner-bootstrap: normalized existing owner email casing to match ADMIN_EMAIL")
-    await _insert_seed_user({
+    owner_doc = {
         "id": str(uuid.uuid4()), "name": "Owner", "email": email,
         "password_hash": hash_password(password),
         "role": "owner", "businessId": "default", "payRate": 0,
         "status": "active", "createdAt": datetime.now(timezone.utc).isoformat(),
-    })
+    }
+    # Only ever applied via _insert_seed_user's $setOnInsert, so this can only
+    # ever set a PIN on a brand-new owner document — it never touches an
+    # existing account's PIN, same create-once guarantee as the password above.
+    pin = os.environ.get("ADMIN_PIN")
+    if pin:
+        if re.fullmatch(r"\d{2,4}", pin):
+            owner_doc["pin"] = pin
+        else:
+            logger.warning(
+                "ADMIN_PIN is set but is not a valid 2-4 digit PIN — skipping owner PIN bootstrap."
+            )
+    await _insert_seed_user(owner_doc)
     # Demo users are local/test conveniences, never an implicit consequence
     # of bootstrapping a deployed owner account.
     if os.environ.get("SEED_DEMO_STAFF", "").lower() != "true":
@@ -835,6 +848,8 @@ async def owner_recovery_initiate(req: OwnerRecoveryInitiateRequest, request: Re
 async def owner_recovery_complete(req: OwnerRecoveryCompleteRequest, request: Request):
     if len(req.password) < 8:
         raise HTTPException(status_code=400, detail="Password must be at least 8 characters")
+    if req.pin is not None and not (req.pin.isdigit() and 2 <= len(req.pin) <= 4):
+        raise HTTPException(status_code=400, detail="PIN must be 2-4 digits")
 
     import hashlib
     token_hash = hashlib.sha256(req.token.encode("utf-8")).hexdigest()
@@ -851,10 +866,15 @@ async def owner_recovery_complete(req: OwnerRecoveryCompleteRequest, request: Re
         raise HTTPException(status_code=400, detail="Invalid or expired recovery token")
 
     email = record["email"]
+    update_fields = {"password_hash": hash_password(req.password), "status": "active",
+                      "passwordChangedAt": now.isoformat()}
+    if req.pin is not None:
+        # Same atomic update as the password — the PIN change is gated by the
+        # exact same single-use token, never a separate/weaker check.
+        update_fields["pin"] = req.pin
     result = await db.auth_users.update_one(
         {"email": email, "role": "owner"},
-        {"$set": {"password_hash": hash_password(req.password), "status": "active",
-                   "passwordChangedAt": now.isoformat()}},
+        {"$set": update_fields},
     )
     if result.matched_count == 0:
         await _log_recovery_audit("complete_failed_no_owner", email, request)
