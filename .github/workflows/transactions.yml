@@ -12,8 +12,8 @@ jobs:
         with:
           python-version: '3.11'
           cache: pip
-          cache-dependency-path: backend/requirements.txt
-      - run: pip install -r backend/requirements.txt
+          cache-dependency-path: backend/requirements*.txt
+      - run: pip install -r backend/requirements-dev.txt
       - name: Start isolated replica set
         run: |
           docker run -d --name nua-test-mongo --network host mongo:7 --replSet nua-test --bind_ip 127.0.0.1 --port 27018

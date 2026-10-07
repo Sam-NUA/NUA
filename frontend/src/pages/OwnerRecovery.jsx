@@ -28,6 +28,7 @@ export default function OwnerRecovery() {
     setLoading(true);
     try {
       const res = await authAPI.ownerRecoveryInitiate(recoveryKey, email);
+      setRecoveryKey('');
       setToken(res.data.token);
       setStep('complete');
     } catch (err) {
@@ -44,6 +45,9 @@ export default function OwnerRecovery() {
     setLoading(true);
     try {
       await authAPI.ownerRecoveryComplete(token, password);
+      setPassword(''); setConfirm(''); setToken('');
+      localStorage.removeItem('nua_token');
+      localStorage.setItem('nua_login_mode', 'email');
       setDone(true);
     } catch (err) {
       setError(err.response?.data?.detail || 'This recovery token is invalid or has expired');
@@ -74,7 +78,7 @@ export default function OwnerRecovery() {
                 <KeyRound size={28} style={{ color: '#f58c14' }} />
                 <p className="text-white font-medium mt-2">Owner access recovery</p>
                 <p className="text-gray-400 text-sm text-center mt-1">
-                  Operator-only. Requires the recovery key configured in Vercel.
+                  Use the recovery key from your setup administrator. For everyday recovery, use Forgot password on the sign-in page.
                 </p>
               </div>
               {error && (
@@ -85,7 +89,7 @@ export default function OwnerRecovery() {
               <form onSubmit={handleInitiate} className="space-y-4">
                 <div className="relative">
                   <KeyRound size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500" />
-                  <Input type="password" placeholder="OWNER_RECOVERY_KEY" value={recoveryKey}
+                  <Input type="password" placeholder="Owner recovery key" value={recoveryKey}
                     onChange={e => setRecoveryKey(e.target.value)}
                     className="pl-10 bg-gray-800 border-gray-700 text-white" required
                     data-testid="owner-recovery-key-input" />
@@ -99,7 +103,7 @@ export default function OwnerRecovery() {
                 </div>
                 <Button type="submit" className="w-full h-11 text-white font-medium hover:opacity-90"
                   style={{ backgroundColor: '#f58c14' }} disabled={loading} data-testid="owner-recovery-initiate-submit">
-                  {loading ? 'Verifying...' : 'Request recovery token'}
+                  {loading ? 'Verifying...' : 'Continue'}
                 </Button>
               </form>
             </>
@@ -118,7 +122,7 @@ export default function OwnerRecovery() {
               <form onSubmit={handleComplete} className="space-y-4">
                 <div className="relative">
                   <Lock size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500" />
-                  <Input type="password" placeholder="New password" value={password}
+                  <Input type="password" autoComplete="new-password" minLength={8} placeholder="New password" value={password}
                     onChange={e => setPassword(e.target.value)}
                     className="pl-10 bg-gray-800 border-gray-700 text-white" required
                     data-testid="owner-recovery-password-input" />

@@ -38,6 +38,8 @@ os.environ.setdefault("FRONTEND_URL", "http://127.0.0.1:3100")
 
 import mongomock_motor
 import motor.motor_asyncio as motor_asyncio
+from scripts.mongomock_compat import install as install_mongomock_compat
+install_mongomock_compat()
 motor_asyncio.AsyncIOMotorClient = mongomock_motor.AsyncMongoMockClient
 
 # Only this in-memory test harness replaces transactions. Real transaction
@@ -48,6 +50,12 @@ async def test_transaction(operation):
     return await operation(None)
 
 reservation_store._transaction = test_transaction
+from services import booking_product
+booking_product.transaction = test_transaction
+from services import loyalty_product
+loyalty_product.transaction = test_transaction
+os.environ.setdefault("LOYALTY_PRODUCT_SIGNUP_ENABLED", "true")
+os.environ.setdefault("BOOKING_PRODUCT_SIGNUP_ENABLED", "true")
 
 import uvicorn
 
