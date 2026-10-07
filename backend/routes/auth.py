@@ -595,6 +595,27 @@ async def seed_admin():
         })
     elif not verify_password(password, existing.get("password_hash", "")):
         await db.auth_users.update_one({"email": email}, {"$set": {"password_hash": hash_password(password)}})
+    # PIN login (POST /auth/pin-login) already works for the owner role — it's
+    # just missing a seeded `pin` field, since nothing here ever set one. Same
+    # idempotent, no-hardcoded-fallback posture as the password above: only
+    # touch `pin` when ADMIN_PIN is actually set, and self-heal it to match on
+    # every startup so changing the env var and restarting updates the live
+    # PIN login, same as email/password already behave.
+    admin_pin = os.environ.get("ADMIN_PIN")
+    if admin_pin is not None:
+        if len(admin_pin) < 2 or len(admin_pin) > 4 or not admin_pin.isdigit():
+            # Mirrors pin_login's/set_staff_pin's own 2-4 digit validation
+            # (routes/staff_management.py) — an invalid value here would
+            # otherwise seed a PIN that 400s at login time instead of just
+            # never working, which is harder to notice.
+            logger.warning(
+                "ADMIN_PIN is set but is not 2-4 digits — skipping owner PIN seed. "
+                "PIN login (POST /auth/pin-login) requires a 2-4 digit PIN."
+            )
+        else:
+            owner = await db.auth_users.find_one({"email": email})
+            if owner and owner.get("pin") != admin_pin:
+                await db.auth_users.update_one({"email": email}, {"$set": {"pin": admin_pin}})
     # Seed demo staff — reuses ADMIN_PASSWORD unless DEMO_STAFF_PASSWORD is set
     # separately, so a single env var still bootstraps a working demo/staging
     # environment without a hardcoded literal in source.
