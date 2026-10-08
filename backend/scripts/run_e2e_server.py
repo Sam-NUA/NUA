@@ -24,6 +24,7 @@ os.environ.setdefault("DB_NAME", "e2e_tests")
 os.environ.setdefault("JWT_SECRET", "e2e-test-secret-not-for-production")
 os.environ.setdefault("ADMIN_EMAIL", "owner@nua.com")
 os.environ.setdefault("ADMIN_PASSWORD", "NuaOwner2026!")
+os.environ.setdefault("OWNER_RECOVERY_KEY", "e2e-only-recovery-key")
 os.environ.setdefault("DEMO_STAFF_PASSWORD", "Staff2026!")
 os.environ.setdefault("SEED_DEMO_STAFF", "true")
 os.environ.setdefault("SUPPORT_OVERRIDE_KEY", "e2e-test-only-support-override-key")
@@ -38,6 +39,8 @@ os.environ.setdefault("FRONTEND_URL", "http://127.0.0.1:3100")
 
 import mongomock_motor
 import motor.motor_asyncio as motor_asyncio
+from scripts.mongomock_compat import install as install_mongomock_compat
+install_mongomock_compat()
 motor_asyncio.AsyncIOMotorClient = mongomock_motor.AsyncMongoMockClient
 
 # Only this in-memory test harness replaces transactions. Real transaction

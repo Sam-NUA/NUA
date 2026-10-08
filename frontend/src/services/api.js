@@ -66,10 +66,12 @@ api.interceptors.response.use(
 
 // Auth — self-service password recovery (login/logout/2FA live in AuthContext)
 export const authAPI = {
+  accessOptions: () => api.get('/auth/access-options'),
+  changePassword: (currentPassword, password) => api.post('/auth/change-password', { currentPassword, password }),
   forgotPassword: (email) => api.post('/auth/forgot-password', { email }),
   resetPassword: (token, password) => api.post('/auth/reset-password', { token, password }),
   ownerRecoveryInitiate: (recoveryKey, email) => api.post('/auth/owner-recovery/initiate', { recoveryKey, email }),
-  ownerRecoveryComplete: (token, password) => api.post('/auth/owner-recovery/complete', { token, password }),
+  ownerRecoveryComplete: (token, password, pin) => api.post('/auth/owner-recovery/complete', { token, password, ...(pin ? { pin } : {}) }),
 };
 
 // Products API

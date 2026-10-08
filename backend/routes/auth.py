@@ -9,6 +9,7 @@ import bcrypt
 import jwt
 import logging
 import os
+import re
 
 router = APIRouter(prefix="/auth")
 logger = logging.getLogger(__name__)
@@ -66,12 +67,27 @@ def create_access_token(user_id: str, email: str, role: str, business_id: str = 
     # can stamp createdBy/businessId on every write without a DB round-trip per
     # request — see middleware/actor_context.py.
     payload = {"sub": user_id, "email": email, "role": role, "businessId": business_id,
+               "iat": datetime.now(timezone.utc).timestamp(),
                "exp": datetime.now(timezone.utc) + timedelta(hours=8), "type": "access"}
     return jwt.encode(payload, _secret(), algorithm=JWT_ALGORITHM)
 
 def create_refresh_token(user_id: str) -> str:
-    payload = {"sub": user_id, "exp": datetime.now(timezone.utc) + timedelta(days=7), "type": "refresh"}
+    payload = {"sub": user_id, "iat": datetime.now(timezone.utc).timestamp(),
+               "exp": datetime.now(timezone.utc) + timedelta(days=7), "type": "refresh"}
     return jwt.encode(payload, _secret(), algorithm=JWT_ALGORITHM)
+
+def _check_password_changed(user, payload):
+    changed = user.get("passwordChangedAt")
+    if changed:
+        changed_at = datetime.fromisoformat(changed).timestamp()
+        if payload.get("iat", 0) < changed_at:
+            raise HTTPException(status_code=401, detail="Password changed — please sign in again")
+
+
+def _validate_new_password(password):
+    if len(password) < 8 or len(password.encode("utf-8")) > 72:
+        raise HTTPException(status_code=400, detail="Use at least 8 characters and no more than 72 bytes")
+
 
 async def get_current_user(request: Request) -> dict:
     token = request.cookies.get("access_token")
@@ -88,6 +104,7 @@ async def get_current_user(request: Request) -> dict:
         user = await cast(Any, db.auth_users).find_one({"id": payload["sub"]})
         if not user:
             raise HTTPException(status_code=401, detail="User not found")
+        _check_password_changed(user, payload)
         if user.get("status") != "active" or not user.get("businessId"):
             raise HTTPException(status_code=403, detail="Active business membership required")
         set_actor_context({**get_actor_context(), "businessId": user["businessId"],
@@ -135,6 +152,11 @@ class RegisterRequest(BaseModel):
     businessId: Optional[str] = None
     payRate: Optional[float] = None
 
+class ChangePasswordRequest(BaseModel):
+    currentPassword: str
+    password: str
+
+
 class ForgotPasswordRequest(BaseModel):
     email: EmailStr
 
@@ -149,6 +171,7 @@ class OwnerRecoveryInitiateRequest(BaseModel):
 class OwnerRecoveryCompleteRequest(BaseModel):
     token: str
     password: str
+    pin: Optional[str] = None
 
 # --- Endpoints ---
 @router.post("/login")
@@ -232,6 +255,7 @@ def create_challenge_token(user_id: str, purpose: str = "2fa", expires_minutes: 
     it has to survive an email round-trip instead of an already-open app.
     """
     payload = {"sub": user_id, "type": "challenge", "purpose": purpose,
+               "iat": datetime.now(timezone.utc).timestamp(),
                "exp": datetime.now(timezone.utc) + timedelta(minutes=expires_minutes)}
     return jwt.encode(payload, _secret(), algorithm=JWT_ALGORITHM)
 
@@ -294,6 +318,7 @@ async def two_factor_challenge(req: TwoFactorChallenge, request: Request, respon
     if not user:
         raise HTTPException(status_code=401, detail="Invalid sign-in session")
 
+    _check_password_changed(user, jwt.decode(req.challengeToken, _secret(), algorithms=[JWT_ALGORITHM]))
     ok, how = await two_factor.verify(user, req.code)
     if not ok:
         await db.login_attempts.update_one(
@@ -376,6 +401,43 @@ async def logout(response: Response):
     response.delete_cookie("refresh_token", path="/")
     return {"message": "Logged out"}
 
+@router.get("/access-options")
+async def access_options():
+    from services.account_recovery import recovery_ready
+    return {"emailResetAvailable": recovery_ready(),
+            "operatorRecoveryAvailable": bool(os.environ.get("OWNER_RECOVERY_KEY"))}
+
+
+@router.post("/change-password")
+async def change_password(req: ChangePasswordRequest, request: Request, response: Response):
+    actor = await get_current_user(request)
+    _validate_new_password(req.password)
+    user = await db.auth_users.find_one({"id": actor["id"]})
+    identifier = f"change-password:{user['id']}"
+    attempts = await db.login_attempts.find_one({"identifier": identifier})
+    if attempts and attempts.get("count", 0) >= 5:
+        until = attempts.get("locked_until")
+        if until and until.replace(tzinfo=timezone.utc) > datetime.now(timezone.utc):
+            raise HTTPException(status_code=429, detail="Too many attempts. Try again in 15 minutes.")
+        await db.login_attempts.delete_one({"identifier": identifier})
+    if not verify_password(req.currentPassword, user.get("password_hash", "")):
+        await db.login_attempts.update_one({"identifier": identifier},
+            {"$inc": {"count": 1}, "$set": {"locked_until": datetime.now(timezone.utc) + timedelta(minutes=15)}}, upsert=True)
+        raise HTTPException(status_code=400, detail="Current password is incorrect")
+    await db.login_attempts.delete_one({"identifier": identifier})
+    result = await db.auth_users.update_one(
+        {"id": user["id"], "password_hash": user.get("password_hash", "")},
+        {"$set": {"password_hash": hash_password(req.password),
+                   "passwordChangedAt": datetime.now(timezone.utc).isoformat()}})
+    if result.modified_count != 1:
+        raise HTTPException(status_code=409, detail="Account changed — please sign in again")
+    await db.password_reset_tokens.delete_one({"_id": user["id"]})
+    await db.trusted_devices.delete_many({"userId": user["id"]})
+    response.delete_cookie("access_token", path="/")
+    response.delete_cookie("refresh_token", path="/")
+    return {"message": "Password updated. Sign in again on your devices."}
+
+
 @router.post("/forgot-password")
 async def forgot_password(req: ForgotPasswordRequest, request: Request):
     """Request a password-reset email. Always answers the same way whether
@@ -400,28 +462,45 @@ async def forgot_password(req: ForgotPasswordRequest, request: Request):
         upsert=True,
     )
 
-    user = await db.auth_users.find_one({"email": req.email.lower()})
+    from services.account_recovery import recovery_ready, reset_origin, issue_reset, cancel_reset
+    if not recovery_ready():
+        # Deployment-wide status: identical for real and unknown email addresses.
+        raise HTTPException(status_code=503, detail="Email recovery is not available yet. Contact your venue owner or setup contact for help.")
+    user = await db.auth_users.find_one({"email": req.email.lower(), "status": "active"})
     if user:
         from utils.notifications import send_email
-        token = create_challenge_token(user["id"], purpose="password_reset", expires_minutes=30)
-        reset_url = f"{os.environ.get('FRONTEND_URL', '').rstrip('/')}/reset-password?token={token}"
-        await send_email(
+        token = await issue_reset(user)
+        reset_url = f"{reset_origin()}/reset-password?token={token}"
+        receipt = await send_email(
             user["email"], "Reset your NUA password",
             f"<p>Someone requested a password reset for your NUA account.</p>"
             f"<p><a href=\"{reset_url}\">Reset your password</a> — this link expires in 30 minutes.</p>"
             f"<p>If you didn't request this, you can ignore this email.</p>",
         )
-    return {"message": "If that email has an account, a reset link has been sent."}
+        if not receipt.get("delivered"):
+            await cancel_reset(token)
+            logger.error("Password recovery email was not accepted by the delivery provider")
+    # A per-account provider error must not become an account-enumeration oracle.
+    return {"message": "Request received. If your account is eligible, check your email for a reset link. If it does not arrive, contact your venue owner or setup contact."}
 
 @router.post("/reset-password")
 async def reset_password(req: ResetPasswordRequest):
-    user_id = read_challenge_token(req.token, purpose="password_reset")
-    if len(req.password) < 8:
-        raise HTTPException(status_code=400, detail="Password must be at least 8 characters")
+    from services.account_recovery import consume_reset
+    _validate_new_password(req.password)
+    record = await consume_reset(req.token)
+    if not record:
+        raise HTTPException(status_code=400, detail="This reset link is invalid, expired or already used. Request a new link.")
+    user = await db.auth_users.find_one({"id": record["_id"], "status": "active"})
+    if not user or user.get("password_hash", "") != record["credentialHash"]:
+        raise HTTPException(status_code=400, detail="Account changed. Request a new reset link.")
     result = await db.auth_users.update_one(
-        {"id": user_id}, {"$set": {"password_hash": hash_password(req.password)}})
-    if result.matched_count == 0:
-        raise HTTPException(status_code=404, detail="Account not found")
+        {"id": user["id"], "password_hash": record["credentialHash"], "status": "active"},
+        {"$set": {"password_hash": hash_password(req.password),
+                   "passwordChangedAt": datetime.now(timezone.utc).isoformat()}})
+    if result.modified_count != 1:
+        raise HTTPException(status_code=400, detail="Account changed. Request a new reset link.")
+    await db.trusted_devices.delete_many({"userId": user["id"]})
+    await db.login_attempts.delete_one({"identifier": f"acct:{user['email']}"})
     return {"message": "Password updated — sign in with your new password"}
 
 @router.post("/refresh")
@@ -436,6 +515,9 @@ async def refresh_token(request: Request, response: Response):
         user = await cast(Any, db.auth_users).find_one({"id": payload["sub"]})
         if not user:
             raise HTTPException(status_code=401, detail="User not found")
+        _check_password_changed(user, payload)
+        if user.get("status") != "active":
+            raise HTTPException(status_code=401, detail="Account is not active")
         access = create_access_token(user["id"], user["email"], user["role"], user.get("businessId"))
         response.set_cookie("access_token", access, httponly=True, secure=_cookie_secure(), samesite="lax", max_age=28800, path="/")
         # The frontend authenticates every API call with a Bearer header read
@@ -619,12 +701,24 @@ async def seed_admin():
     if existing_ci and existing_ci.get("email") != email:
         await db.auth_users.update_one({"id": existing_ci["id"]}, {"$set": {"email": email}})
         logger.warning("owner-bootstrap: normalized existing owner email casing to match ADMIN_EMAIL")
-    await _insert_seed_user({
+    owner_doc = {
         "id": str(uuid.uuid4()), "name": "Owner", "email": email,
         "password_hash": hash_password(password),
         "role": "owner", "businessId": "default", "payRate": 0,
         "status": "active", "createdAt": datetime.now(timezone.utc).isoformat(),
-    })
+    }
+    # Only ever applied via _insert_seed_user's $setOnInsert, so this can only
+    # ever set a PIN on a brand-new owner document — it never touches an
+    # existing account's PIN, same create-once guarantee as the password above.
+    pin = os.environ.get("ADMIN_PIN")
+    if pin:
+        if re.fullmatch(r"[0-9]{2,4}", pin) and not await db.auth_users.find_one({"pin": pin}):
+            owner_doc["pin"] = pin
+        else:
+            logger.warning(
+                "ADMIN_PIN is set but is not a valid 2-4 digit PIN — skipping owner PIN bootstrap."
+            )
+    await _insert_seed_user(owner_doc)
     # Demo users are local/test conveniences, never an implicit consequence
     # of bootstrapping a deployed owner account.
     if os.environ.get("SEED_DEMO_STAFF", "").lower() != "true":
@@ -705,8 +799,8 @@ async def owner_recovery_initiate(req: OwnerRecoveryInitiateRequest, request: Re
     await db.login_attempts.delete_one({"identifier": RECOVERY_LOCK_IDENTIFIER})
 
     email = req.email.strip().lower()
-    owner = await db.auth_users.find_one({"role": "owner"})
-    if owner and owner.get("email", "").strip().lower() != email:
+    owner = await db.auth_users.find_one({"role": "owner", "email": {"$regex": "^" + re.escape(email) + "$", "$options": "i"}})
+    if not owner and await db.auth_users.find_one({"role": "owner"}):
         # Never let a valid recovery key retarget the owner account to a
         # different email — that would be an account-takeover primitive.
         # Recovery only ever reaches the owner that already exists.
@@ -722,11 +816,7 @@ async def owner_recovery_initiate(req: OwnerRecoveryInitiateRequest, request: Re
     # Invalidate any earlier unused token for this email before issuing a new
     # one — only the most recently issued token can ever be completed.
     await db.owner_recovery_tokens.update_many({"email": email, "used": False}, {"$set": {"used": True}})
-    await db.owner_recovery_tokens.insert_one({
-        "id": str(uuid.uuid4()), "tokenHash": token_hash, "email": email,
-        "used": False, "createdAt": now.isoformat(),
-        "expiresAt": now + timedelta(minutes=RECOVERY_TOKEN_TTL_MINUTES),
-    })
+
 
     if not owner:
         # No owner exists at all — e.g. ADMIN_PASSWORD was never set on the
@@ -739,6 +829,16 @@ async def owner_recovery_initiate(req: OwnerRecoveryInitiateRequest, request: Re
             "role": "owner", "businessId": "default", "payRate": 0,
             "status": "active", "createdAt": now.isoformat(),
         })
+
+    owner = await db.auth_users.find_one({"role": "owner", "email": {"$regex": "^" + re.escape(email) + "$", "$options": "i"}})
+    if not owner:
+        raise HTTPException(status_code=409, detail="Owner setup changed. Start recovery again.")
+    await db.owner_recovery_tokens.insert_one({
+        "id": str(uuid.uuid4()), "tokenHash": token_hash, "email": email,
+        "ownerId": owner["id"], "credentialHash": owner["password_hash"],
+        "used": False, "createdAt": now.isoformat(),
+        "expiresAt": now + timedelta(minutes=RECOVERY_TOKEN_TTL_MINUTES),
+    })
 
     await _log_recovery_audit("initiate_success", email, request)
     # Returned directly to the caller that already proved possession of
@@ -753,8 +853,9 @@ async def owner_recovery_initiate(req: OwnerRecoveryInitiateRequest, request: Re
 
 @router.post("/owner-recovery/complete")
 async def owner_recovery_complete(req: OwnerRecoveryCompleteRequest, request: Request):
-    if len(req.password) < 8:
-        raise HTTPException(status_code=400, detail="Password must be at least 8 characters")
+    _validate_new_password(req.password)
+    if req.pin is not None and not re.fullmatch(r"[0-9]{2,4}", req.pin):
+        raise HTTPException(status_code=400, detail="PIN must be 2-4 digits")
 
     import hashlib
     token_hash = hashlib.sha256(req.token.encode("utf-8")).hexdigest()
@@ -771,14 +872,29 @@ async def owner_recovery_complete(req: OwnerRecoveryCompleteRequest, request: Re
         raise HTTPException(status_code=400, detail="Invalid or expired recovery token")
 
     email = record["email"]
+    owner = await db.auth_users.find_one({"role": "owner", "email": {"$regex": "^" + re.escape(email) + "$", "$options": "i"}})
+    if not owner:
+        raise HTTPException(status_code=404, detail="Owner account not found")
+    if record.get("ownerId") != owner["id"] or record.get("credentialHash") != owner.get("password_hash"):
+        raise HTTPException(status_code=400, detail="Account changed. Start recovery again.")
+    if req.pin is not None and await db.auth_users.find_one({"pin": req.pin, "id": {"$ne": owner["id"]}}):
+        raise HTTPException(status_code=409, detail="PIN already in use. Start recovery again and choose another PIN.")
+    update_fields = {"password_hash": hash_password(req.password), "status": "active",
+                      "passwordChangedAt": now.isoformat()}
+    if req.pin is not None:
+        # Same atomic update as the password — the PIN change is gated by the
+        # exact same single-use token, never a separate/weaker check.
+        update_fields["pin"] = req.pin
     result = await db.auth_users.update_one(
-        {"email": email, "role": "owner"},
-        {"$set": {"password_hash": hash_password(req.password), "status": "active",
-                   "passwordChangedAt": now.isoformat()}},
+        {"id": owner["id"], "role": "owner", "password_hash": record["credentialHash"]},
+        {"$set": update_fields},
     )
     if result.matched_count == 0:
         await _log_recovery_audit("complete_failed_no_owner", email, request)
         raise HTTPException(status_code=404, detail="Owner account not found")
+
+    await db.trusted_devices.delete_many({"userId": owner["id"]})
+    await db.password_reset_tokens.delete_many({"_id": owner["id"]})
 
     # Clear any lockout the earlier failed logins left on this account.
     await db.login_attempts.delete_one({"identifier": f"acct:{email}"})

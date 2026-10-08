@@ -1,3 +1,4 @@
+import AccountAccessPanel from './AccountAccessPanel';
 import React, { useEffect, useState } from 'react';
 import { Card, CardContent } from '../ui/card';
 import { Button } from '../ui/button';
@@ -105,6 +106,7 @@ export default function SecurityPanel() {
 
   return (
     <div className="space-y-4" data-testid="security-panel">
+      <AccountAccessPanel />
       <Card style={card}>
         <CardContent className="p-6 space-y-4">
           <div className="flex items-start justify-between gap-4 flex-wrap">

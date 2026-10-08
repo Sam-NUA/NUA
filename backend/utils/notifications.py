@@ -10,6 +10,7 @@ ENV (optional):
 """
 from __future__ import annotations
 import os
+import asyncio
 import logging
 from typing import Optional
 
@@ -29,7 +30,9 @@ async def send_email(to: str, subject: str, body: str) -> dict:
         from sendgrid import SendGridAPIClient
         from sendgrid.helpers.mail import Mail
         msg = Mail(from_email=sender, to_emails=to, subject=subject, html_content=body)
-        SendGridAPIClient(api_key).send(msg)
+        response = await asyncio.to_thread(SendGridAPIClient(api_key).send, msg)
+        if not 200 <= response.status_code < 300:
+            return {"channel": "email", "delivered": False, "reason": "provider_rejected"}
         return {"channel": "email", "delivered": True, "to": to}
     except Exception as e:
         log.exception("email-failed: %s", e)

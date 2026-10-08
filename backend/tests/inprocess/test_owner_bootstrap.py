@@ -89,6 +89,48 @@ def test_admin_email_env_is_normalized_to_lowercase(bootstrap, monkeypatch):
     asyncio.get_event_loop().run_until_complete(scenario())
 
 
+def test_fresh_bootstrap_with_admin_pin_enables_pin_login(bootstrap, monkeypatch):
+    """A brand-new owner document created while ADMIN_PIN is set gets a
+    working PIN alongside the password, in the same create-once insert."""
+    auth, db = bootstrap
+    from routes import staff_management
+    # pin_login() reads the module-level `db` staff_management imported from
+    # database.py directly; point it at the same isolated mongomock db this
+    # fixture gave `auth.db`, so the two modules agree on what "the database"
+    # is for this test.
+    monkeypatch.setattr(staff_management, "db", db)
+    monkeypatch.setenv("ADMIN_PIN", "4321")
+
+    async def scenario():
+        await auth.seed_admin()
+        owner = await db.auth_users.find_one({"role": "owner"})
+        assert owner["pin"] == "4321"
+        result = await staff_management.pin_login({"pin": "4321"})
+        assert "token" in result
+        assert result["user"]["id"] == owner["id"]
+        assert result["user"]["role"] == "owner"
+
+    asyncio.get_event_loop().run_until_complete(scenario())
+
+
+def test_invalid_admin_pin_is_skipped_at_seed_time_with_a_warning(bootstrap, monkeypatch, caplog):
+    """An ADMIN_PIN that isn't 2-4 digits must never be written to the
+    account — pin_login() matches PINs verbatim, so seeding a bad value
+    would silently brick PIN sign-in instead of failing loudly now."""
+    import logging
+    auth, db = bootstrap
+    monkeypatch.setenv("ADMIN_PIN", "abcd")
+
+    async def scenario():
+        with caplog.at_level(logging.WARNING, logger="routes.auth"):
+            await auth.seed_admin()
+        owner = await db.auth_users.find_one({"role": "owner"})
+        assert "pin" not in owner
+        assert any("ADMIN_PIN" in record.message for record in caplog.records)
+
+    asyncio.get_event_loop().run_until_complete(scenario())
+
+
 def test_existing_owner_email_casing_is_self_healed_without_duplicate(bootstrap, monkeypatch):
     """An owner created before email normalization (or typed in with the
     wrong case by hand) must become reachable by the lowercased ADMIN_EMAIL

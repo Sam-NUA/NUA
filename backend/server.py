@@ -1,5 +1,6 @@
 from dotenv import load_dotenv
 from pathlib import Path
+from datetime import datetime
 load_dotenv(Path(__file__).parent / '.env')
 
 from fastapi import FastAPI, APIRouter
@@ -268,7 +269,7 @@ PUBLIC_API_PATHS = {
     "/api/auth/me",
     # A locked-out staff member has no session by definition — both steps of
     # self-service password recovery have to be reachable with no token.
-    "/api/auth/forgot-password", "/api/auth/reset-password",
+    "/api/auth/forgot-password", "/api/auth/reset-password", "/api/auth/access-options",
     # Operator-only owner recovery (routes/auth.py) — same "no session yet"
     # story, gated by OWNER_RECOVERY_KEY inside the route itself rather than
     # a user token.
@@ -401,6 +402,11 @@ class RequireAuthMiddleware(BaseHTTPMiddleware):
         # A refresh token must not be usable as an access token.
         if payload.get("type") not in (None, "access"):
             return JSONResponse(status_code=401, content={"detail": "Invalid token type"})
+        account = await db.auth_users.find_one({"id": payload.get("sub")}, {"passwordChangedAt": 1})
+        if account and account.get("passwordChangedAt"):
+            changed_at = datetime.fromisoformat(account["passwordChangedAt"]).timestamp()
+            if payload.get("iat", 0) < changed_at:
+                return JSONResponse(status_code=401, content={"detail": "Password changed — please sign in again"})
         return await call_next(request)
 
 
