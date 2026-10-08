@@ -28,3 +28,20 @@ test('a bad password is rejected with a visible error, not a silent failure', as
   await expect(page.getByTestId('login-error')).toBeVisible();
   await expect(page).toHaveURL(/\/login/);
 });
+
+
+test('owner recovery saves a PIN and supports PIN sign-in', async ({ page }) => {
+  await page.goto('/owner-recovery');
+  await page.getByTestId('owner-recovery-key-input').fill('e2e-only-recovery-key');
+  await page.getByTestId('owner-recovery-email-input').fill('owner@nua.com');
+  await page.getByTestId('owner-recovery-initiate-submit').click();
+  await page.getByTestId('owner-recovery-password-input').fill('NuaOwner2026!');
+  await page.getByTestId('owner-recovery-confirm-input').fill('NuaOwner2026!');
+  await page.getByTestId('owner-recovery-pin-input').fill('8642');
+  await page.getByTestId('owner-recovery-confirm-pin-input').fill('8642');
+  await page.getByTestId('owner-recovery-complete-submit').click();
+  await expect(page.getByTestId('owner-recovery-success')).toBeVisible();
+  const response = await page.request.post('http://127.0.0.1:8123/api/auth/pin-login', { data: { pin: '8642' } });
+  expect(response.ok()).toBeTruthy();
+  expect((await response.json()).user.role).toBe('owner');
+});

@@ -9,6 +9,7 @@ import bcrypt
 import jwt
 import logging
 import os
+import re
 
 router = APIRouter(prefix="/auth")
 logger = logging.getLogger(__name__)
@@ -170,6 +171,7 @@ class OwnerRecoveryInitiateRequest(BaseModel):
 class OwnerRecoveryCompleteRequest(BaseModel):
     token: str
     password: str
+    pin: Optional[str] = None
 
 # --- Endpoints ---
 @router.post("/login")
@@ -699,12 +701,24 @@ async def seed_admin():
     if existing_ci and existing_ci.get("email") != email:
         await db.auth_users.update_one({"id": existing_ci["id"]}, {"$set": {"email": email}})
         logger.warning("owner-bootstrap: normalized existing owner email casing to match ADMIN_EMAIL")
-    await _insert_seed_user({
+    owner_doc = {
         "id": str(uuid.uuid4()), "name": "Owner", "email": email,
         "password_hash": hash_password(password),
         "role": "owner", "businessId": "default", "payRate": 0,
         "status": "active", "createdAt": datetime.now(timezone.utc).isoformat(),
-    })
+    }
+    # Only ever applied via _insert_seed_user's $setOnInsert, so this can only
+    # ever set a PIN on a brand-new owner document — it never touches an
+    # existing account's PIN, same create-once guarantee as the password above.
+    pin = os.environ.get("ADMIN_PIN")
+    if pin:
+        if re.fullmatch(r"[0-9]{2,4}", pin) and not await db.auth_users.find_one({"pin": pin}):
+            owner_doc["pin"] = pin
+        else:
+            logger.warning(
+                "ADMIN_PIN is set but is not a valid 2-4 digit PIN — skipping owner PIN bootstrap."
+            )
+    await _insert_seed_user(owner_doc)
     # Demo users are local/test conveniences, never an implicit consequence
     # of bootstrapping a deployed owner account.
     if os.environ.get("SEED_DEMO_STAFF", "").lower() != "true":
@@ -785,8 +799,8 @@ async def owner_recovery_initiate(req: OwnerRecoveryInitiateRequest, request: Re
     await db.login_attempts.delete_one({"identifier": RECOVERY_LOCK_IDENTIFIER})
 
     email = req.email.strip().lower()
-    owner = await db.auth_users.find_one({"role": "owner"})
-    if owner and owner.get("email", "").strip().lower() != email:
+    owner = await db.auth_users.find_one({"role": "owner", "email": {"$regex": "^" + re.escape(email) + "$", "$options": "i"}})
+    if not owner and await db.auth_users.find_one({"role": "owner"}):
         # Never let a valid recovery key retarget the owner account to a
         # different email — that would be an account-takeover primitive.
         # Recovery only ever reaches the owner that already exists.
@@ -802,11 +816,7 @@ async def owner_recovery_initiate(req: OwnerRecoveryInitiateRequest, request: Re
     # Invalidate any earlier unused token for this email before issuing a new
     # one — only the most recently issued token can ever be completed.
     await db.owner_recovery_tokens.update_many({"email": email, "used": False}, {"$set": {"used": True}})
-    await db.owner_recovery_tokens.insert_one({
-        "id": str(uuid.uuid4()), "tokenHash": token_hash, "email": email,
-        "used": False, "createdAt": now.isoformat(),
-        "expiresAt": now + timedelta(minutes=RECOVERY_TOKEN_TTL_MINUTES),
-    })
+
 
     if not owner:
         # No owner exists at all — e.g. ADMIN_PASSWORD was never set on the
@@ -819,6 +829,16 @@ async def owner_recovery_initiate(req: OwnerRecoveryInitiateRequest, request: Re
             "role": "owner", "businessId": "default", "payRate": 0,
             "status": "active", "createdAt": now.isoformat(),
         })
+
+    owner = await db.auth_users.find_one({"role": "owner", "email": {"$regex": "^" + re.escape(email) + "$", "$options": "i"}})
+    if not owner:
+        raise HTTPException(status_code=409, detail="Owner setup changed. Start recovery again.")
+    await db.owner_recovery_tokens.insert_one({
+        "id": str(uuid.uuid4()), "tokenHash": token_hash, "email": email,
+        "ownerId": owner["id"], "credentialHash": owner["password_hash"],
+        "used": False, "createdAt": now.isoformat(),
+        "expiresAt": now + timedelta(minutes=RECOVERY_TOKEN_TTL_MINUTES),
+    })
 
     await _log_recovery_audit("initiate_success", email, request)
     # Returned directly to the caller that already proved possession of
@@ -833,8 +853,9 @@ async def owner_recovery_initiate(req: OwnerRecoveryInitiateRequest, request: Re
 
 @router.post("/owner-recovery/complete")
 async def owner_recovery_complete(req: OwnerRecoveryCompleteRequest, request: Request):
-    if len(req.password) < 8:
-        raise HTTPException(status_code=400, detail="Password must be at least 8 characters")
+    _validate_new_password(req.password)
+    if req.pin is not None and not re.fullmatch(r"[0-9]{2,4}", req.pin):
+        raise HTTPException(status_code=400, detail="PIN must be 2-4 digits")
 
     import hashlib
     token_hash = hashlib.sha256(req.token.encode("utf-8")).hexdigest()
@@ -851,14 +872,29 @@ async def owner_recovery_complete(req: OwnerRecoveryCompleteRequest, request: Re
         raise HTTPException(status_code=400, detail="Invalid or expired recovery token")
 
     email = record["email"]
+    owner = await db.auth_users.find_one({"role": "owner", "email": {"$regex": "^" + re.escape(email) + "$", "$options": "i"}})
+    if not owner:
+        raise HTTPException(status_code=404, detail="Owner account not found")
+    if record.get("ownerId") != owner["id"] or record.get("credentialHash") != owner.get("password_hash"):
+        raise HTTPException(status_code=400, detail="Account changed. Start recovery again.")
+    if req.pin is not None and await db.auth_users.find_one({"pin": req.pin, "id": {"$ne": owner["id"]}}):
+        raise HTTPException(status_code=409, detail="PIN already in use. Start recovery again and choose another PIN.")
+    update_fields = {"password_hash": hash_password(req.password), "status": "active",
+                      "passwordChangedAt": now.isoformat()}
+    if req.pin is not None:
+        # Same atomic update as the password — the PIN change is gated by the
+        # exact same single-use token, never a separate/weaker check.
+        update_fields["pin"] = req.pin
     result = await db.auth_users.update_one(
-        {"email": email, "role": "owner"},
-        {"$set": {"password_hash": hash_password(req.password), "status": "active",
-                   "passwordChangedAt": now.isoformat()}},
+        {"id": owner["id"], "role": "owner", "password_hash": record["credentialHash"]},
+        {"$set": update_fields},
     )
     if result.matched_count == 0:
         await _log_recovery_audit("complete_failed_no_owner", email, request)
         raise HTTPException(status_code=404, detail="Owner account not found")
+
+    await db.trusted_devices.delete_many({"userId": owner["id"]})
+    await db.password_reset_tokens.delete_many({"_id": owner["id"]})
 
     # Clear any lockout the earlier failed logins left on this account.
     await db.login_attempts.delete_one({"identifier": f"acct:{email}"})

@@ -60,3 +60,23 @@ claimed atomically. A newer request replaces an older link. Password changes
 invalidate earlier access/refresh tokens and outstanding sign-in challenges;
 email reset and in-app change also clear trusted-device records. Users retain
 their roles, business membership and second-factor configuration.
+
+
+### Owner PIN and multiple owners
+
+The operator recovery screen accepts an optional four-digit PIN and confirmation.
+Leave both blank to preserve the current PIN. Recovery selects the requested owner
+email, including when several owners exist; it cannot create a different owner
+when an owner already exists. Tokens are bound to the account and its current
+password, expire after 15 minutes, and work once. Start recovery again if a PIN
+is already assigned. Ambiguous legacy PIN assignments are denied at sign-in.
+
+`ADMIN_PIN` is an optional first-insert bootstrap value only. Changing it, or
+`ADMIN_PASSWORD`, does not overwrite an existing account. Existing owners use
+recovery or authenticated account settings. Never commit production credentials.
+
+Release setup: configure the canonical `FRONTEND_URL`, verified SendGrid sender
+and `SENDGRID_API_KEY` for email resets. For operator recovery, configure
+`OWNER_RECOVERY_KEY` as a secret and redeploy. The owner enters the new password
+and PIN privately, then verifies email and PIN sign-in. Remove the operator key
+when it is no longer required. Test delivery and recovery before handing over.
