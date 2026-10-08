@@ -1,0 +1,18 @@
+# Development and CI only; deployment installs requirements.txt.
+-r requirements.txt
+black==26.5.1
+flake8==7.3.0
+iniconfig==2.3.0
+isort==7.0.0
+mccabe==0.7.0
+mongomock==4.3.0
+mongomock-motor==0.0.36
+mypy==1.18.2
+mypy_extensions==1.1.0
+pluggy==1.6.0
+pycodestyle==2.14.0
+pyflakes==3.4.0
+pytest==9.1.1
+pytokens==0.4.1
+pip-audit==2.10.1
+sentinels==1.1.1

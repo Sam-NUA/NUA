@@ -1,3 +1,4 @@
+import pytest
 """Password reset was half-built and abandoned: ForgotPasswordRequest and
 ResetPasswordRequest Pydantic models existed in routes/auth.py with no
 endpoint ever using them, no frontend "Forgot password?" link, and a staff
@@ -8,8 +9,19 @@ and the create_challenge_token/read_challenge_token short-lived-JWT
 pattern the 2FA flow already uses.
 """
 import asyncio
+from datetime import datetime, timedelta, timezone
 
 from conftest import OWNER, req
+
+
+@pytest.fixture(autouse=True)
+def recovery_config(monkeypatch, client):
+    monkeypatch.setenv("SENDGRID_API_KEY", "test-only-key")
+    monkeypatch.setenv("SENDGRID_FROM_EMAIL", "help@example.com")
+    monkeypatch.setenv("FRONTEND_URL", "https://app.example.com")
+    from database import db
+    client.portal.call(db.login_attempts.delete_many, {})
+
 
 
 def test_forgot_password_always_answers_the_same_way(client, monkeypatch):
@@ -98,3 +110,88 @@ def test_a_reset_token_cannot_be_reused_as_a_second_factor_or_access_credential(
 
     twofa = req(client, "POST", "/api/auth/2fa/challenge", json={"challengeToken": token, "code": "000000"})
     assert twofa.status_code == 401
+
+
+@pytest.fixture
+def reset_email(monkeypatch):
+    tokens = []
+    async def send(to, subject, body):
+        assert 'href="https://app.example.com/reset-password?token=' in body
+        tokens.append(body.split('token=')[1].split('"')[0])
+        return {"delivered": True}
+    monkeypatch.setattr('utils.notifications.send_email', send)
+    return tokens
+
+
+def test_unconfigured_recovery_is_honest_without_exposing_accounts(anon, monkeypatch):
+    monkeypatch.delenv('SENDGRID_API_KEY')
+    real = req(anon, 'POST', '/api/auth/forgot-password', json={'email': OWNER['email']})
+    missing = req(anon, 'POST', '/api/auth/forgot-password', json={'email': 'missing@example.com'})
+    assert real.status_code == missing.status_code == 503
+    assert real.json() == missing.json()
+    options = req(anon, 'GET', '/api/auth/access-options')
+    assert options.status_code == 200
+    assert options.json()['emailResetAvailable'] is False
+    assert OWNER['email'] not in options.text
+
+
+@pytest.mark.parametrize('origin', ['', 'http://untrusted.example', 'https://example.com/?redirect=bad', 'https://user:pass@example.com'])
+def test_reset_requires_a_canonical_safe_origin(anon, monkeypatch, origin):
+    monkeypatch.setenv('FRONTEND_URL', origin)
+    assert req(anon, 'POST', '/api/auth/forgot-password', json={'email': OWNER['email']}).status_code == 503
+
+
+def test_only_latest_link_works_once_and_unlocks_login(anon, reset_email):
+    from database import db
+    for _ in range(2):
+        assert req(anon, 'POST', '/api/auth/forgot-password', json={'email': OWNER['email']}).status_code == 200
+    first, latest = reset_email
+    assert first != latest
+    assert req(anon, 'POST', '/api/auth/reset-password', json={'token': first, 'password': OWNER['password']}).status_code == 400
+    assert req(anon, 'POST', '/api/auth/reset-password', json={'token': latest, 'password': 'short'}).status_code == 400
+    anon.portal.call(db.login_attempts.insert_one, {'identifier': f"acct:{OWNER['email']}", 'count': 5, 'locked_until': datetime.now(timezone.utc) + timedelta(minutes=15)})
+    assert req(anon, 'POST', '/api/auth/reset-password', json={'token': latest, 'password': OWNER['password']}).status_code == 200
+    assert req(anon, 'POST', '/api/auth/reset-password', json={'token': latest, 'password': OWNER['password']}).status_code == 400
+    assert req(anon, 'POST', '/api/auth/login', json=OWNER).status_code == 200
+
+
+def test_expired_link_is_rejected(anon, reset_email):
+    from database import db
+    req(anon, 'POST', '/api/auth/forgot-password', json={'email': OWNER['email']})
+    anon.portal.call(db.password_reset_tokens.update_many, {}, {'$set': {'expiresAt': datetime.now(timezone.utc) - timedelta(seconds=1)}})
+    assert req(anon, 'POST', '/api/auth/reset-password', json={'token': reset_email[0], 'password': OWNER['password']}).status_code == 400
+
+
+def test_failed_delivery_cancels_link_and_does_not_expose_account(anon, monkeypatch):
+    from database import db
+    async def fail(*args):
+        return {'delivered': False}
+    monkeypatch.setattr('utils.notifications.send_email', fail)
+    real = req(anon, 'POST', '/api/auth/forgot-password', json={'email': OWNER['email']})
+    missing = req(anon, 'POST', '/api/auth/forgot-password', json={'email': 'missing@example.com'})
+    assert real.status_code == missing.status_code == 200
+    assert real.json() == missing.json()
+    user = anon.portal.call(db.auth_users.find_one, {'email': OWNER['email']})
+    assert anon.portal.call(db.password_reset_tokens.find_one, {'_id': user['id']}) is None
+
+
+def test_password_change_requires_current_password_and_revokes_sessions(anon):
+    login = req(anon, 'POST', '/api/auth/login', json=OWNER)
+    old_access = login.json()['token']
+    old_refresh = anon.cookies.get('refresh_token')
+    wrong = req(anon, 'POST', '/api/auth/change-password', json={'currentPassword': 'wrong', 'password': OWNER['password']})
+    assert wrong.status_code == 400
+    changed = req(anon, 'POST', '/api/auth/change-password', json={'currentPassword': OWNER['password'], 'password': OWNER['password']})
+    assert changed.status_code == 200
+    anon.cookies.clear()
+    headers = {'Authorization': f'Bearer {old_access}'}
+    assert req(anon, 'GET', '/api/auth/me', headers=headers).status_code == 401
+    assert req(anon, 'GET', '/api/users', headers=headers).status_code == 401
+    anon.cookies.set('refresh_token', old_refresh)
+    assert req(anon, 'POST', '/api/auth/refresh').status_code == 401
+    anon.cookies.clear()
+    assert req(anon, 'POST', '/api/auth/login', json=OWNER).status_code == 200
+
+
+def test_password_change_requires_authentication(anon):
+    assert req(anon, 'POST', '/api/auth/change-password', json={'currentPassword': OWNER['password'], 'password': OWNER['password']}).status_code == 401

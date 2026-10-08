@@ -18,4 +18,4 @@ EXPOSE 8010
 
 # $PORT is honoured because Railway assigns it dynamically; Fly and Compose
 # fall back to the 8010 default above.
-CMD ["sh", "-c", "exec uvicorn server:app --host 0.0.0.0 --port ${PORT:-8010} --proxy-headers --forwarded-allow-ips '*'"]
+CMD ["sh", "-c", "exec uvicorn server:app --host 0.0.0.0 --port ${PORT:-8010} --proxy-headers --forwarded-allow-ips \"${FORWARDED_ALLOW_IPS:-127.0.0.1}\""]

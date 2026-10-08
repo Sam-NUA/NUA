@@ -5,8 +5,9 @@ products/promos/specials, and schedule/publish.
 Real cross-posting to Meta/TikTok/X requires per-platform OAuth flows and
 business verification. The connect flow here is intentionally MOCKED at
 the OAuth boundary so the rest of the product (AI generation, scheduling,
-preview, image-library binding) can ship today. Marking a post "published"
-flags it locally — the platform call is logged but stubbed.
+preview, image-library binding) can ship today. Publishing fails explicitly
+until a real provider adapter exists; only provider acknowledgement may mark
+a post published.
 """
 from fastapi import APIRouter, HTTPException, Depends, BackgroundTasks
 from typing import List, Optional
@@ -120,9 +121,15 @@ async def list_posts(status: Optional[str] = None, platform: Optional[str] = Non
     q: dict = tenant_scope_filter(user.get("businessId"))
     if status:
         q["status"] = status
+        if status == "published":
+            q["publishProvider"] = {"$ne": "stub"}
     if platform:
         q["platform"] = platform
     posts = await db.social_posts.find(q, {"_id": 0}).sort("createdAt", -1).to_list(200)
+    for post in posts:
+        if post.get("publishProvider") == "stub":
+            post["status"] = "simulated"
+            post["publishedAt"] = None
     return posts
 
 
@@ -133,8 +140,8 @@ async def create_post(body: SocialPostIn, user: dict = Depends(require_owner_or_
     if body.postType not in ("post", "story", "reel"):
         raise HTTPException(400, "postType must be post | story | reel")
     # Constrain status — never trust the caller to mark something already published.
-    if body.status and body.status not in ("draft", "scheduled", "published", "failed"):
-        raise HTTPException(400, "status must be draft | scheduled | published | failed")
+    if body.status and body.status not in ("draft", "scheduled"):
+        raise HTTPException(400, "Only draft or scheduled status can be set manually")
     # Must have a connected account for that platform
     if not await db.social_accounts.find_one(
             {"platform": body.platform, **tenant_scope_filter(user.get("businessId"))}):
@@ -207,8 +214,8 @@ async def update_post(post_id: str, body: dict, user: dict = Depends(require_own
         raise HTTPException(404, "Post not found")
     allowed = {"caption", "hashtags", "imageUrl", "scheduledFor", "status", "postType"}
     update = {k: v for k, v in body.items() if k in allowed}
-    if "status" in update and update["status"] not in ("draft", "scheduled", "published", "failed"):
-        raise HTTPException(400, "status must be draft | scheduled | published | failed")
+    if "status" in update and update["status"] not in ("draft", "scheduled"):
+        raise HTTPException(400, "Only draft or scheduled status can be set manually")
     if "postType" in update and update["postType"] not in ("post", "story", "reel"):
         raise HTTPException(400, "postType must be post | story | reel")
     if not update:
@@ -232,19 +239,14 @@ async def delete_post(post_id: str, user: dict = Depends(require_owner_or_manage
 
 @router.post("/social/posts/{post_id}/publish")
 async def publish_post(post_id: str, user: dict = Depends(require_owner_or_manager)):
-    """Marks a post as published. Real cross-posting to Meta/TikTok/X is
-    deferred until per-platform OAuth is wired — this endpoint flips the
-    status flag and stamps publishedAt so the UI flow works end-to-end."""
+    """Never claim delivery without a real provider acknowledgement."""
     post = await db.social_posts.find_one({"$and": [{"id": post_id}, tenant_scope_filter(user.get("businessId"))]}, {"_id": 0})
     if not post or not tenant_owns_strict(post.get("businessId"), user.get("businessId")):
         raise HTTPException(404, "Post not found")
-    now = datetime.now(timezone.utc).isoformat()
-    await db.social_posts.update_one(
-        {"$and": [{"id": post_id}, tenant_scope_filter(user.get("businessId"))]},
-        {"$set": {"status": "published", "publishedAt": now, "publishProvider": "stub"}},
+    raise HTTPException(
+        503, "Publishing is unavailable: this workspace supports content planning only. "
+        "Your post has not been sent to the social platform.",
     )
-    logger.info("Social publish (stub) → post=%s platform=%s", post_id, post.get("platform"))
-    return {"id": post_id, "status": "published", "publishedAt": now}
 
 
 # ============ AI CONTENT GENERATION ============

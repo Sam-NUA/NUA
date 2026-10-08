@@ -2,6 +2,7 @@ from fastapi import APIRouter, HTTPException, Depends
 from datetime import datetime
 from typing import Optional
 from database import db
+from services import reservation_store
 from deps import get_user
 import uuid
 import random
@@ -158,7 +159,7 @@ async def public_book_reservation(data: dict):
                 businessId=business_id,
                 **enrichment,
             )
-            await db.reservations.insert_one(res_obj.dict())
+            await reservation_store.insert_one(res_obj.dict())
     except BookingRuleViolation as e:
         raise HTTPException(status_code=409, detail=str(e))
     except TimeoutError as e:

@@ -1,5 +1,6 @@
 from dotenv import load_dotenv
 from pathlib import Path
+from datetime import datetime
 load_dotenv(Path(__file__).parent / '.env')
 
 from fastapi import FastAPI, APIRouter
@@ -9,7 +10,7 @@ import os
 import re
 from typing import Optional
 
-from database import client
+from database import client, db
 
 from routes.products import router as products_router
 from routes.stock_transfers import router as stock_transfers_router
@@ -27,6 +28,7 @@ from routes.public import router as public_router
 from routes.table_ordering import router as table_ordering_router
 from routes.integrations import router as integrations_router
 from routes.auth import router as auth_router, seed_admin
+from routes.cron import router as cron_router
 from routes.ai_pantry import router as ai_pantry_router
 from routes.multi_tenant import router as multi_tenant_router, seed_default_business
 from routes.advanced_features import router as advanced_features_router
@@ -85,6 +87,7 @@ api_router = APIRouter(prefix="/api")
 
 # Include all route modules
 api_router.include_router(auth_router)
+api_router.include_router(cron_router)
 api_router.include_router(products_router)
 api_router.include_router(stock_transfers_router)
 api_router.include_router(appointments_router)
@@ -164,6 +167,8 @@ async def root():
         ],
     }
 
+from routes.booking_sync import router as booking_sync_router
+api_router.include_router(booking_sync_router)
 app.include_router(api_router)
 
 # ============ Per-tenant rate limiter (lightweight in-memory) ============
@@ -190,7 +195,7 @@ def _rate_limit_identity(request) -> str:
             payload = jwt.decode(token, os.environ["JWT_SECRET"], algorithms=["HS256"])
             sub = payload.get("sub")
             if sub:
-                return f"user:{sub}"
+                return f"user:{payload.get('businessId', 'unscoped')}:{sub}"
         except Exception:
             pass
     ip = request.client.host if request.client else "?"
@@ -249,17 +254,26 @@ PUBLIC_API_PREFIXES = (
     # no trailing slash there would have also matched every one of those
     # staff-only sub-paths.
     "/api/voice/inbound/gather/",
+    # Vercel Cron invokes these directly — no user token exists for a
+    # platform-triggered request. Each route (routes/cron.py) is
+    # independently gated on CRON_SECRET inside the handler, the same "not
+    # a user token" trust model as the webhook prefixes above.
+    "/api/cron/",
 )
 
 PUBLIC_API_PATHS = {
-    "/api/", "/api/health", "/api/healthz",
+    "/api/", "/api/health", "/api/healthz", "/api/ready",
     "/api/ops/device-status",     # login-screen peripheral status — counts/booleans only
     # Auth itself, plus the endpoints the login screen needs before there is a user.
     "/api/auth/login", "/api/auth/register", "/api/auth/logout", "/api/auth/refresh",
     "/api/auth/me",
     # A locked-out staff member has no session by definition — both steps of
     # self-service password recovery have to be reachable with no token.
-    "/api/auth/forgot-password", "/api/auth/reset-password",
+    "/api/auth/forgot-password", "/api/auth/reset-password", "/api/auth/access-options",
+    # Operator-only owner recovery (routes/auth.py) — same "no session yet"
+    # story, gated by OWNER_RECOVERY_KEY inside the route itself rather than
+    # a user token.
+    "/api/auth/owner-recovery/initiate", "/api/auth/owner-recovery/complete",
     # The second half of login: password passed, code still owed. It carries
     # its own short-lived challenge token in the body instead of a session
     # token, which this middleware doesn't know how to read — the endpoint
@@ -388,6 +402,11 @@ class RequireAuthMiddleware(BaseHTTPMiddleware):
         # A refresh token must not be usable as an access token.
         if payload.get("type") not in (None, "access"):
             return JSONResponse(status_code=401, content={"detail": "Invalid token type"})
+        account = await db.auth_users.find_one({"id": payload.get("sub")}, {"passwordChangedAt": 1})
+        if account and account.get("passwordChangedAt"):
+            changed_at = datetime.fromisoformat(account["passwordChangedAt"]).timestamp()
+            if payload.get("iat", 0) < changed_at:
+                return JSONResponse(status_code=401, content={"detail": "Password changed — please sign in again"})
         return await call_next(request)
 
 
@@ -467,10 +486,8 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
 
     def __init__(self, app):
         super().__init__(app)
-        self.buckets = defaultdict(list)
         self.limit = 120
         self.window = 60
-        self._last_evict = time()
 
     async def dispatch(self, request, call_next):
         # scope["path"], not request.url.path — see RequireAuthMiddleware's
@@ -503,20 +520,19 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             key = f"guest:{ip}:{table_id or business or 'na'}"
         else:
             limit, window = self.limit, self.window
-            tenant = request.headers.get("X-Tenant-Id", "default")
             identity = _rate_limit_identity(request)
-            key = f"{tenant}:{identity}"
+            key = identity
         now = time()
-        # Evict idle clients every 5 min so the bucket dict can't grow unbounded
-        if now - self._last_evict > 300:
-            self._last_evict = now
-            stale = [k for k, ts in self.buckets.items() if not ts or now - ts[-1] > self.window]
-            for k in stale:
-                del self.buckets[k]
-        self.buckets[key] = [t for t in self.buckets[key] if now - t < window]
-        if len(self.buckets[key]) >= limit:
-            return JSONResponse(status_code=429, content={"detail": f"Rate limit exceeded — {limit} req/{window}s"})
-        self.buckets[key].append(now)
+        from services.shared_runtime import SharedRuntime
+        try:
+            allowed, retry_after = await SharedRuntime(db).allow(key, limit, window, now)
+        except Exception:
+            logger.error("Shared rate limiter unavailable")
+            return JSONResponse(status_code=503, content={"detail": "Request protection unavailable"},
+                                headers={"Retry-After": "5"})
+        if not allowed:
+            return JSONResponse(status_code=429, content={"detail": f"Rate limit exceeded — {limit} req/{window}s"},
+                                headers={"Retry-After": str(retry_after)})
         return await call_next(request)
 
 # Added before RateLimit so RateLimit ends up the outer of the two: an
@@ -584,8 +600,18 @@ app.add_middleware(ObservabilityMiddleware)
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
+# Vercel sets this automatically in every deployed environment. An instance
+# there can be retired between requests, so the perpetual
+# `while True: await asyncio.sleep(...)` loops below (designed for this
+# pod's long-lived supervisor-managed process) are skipped in favor of
+# routes/cron.py's endpoints, driven by Vercel Cron (see vercel.json).
+IS_VERCEL = os.environ.get("VERCEL") == "1"
+
 @app.on_event("startup")
 async def startup():
+    from services import booking_sync
+    if os.environ.get("NUA_BOOKINGS_API_URL"):
+        await booking_sync.start_worker(run_loop=not IS_VERCEL)
     await seed_admin()
     await seed_default_business()
     # Seed 5 demo customers + reservations/transactions/feedback (idempotent).
@@ -632,12 +658,14 @@ async def startup():
                           r["categoriesInserted"], r["productsInserted"], r["stockUnitsInserted"])
     except Exception as exc:
         logger.warning("Alcohol seed skipped: %s", exc)
-    # Start Ash background scheduler
-    try:
-        from services.nua_scheduler import start_scheduler
-        start_scheduler()
-    except Exception as exc:
-        logger.warning("Ash scheduler failed to start: %s", exc)
+    # Start Ash background scheduler — in-process only off Vercel; Vercel
+    # Cron drives /api/cron/ash-hourly instead (see routes/cron.py).
+    if not IS_VERCEL:
+        try:
+            from services.nua_scheduler import start_scheduler
+            start_scheduler()
+        except Exception as exc:
+            logger.warning("Ash scheduler failed to start: %s", exc)
     # Analytics filters the course-event trail on time, and the trail needs a
     # TTL so it can't grow forever.
     try:
@@ -646,28 +674,39 @@ async def startup():
     except Exception as exc:
         logger.warning("Course event indexes failed: %s", exc)
     # Course timing rules need minute-level granularity, so they get their own
-    # loop rather than riding the hourly Ash scheduler.
-    try:
-        from services.coursing_scheduler import start_scheduler as start_coursing
-        start_coursing()
-    except Exception as exc:
-        logger.warning("Coursing scheduler failed to start: %s", exc)
+    # loop rather than riding the hourly Ash scheduler. In-process only off
+    # Vercel; Vercel Cron drives /api/cron/coursing-tick instead.
+    if not IS_VERCEL:
+        try:
+            from services.coursing_scheduler import start_scheduler as start_coursing
+            start_coursing()
+        except Exception as exc:
+            logger.warning("Coursing scheduler failed to start: %s", exc)
     # Daily GitHub auto-sync — see services/repo_sync_scheduler.py.
     # Polls every 30 min; performs one fetch+merge inside the target hour in
     # the configured timezone (default: 04:00 Australia/Sydney).
-    # Disable with REPO_SYNC_ENABLED=false.
-    try:
-        from services.repo_sync_scheduler import start_scheduler as start_repo_sync
-        start_repo_sync()
-    except Exception as exc:
-        logger.warning("Repo-sync scheduler failed to start: %s", exc)
+    # Disable with REPO_SYNC_ENABLED=false. Also skipped on Vercel outright —
+    # it shells out to git against a local filesystem checkout, which has no
+    # meaning on Vercel's ephemeral/read-only function filesystem regardless
+    # of that flag.
+    if not IS_VERCEL:
+        try:
+            from services.repo_sync_scheduler import start_scheduler as start_repo_sync
+            start_repo_sync()
+        except Exception as exc:
+            logger.warning("Repo-sync scheduler failed to start: %s", exc)
+    from services.shared_runtime import SharedRuntime
+    await SharedRuntime(db).ensure_indexes()
+
     # Daily automatic backup restore-drill — catches a silently-broken
-    # backup before the day it's actually needed.
-    try:
-        from services.backup_scheduler import start_scheduler as start_backup_drills
-        start_backup_drills()
-    except Exception as exc:
-        logger.warning("Backup drill scheduler failed to start: %s", exc)
+    # backup before the day it's actually needed. In-process only off
+    # Vercel; Vercel Cron drives /api/cron/backup-drill-check instead.
+    if not IS_VERCEL:
+        try:
+            from services.backup_scheduler import start_scheduler as start_backup_drills
+            start_backup_drills()
+        except Exception as exc:
+            logger.warning("Backup drill scheduler failed to start: %s", exc)
     # Burned TOTP codes and trusted devices both expire on their own.
     try:
         from services.two_factor import ensure_indexes as ensure_2fa_indexes
@@ -699,6 +738,8 @@ async def startup():
 
 @app.on_event("shutdown")
 async def shutdown_db_client():
+    from services import booking_sync
+    await booking_sync.stop_worker()
     try:
         from services.nua_scheduler import stop_scheduler
         stop_scheduler()

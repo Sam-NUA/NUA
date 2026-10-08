@@ -6,16 +6,28 @@ The allocation logic in allocation.py is the platform's licensed IP and only
 ever executes here — hosted API access only, no self-hosted distribution.
 """
 import logging
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
 import routes_admin
 import routes_public
 import routes_v1
+import webhooks
 
 logging.basicConfig(level=logging.INFO)
 
+@asynccontextmanager
+async def lifespan(app):
+    await webhooks.start_worker()
+    try:
+        yield
+    finally:
+        await webhooks.stop_worker()
+
+
 app = FastAPI(
+    lifespan=lifespan,
     title="NUA Bookings API",
     version="1.0",
     description="Multi-tenant bookings platform. All /v1 routes require a partner API key.",
@@ -31,3 +43,17 @@ app.include_router(routes_public.router)
 @app.get("/health")
 async def health():
     return {"status": "ok", "service": "nua-bookings"}
+
+
+@app.get('/ready')
+async def ready():
+    from database import client
+    from fastapi import HTTPException
+    from pymongo.errors import PyMongoError
+    try:
+        hello = await client.admin.command('hello')
+    except PyMongoError:
+        raise HTTPException(503, 'Database unavailable')
+    if not hello.get('setName') and hello.get('msg') != 'isdbgrid':
+        raise HTTPException(503, 'MongoDB replica set required')
+    return {'status': 'ready', 'service': 'nua-bookings'}

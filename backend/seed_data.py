@@ -12,6 +12,8 @@ mongo_url = os.environ['MONGO_URL']
 db_name = os.environ['DB_NAME']
 
 async def seed_database():
+    if os.environ.get("NUA_BOOKINGS_API_URL"):
+        raise RuntimeError("Destructive demo seeding is disabled when booking synchronisation is configured")
     client = AsyncIOMotorClient(mongo_url)
     db = client[db_name]
     

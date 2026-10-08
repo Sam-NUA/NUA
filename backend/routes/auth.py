@@ -9,6 +9,7 @@ import bcrypt
 import jwt
 import logging
 import os
+import re
 
 router = APIRouter(prefix="/auth")
 logger = logging.getLogger(__name__)
@@ -66,12 +67,27 @@ def create_access_token(user_id: str, email: str, role: str, business_id: str = 
     # can stamp createdBy/businessId on every write without a DB round-trip per
     # request — see middleware/actor_context.py.
     payload = {"sub": user_id, "email": email, "role": role, "businessId": business_id,
+               "iat": datetime.now(timezone.utc).timestamp(),
                "exp": datetime.now(timezone.utc) + timedelta(hours=8), "type": "access"}
     return jwt.encode(payload, _secret(), algorithm=JWT_ALGORITHM)
 
 def create_refresh_token(user_id: str) -> str:
-    payload = {"sub": user_id, "exp": datetime.now(timezone.utc) + timedelta(days=7), "type": "refresh"}
+    payload = {"sub": user_id, "iat": datetime.now(timezone.utc).timestamp(),
+               "exp": datetime.now(timezone.utc) + timedelta(days=7), "type": "refresh"}
     return jwt.encode(payload, _secret(), algorithm=JWT_ALGORITHM)
+
+def _check_password_changed(user, payload):
+    changed = user.get("passwordChangedAt")
+    if changed:
+        changed_at = datetime.fromisoformat(changed).timestamp()
+        if payload.get("iat", 0) < changed_at:
+            raise HTTPException(status_code=401, detail="Password changed — please sign in again")
+
+
+def _validate_new_password(password):
+    if len(password) < 8 or len(password.encode("utf-8")) > 72:
+        raise HTTPException(status_code=400, detail="Use at least 8 characters and no more than 72 bytes")
+
 
 async def get_current_user(request: Request) -> dict:
     token = request.cookies.get("access_token")
@@ -88,6 +104,7 @@ async def get_current_user(request: Request) -> dict:
         user = await cast(Any, db.auth_users).find_one({"id": payload["sub"]})
         if not user:
             raise HTTPException(status_code=401, detail="User not found")
+        _check_password_changed(user, payload)
         if user.get("status") != "active" or not user.get("businessId"):
             raise HTTPException(status_code=403, detail="Active business membership required")
         set_actor_context({**get_actor_context(), "businessId": user["businessId"],
@@ -135,12 +152,26 @@ class RegisterRequest(BaseModel):
     businessId: Optional[str] = None
     payRate: Optional[float] = None
 
+class ChangePasswordRequest(BaseModel):
+    currentPassword: str
+    password: str
+
+
 class ForgotPasswordRequest(BaseModel):
     email: EmailStr
 
 class ResetPasswordRequest(BaseModel):
     token: str
     password: str
+
+class OwnerRecoveryInitiateRequest(BaseModel):
+    recoveryKey: str
+    email: EmailStr
+
+class OwnerRecoveryCompleteRequest(BaseModel):
+    token: str
+    password: str
+    pin: Optional[str] = None
 
 # --- Endpoints ---
 @router.post("/login")
@@ -224,6 +255,7 @@ def create_challenge_token(user_id: str, purpose: str = "2fa", expires_minutes: 
     it has to survive an email round-trip instead of an already-open app.
     """
     payload = {"sub": user_id, "type": "challenge", "purpose": purpose,
+               "iat": datetime.now(timezone.utc).timestamp(),
                "exp": datetime.now(timezone.utc) + timedelta(minutes=expires_minutes)}
     return jwt.encode(payload, _secret(), algorithm=JWT_ALGORITHM)
 
@@ -286,6 +318,7 @@ async def two_factor_challenge(req: TwoFactorChallenge, request: Request, respon
     if not user:
         raise HTTPException(status_code=401, detail="Invalid sign-in session")
 
+    _check_password_changed(user, jwt.decode(req.challengeToken, _secret(), algorithms=[JWT_ALGORITHM]))
     ok, how = await two_factor.verify(user, req.code)
     if not ok:
         await db.login_attempts.update_one(
@@ -368,6 +401,43 @@ async def logout(response: Response):
     response.delete_cookie("refresh_token", path="/")
     return {"message": "Logged out"}
 
+@router.get("/access-options")
+async def access_options():
+    from services.account_recovery import recovery_ready
+    return {"emailResetAvailable": recovery_ready(),
+            "operatorRecoveryAvailable": bool(os.environ.get("OWNER_RECOVERY_KEY"))}
+
+
+@router.post("/change-password")
+async def change_password(req: ChangePasswordRequest, request: Request, response: Response):
+    actor = await get_current_user(request)
+    _validate_new_password(req.password)
+    user = await db.auth_users.find_one({"id": actor["id"]})
+    identifier = f"change-password:{user['id']}"
+    attempts = await db.login_attempts.find_one({"identifier": identifier})
+    if attempts and attempts.get("count", 0) >= 5:
+        until = attempts.get("locked_until")
+        if until and until.replace(tzinfo=timezone.utc) > datetime.now(timezone.utc):
+            raise HTTPException(status_code=429, detail="Too many attempts. Try again in 15 minutes.")
+        await db.login_attempts.delete_one({"identifier": identifier})
+    if not verify_password(req.currentPassword, user.get("password_hash", "")):
+        await db.login_attempts.update_one({"identifier": identifier},
+            {"$inc": {"count": 1}, "$set": {"locked_until": datetime.now(timezone.utc) + timedelta(minutes=15)}}, upsert=True)
+        raise HTTPException(status_code=400, detail="Current password is incorrect")
+    await db.login_attempts.delete_one({"identifier": identifier})
+    result = await db.auth_users.update_one(
+        {"id": user["id"], "password_hash": user.get("password_hash", "")},
+        {"$set": {"password_hash": hash_password(req.password),
+                   "passwordChangedAt": datetime.now(timezone.utc).isoformat()}})
+    if result.modified_count != 1:
+        raise HTTPException(status_code=409, detail="Account changed — please sign in again")
+    await db.password_reset_tokens.delete_one({"_id": user["id"]})
+    await db.trusted_devices.delete_many({"userId": user["id"]})
+    response.delete_cookie("access_token", path="/")
+    response.delete_cookie("refresh_token", path="/")
+    return {"message": "Password updated. Sign in again on your devices."}
+
+
 @router.post("/forgot-password")
 async def forgot_password(req: ForgotPasswordRequest, request: Request):
     """Request a password-reset email. Always answers the same way whether
@@ -392,28 +462,45 @@ async def forgot_password(req: ForgotPasswordRequest, request: Request):
         upsert=True,
     )
 
-    user = await db.auth_users.find_one({"email": req.email.lower()})
+    from services.account_recovery import recovery_ready, reset_origin, issue_reset, cancel_reset
+    if not recovery_ready():
+        # Deployment-wide status: identical for real and unknown email addresses.
+        raise HTTPException(status_code=503, detail="Email recovery is not available yet. Contact your venue owner or setup contact for help.")
+    user = await db.auth_users.find_one({"email": req.email.lower(), "status": "active"})
     if user:
         from utils.notifications import send_email
-        token = create_challenge_token(user["id"], purpose="password_reset", expires_minutes=30)
-        reset_url = f"{os.environ.get('FRONTEND_URL', '').rstrip('/')}/reset-password?token={token}"
-        await send_email(
+        token = await issue_reset(user)
+        reset_url = f"{reset_origin()}/reset-password?token={token}"
+        receipt = await send_email(
             user["email"], "Reset your NUA password",
             f"<p>Someone requested a password reset for your NUA account.</p>"
             f"<p><a href=\"{reset_url}\">Reset your password</a> — this link expires in 30 minutes.</p>"
             f"<p>If you didn't request this, you can ignore this email.</p>",
         )
-    return {"message": "If that email has an account, a reset link has been sent."}
+        if not receipt.get("delivered"):
+            await cancel_reset(token)
+            logger.error("Password recovery email was not accepted by the delivery provider")
+    # A per-account provider error must not become an account-enumeration oracle.
+    return {"message": "Request received. If your account is eligible, check your email for a reset link. If it does not arrive, contact your venue owner or setup contact."}
 
 @router.post("/reset-password")
 async def reset_password(req: ResetPasswordRequest):
-    user_id = read_challenge_token(req.token, purpose="password_reset")
-    if len(req.password) < 8:
-        raise HTTPException(status_code=400, detail="Password must be at least 8 characters")
+    from services.account_recovery import consume_reset
+    _validate_new_password(req.password)
+    record = await consume_reset(req.token)
+    if not record:
+        raise HTTPException(status_code=400, detail="This reset link is invalid, expired or already used. Request a new link.")
+    user = await db.auth_users.find_one({"id": record["_id"], "status": "active"})
+    if not user or user.get("password_hash", "") != record["credentialHash"]:
+        raise HTTPException(status_code=400, detail="Account changed. Request a new reset link.")
     result = await db.auth_users.update_one(
-        {"id": user_id}, {"$set": {"password_hash": hash_password(req.password)}})
-    if result.matched_count == 0:
-        raise HTTPException(status_code=404, detail="Account not found")
+        {"id": user["id"], "password_hash": record["credentialHash"], "status": "active"},
+        {"$set": {"password_hash": hash_password(req.password),
+                   "passwordChangedAt": datetime.now(timezone.utc).isoformat()}})
+    if result.modified_count != 1:
+        raise HTTPException(status_code=400, detail="Account changed. Request a new reset link.")
+    await db.trusted_devices.delete_many({"userId": user["id"]})
+    await db.login_attempts.delete_one({"identifier": f"acct:{user['email']}"})
     return {"message": "Password updated — sign in with your new password"}
 
 @router.post("/refresh")
@@ -428,6 +515,9 @@ async def refresh_token(request: Request, response: Response):
         user = await cast(Any, db.auth_users).find_one({"id": payload["sub"]})
         if not user:
             raise HTTPException(status_code=401, detail="User not found")
+        _check_password_changed(user, payload)
+        if user.get("status") != "active":
+            raise HTTPException(status_code=401, detail="Account is not active")
         access = create_access_token(user["id"], user["email"], user["role"], user.get("businessId"))
         response.set_cookie("access_token", access, httponly=True, secure=_cookie_secure(), samesite="lax", max_age=28800, path="/")
         # The frontend authenticates every API call with a Bearer header read
@@ -567,56 +657,246 @@ async def get_labor_cost_report(request: Request):
     }
 
 # --- Seeding ---
+async def _insert_seed_user(user):
+    """Create once; concurrent cold starts must never reset an existing account."""
+    from pymongo.errors import DuplicateKeyError
+
+    try:
+        await db.auth_users.update_one(
+            {"email": user["email"]}, {"$setOnInsert": user}, upsert=True
+        )
+    except DuplicateKeyError:
+        # A concurrent instance can win the unique-email insert. Only ignore
+        # that race if the intended account now exists; propagate other errors.
+        if not await db.auth_users.find_one({"email": user["email"]}):
+            raise
+
+
 async def seed_admin():
-    email = os.environ.get("ADMIN_EMAIL", "owner@nua.com")
+    import re
+    import uuid
+
+    # Login always compares on req.email.lower() (see login() above). An
+    # ADMIN_EMAIL saved with any uppercase character used to be stored
+    # verbatim here, so the seeded account could never match a lowercased
+    # login attempt — password was never the problem. Normalize once, here,
+    # instead of trusting whatever case the operator pasted into Vercel.
+    email = os.environ.get("ADMIN_EMAIL", "owner@nua.com").strip().lower()
     password = os.environ.get("ADMIN_PASSWORD")
     await db.auth_users.create_index("email", unique=True)
     if not password:
-        # No hardcoded fallback here on purpose: a default password baked into
-        # source means every fresh deployment that forgets to set one ships a
-        # public, guessable owner login. Skip seeding entirely instead — an
-        # operator sets ADMIN_PASSWORD (and optionally ADMIN_EMAIL) to
-        # bootstrap the first owner account. Local dev/test tooling
-        # (tests/inprocess/conftest.py, run_demo_backend.py) sets an
-        # explicit test-only ADMIN_PASSWORD so this never blocks them.
         logger.warning(
-            "ADMIN_PASSWORD not set — skipping owner/demo-staff account seed. "
-            "Set ADMIN_PASSWORD (and optionally ADMIN_EMAIL) to bootstrap the owner account."
+            "ADMIN_PASSWORD not set — skipping owner bootstrap. "
+            "Set ADMIN_PASSWORD and ADMIN_EMAIL to create the initial owner."
         )
         return
-    existing = await db.auth_users.find_one({"email": email})
-    if not existing:
-        import uuid
-        await db.auth_users.insert_one({
-            "id": str(uuid.uuid4()), "name": "Owner", "email": email,
-            "password_hash": hash_password(password),
-            "role": "owner", "businessId": "default", "payRate": 0,
-            "status": "active", "createdAt": datetime.now(timezone.utc).isoformat(),
-        })
-    elif not verify_password(password, existing.get("password_hash", "")):
-        await db.auth_users.update_one({"email": email}, {"$set": {"password_hash": hash_password(password)}})
-    # Seed demo staff — reuses ADMIN_PASSWORD unless DEMO_STAFF_PASSWORD is set
-    # separately, so a single env var still bootstraps a working demo/staging
-    # environment without a hardcoded literal in source.
+    # Self-heal an owner account that was created before this normalization
+    # (or by hand with different casing). Only the email casing is touched —
+    # never the password, role or status — so this can't be used to take
+    # over or duplicate an account, only to make an existing one reachable
+    # by the lowercased email login always queries with.
+    existing_ci = await db.auth_users.find_one(
+        {"role": "owner", "email": {"$regex": f"^{re.escape(email)}$", "$options": "i"}}
+    )
+    if existing_ci and existing_ci.get("email") != email:
+        await db.auth_users.update_one({"id": existing_ci["id"]}, {"$set": {"email": email}})
+        logger.warning("owner-bootstrap: normalized existing owner email casing to match ADMIN_EMAIL")
+    owner_doc = {
+        "id": str(uuid.uuid4()), "name": "Owner", "email": email,
+        "password_hash": hash_password(password),
+        "role": "owner", "businessId": "default", "payRate": 0,
+        "status": "active", "createdAt": datetime.now(timezone.utc).isoformat(),
+    }
+    # Only ever applied via _insert_seed_user's $setOnInsert, so this can only
+    # ever set a PIN on a brand-new owner document — it never touches an
+    # existing account's PIN, same create-once guarantee as the password above.
+    pin = os.environ.get("ADMIN_PIN")
+    if pin:
+        if re.fullmatch(r"[0-9]{2,4}", pin) and not await db.auth_users.find_one({"pin": pin}):
+            owner_doc["pin"] = pin
+        else:
+            logger.warning(
+                "ADMIN_PIN is set but is not a valid 2-4 digit PIN — skipping owner PIN bootstrap."
+            )
+    await _insert_seed_user(owner_doc)
+    # Demo users are local/test conveniences, never an implicit consequence
+    # of bootstrapping a deployed owner account.
+    if os.environ.get("SEED_DEMO_STAFF", "").lower() != "true":
+        return
     demo_password = os.environ.get("DEMO_STAFF_PASSWORD", password)
     demo_staff = [
         {"name": "Sarah Manager", "email": "manager@nua.com", "role": "manager", "payRate": 35},
         {"name": "Tom Cashier", "email": "cashier@nua.com", "role": "cashier", "payRate": 25},
         {"name": "Chef Kim", "email": "kitchen@nua.com", "role": "kitchen", "payRate": 30},
     ]
-    for s in demo_staff:
-        exists = await db.auth_users.find_one({"email": s["email"]})
-        if not exists:
-            import uuid
-            await db.auth_users.insert_one({
-                "id": str(uuid.uuid4()), "name": s["name"], "email": s["email"],
-                "password_hash": hash_password(demo_password),
-                "role": s["role"], "businessId": "default", "payRate": s["payRate"],
-                "status": "active", "createdAt": datetime.now(timezone.utc).isoformat(),
-            })
-        elif exists.get("role") != s["role"]:
-            # Heal seed data — ensure demo accounts always have their canonical role
-            await db.auth_users.update_one(
-                {"email": s["email"]},
-                {"$set": {"role": s["role"], "name": s["name"]}}
-            )
+    for staff in demo_staff:
+        await _insert_seed_user({
+            **staff, "id": str(uuid.uuid4()),
+            "password_hash": hash_password(demo_password),
+            "businessId": "default", "status": "active",
+            "createdAt": datetime.now(timezone.utc).isoformat(),
+        })
+
+
+# --- Operator-only owner recovery ---
+# Last-resort path when the owner account is unreachable (wrong/forgotten
+# password, pre-normalization email casing, or ADMIN_PASSWORD was never set
+# on the first cold start) and email delivery (SendGrid) isn't configured
+# yet, so /forgot-password can't help. Gated entirely on OWNER_RECOVERY_KEY —
+# a secret only the operator sets in Vercel, separate from ADMIN_PASSWORD and
+# never logged here. This is intentionally NOT the same as a public password
+# reset: nobody can reach it without that secret, every attempt (success or
+# failure) is audited, the issued token is single-use and expires in minutes,
+# and it can only ever touch the one existing owner account — it never mints
+# a second owner or changes which email the existing owner logs in with.
+RECOVERY_LOCK_IDENTIFIER = "owner-recovery"
+RECOVERY_TOKEN_TTL_MINUTES = 15
+
+
+async def _log_recovery_audit(action: str, email: Optional[str], request: Request) -> None:
+    import uuid
+    try:
+        await db.owner_recovery_audit.insert_one({
+            "id": str(uuid.uuid4()),
+            "action": action,
+            "email": email,
+            "ip": request.client.host if request.client else None,
+            "ts": datetime.now(timezone.utc).isoformat(),
+        })
+    except Exception:
+        logger.exception("owner-recovery: failed to write audit record")
+
+
+@router.post("/owner-recovery/initiate")
+async def owner_recovery_initiate(req: OwnerRecoveryInitiateRequest, request: Request):
+    recovery_key = os.environ.get("OWNER_RECOVERY_KEY")
+    if not recovery_key:
+        raise HTTPException(status_code=503, detail="Owner recovery is not configured on this deployment")
+
+    # One shared lockout bucket, not per-IP — this deployment runs behind a
+    # configurable forwarded-IP trust (see login()'s comment above) so an
+    # IP-keyed bucket here would be trivially reset by rotating a header.
+    # There is exactly one recovery key for the whole deployment, so a
+    # single bucket is the correct scope.
+    attempts = await db.login_attempts.find_one({"identifier": RECOVERY_LOCK_IDENTIFIER})
+    if attempts and attempts.get("count", 0) >= 5:
+        locked_until = attempts.get("locked_until")
+        if locked_until and locked_until.tzinfo is None:
+            locked_until = locked_until.replace(tzinfo=timezone.utc)
+        if locked_until and datetime.now(timezone.utc) < locked_until:
+            raise HTTPException(status_code=429, detail="Too many recovery attempts. Try again in 15 minutes.")
+        await db.login_attempts.delete_one({"identifier": RECOVERY_LOCK_IDENTIFIER})
+
+    import hmac
+    if not hmac.compare_digest(req.recoveryKey.encode("utf-8"), recovery_key.encode("utf-8")):
+        await db.login_attempts.update_one(
+            {"identifier": RECOVERY_LOCK_IDENTIFIER},
+            {"$inc": {"count": 1}, "$set": {"locked_until": datetime.now(timezone.utc) + timedelta(minutes=15)}},
+            upsert=True,
+        )
+        await _log_recovery_audit("initiate_failed_key", None, request)
+        raise HTTPException(status_code=401, detail="Invalid recovery key")
+    await db.login_attempts.delete_one({"identifier": RECOVERY_LOCK_IDENTIFIER})
+
+    email = req.email.strip().lower()
+    owner = await db.auth_users.find_one({"role": "owner", "email": {"$regex": "^" + re.escape(email) + "$", "$options": "i"}})
+    if not owner and await db.auth_users.find_one({"role": "owner"}):
+        # Never let a valid recovery key retarget the owner account to a
+        # different email — that would be an account-takeover primitive.
+        # Recovery only ever reaches the owner that already exists.
+        await _log_recovery_audit("initiate_rejected_email_mismatch", email, request)
+        raise HTTPException(status_code=409, detail="An owner account already exists with a different email")
+
+    import hashlib
+    import secrets
+    import uuid
+    raw_token = secrets.token_urlsafe(32)
+    token_hash = hashlib.sha256(raw_token.encode("utf-8")).hexdigest()
+    now = datetime.now(timezone.utc)
+    # Invalidate any earlier unused token for this email before issuing a new
+    # one — only the most recently issued token can ever be completed.
+    await db.owner_recovery_tokens.update_many({"email": email, "used": False}, {"$set": {"used": True}})
+
+
+    if not owner:
+        # No owner exists at all — e.g. ADMIN_PASSWORD was never set on the
+        # first cold start. Bootstrap one with an unusable random password;
+        # the real password is only ever set in /owner-recovery/complete.
+        await db.auth_users.create_index("email", unique=True)
+        await _insert_seed_user({
+            "id": str(uuid.uuid4()), "name": "Owner", "email": email,
+            "password_hash": hash_password(secrets.token_urlsafe(32)),
+            "role": "owner", "businessId": "default", "payRate": 0,
+            "status": "active", "createdAt": now.isoformat(),
+        })
+
+    owner = await db.auth_users.find_one({"role": "owner", "email": {"$regex": "^" + re.escape(email) + "$", "$options": "i"}})
+    if not owner:
+        raise HTTPException(status_code=409, detail="Owner setup changed. Start recovery again.")
+    await db.owner_recovery_tokens.insert_one({
+        "id": str(uuid.uuid4()), "tokenHash": token_hash, "email": email,
+        "ownerId": owner["id"], "credentialHash": owner["password_hash"],
+        "used": False, "createdAt": now.isoformat(),
+        "expiresAt": now + timedelta(minutes=RECOVERY_TOKEN_TTL_MINUTES),
+    })
+
+    await _log_recovery_audit("initiate_success", email, request)
+    # Returned directly to the caller that already proved possession of
+    # OWNER_RECOVERY_KEY — never emailed, never logged, never persisted
+    # in plaintext (only its sha256 hash is stored above).
+    return {
+        "message": "Recovery token issued — use it within 15 minutes to set a new owner password.",
+        "token": raw_token,
+        "expiresInMinutes": RECOVERY_TOKEN_TTL_MINUTES,
+    }
+
+
+@router.post("/owner-recovery/complete")
+async def owner_recovery_complete(req: OwnerRecoveryCompleteRequest, request: Request):
+    _validate_new_password(req.password)
+    if req.pin is not None and not re.fullmatch(r"[0-9]{2,4}", req.pin):
+        raise HTTPException(status_code=400, detail="PIN must be 2-4 digits")
+
+    import hashlib
+    token_hash = hashlib.sha256(req.token.encode("utf-8")).hexdigest()
+    now = datetime.now(timezone.utc)
+    # Atomic claim: used=False -> True in the same operation a match is
+    # required, so two concurrent completions of the same token can't both
+    # succeed — this is the replay protection, not just the expiry check.
+    record = await db.owner_recovery_tokens.find_one_and_update(
+        {"tokenHash": token_hash, "used": False, "expiresAt": {"$gt": now}},
+        {"$set": {"used": True, "usedAt": now.isoformat()}},
+    )
+    if not record:
+        await _log_recovery_audit("complete_failed_invalid_token", None, request)
+        raise HTTPException(status_code=400, detail="Invalid or expired recovery token")
+
+    email = record["email"]
+    owner = await db.auth_users.find_one({"role": "owner", "email": {"$regex": "^" + re.escape(email) + "$", "$options": "i"}})
+    if not owner:
+        raise HTTPException(status_code=404, detail="Owner account not found")
+    if record.get("ownerId") != owner["id"] or record.get("credentialHash") != owner.get("password_hash"):
+        raise HTTPException(status_code=400, detail="Account changed. Start recovery again.")
+    if req.pin is not None and await db.auth_users.find_one({"pin": req.pin, "id": {"$ne": owner["id"]}}):
+        raise HTTPException(status_code=409, detail="PIN already in use. Start recovery again and choose another PIN.")
+    update_fields = {"password_hash": hash_password(req.password), "status": "active",
+                      "passwordChangedAt": now.isoformat()}
+    if req.pin is not None:
+        # Same atomic update as the password — the PIN change is gated by the
+        # exact same single-use token, never a separate/weaker check.
+        update_fields["pin"] = req.pin
+    result = await db.auth_users.update_one(
+        {"id": owner["id"], "role": "owner", "password_hash": record["credentialHash"]},
+        {"$set": update_fields},
+    )
+    if result.matched_count == 0:
+        await _log_recovery_audit("complete_failed_no_owner", email, request)
+        raise HTTPException(status_code=404, detail="Owner account not found")
+
+    await db.trusted_devices.delete_many({"userId": owner["id"]})
+    await db.password_reset_tokens.delete_many({"_id": owner["id"]})
+
+    # Clear any lockout the earlier failed logins left on this account.
+    await db.login_attempts.delete_one({"identifier": f"acct:{email}"})
+    await _log_recovery_audit("complete_success", email, request)
+    return {"message": "Owner password updated — sign in with your new password"}

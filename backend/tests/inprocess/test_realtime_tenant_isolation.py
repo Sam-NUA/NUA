@@ -60,14 +60,11 @@ def test_broadcast_defaults_business_id_from_the_current_actor_context():
         set_actor_context({})
 
 
-def test_a_connection_with_no_business_id_still_receives_broadcasts():
-    """An old/legacy token with no businessId claim — treated the same
-    'visible to everyone' way a missing businessId is treated everywhere
-    else in this codebase, not silently dropped."""
+def test_a_connection_without_business_scope_receives_nothing():
     legacy = _FakeSocket()
     _run(realtime.register(legacy, business_id=None))
     try:
         _run(realtime.broadcast({"type": "sale.completed"}, business_id="realtime-legacy-biz"))
-        assert legacy.received == [{"type": "sale.completed"}]
+        assert legacy.received == []
     finally:
         realtime.unregister(legacy)

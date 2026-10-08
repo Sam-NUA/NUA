@@ -146,7 +146,7 @@ export default function Kitchen() {
   // Nice-to-have instant refresh on top of the 10s poll above — never a
   // dependency, degrades to plain polling if the socket can't connect.
   useLiveFeed(useCallback((event) => {
-    if (event.type === 'kitchen_order.updated') fetchOrders();
+    if (event.type === 'sync.required' || event.type === 'kitchen_order.updated') fetchOrders();
   }, [fetchOrders]));
 
   const fetchProducts = async () => {

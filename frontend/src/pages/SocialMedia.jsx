@@ -100,7 +100,7 @@ const SocialMedia = () => {
         handle: connectHandle.trim(),
         displayName: connectDisplayName.trim() || undefined,
       });
-      toast.success(`${connectPlatform} connected (mock OAuth)`);
+      toast.success(`${connectPlatform} planning account added`);
       setConnectOpen(false); setConnectHandle(''); setConnectDisplayName('');
       reload();
     } catch (e) {
@@ -172,7 +172,7 @@ const SocialMedia = () => {
         status: 'draft',
       });
       await socialAPI.publishPost(r.data?.id);
-      toast.success(`Published to ${gen.platform} (provider stubbed)`);
+      toast.success(`Published to ${gen.platform}`);
       reload();
     } catch (e) {
       toast.error(e?.response?.data?.detail || 'Publish failed');
@@ -253,10 +253,10 @@ const SocialMedia = () => {
       </div>
 
       {/* Mock OAuth banner */}
-      {accounts.length > 0 && accounts[0].tokenStatus === 'mock_active' && (
+      {(
         <div className="rounded-md bg-amber-50 border border-amber-200 px-3 py-2 text-xs text-amber-800 flex items-center gap-2" data-testid="mock-oauth-banner">
           <AlertCircle size={14} />
-          Connections are in <strong>mocked OAuth mode</strong>. AI generation works fully; real cross-posting to Meta / TikTok / X will activate once business OAuth keys are added.
+          <span><strong>Content planning only.</strong> Save drafts and plan your calendar here. Automatic publishing is not available; scheduled posts will not be sent to social platforms.</span>
         </div>
       )}
 
@@ -429,6 +429,7 @@ const SocialMedia = () => {
                     )}
                     <Button size="sm" className="text-white hover:opacity-90"
                       style={{ background: theme.primary }}
+                      disabled title="Publishing is not available yet"
                       onClick={() => publishNow(g)}
                       data-testid={`publish-${g.platform}`}>
                       <Send size={12} className="mr-1" /> Publish
@@ -484,7 +485,7 @@ const SocialMedia = () => {
                         </td>
                         <td className="px-2 py-2 text-right">
                           {p.status !== 'published' && (
-                            <Button size="sm" variant="outline" className="mr-1" onClick={async () => {
+                            <Button size="sm" variant="outline" className="mr-1" disabled title="Publishing is not available yet" onClick={async () => {
                               try { await socialAPI.publishPost(p.id); toast.success('Published'); reload(); }
                               catch { toast.error('Failed'); }
                             }} data-testid={`publish-row-${p.id}`}><Send size={12} /></Button>
@@ -526,7 +527,7 @@ const SocialMedia = () => {
               onChange={e => setConnectDisplayName(e.target.value)} data-testid="connect-displayname-input" />
             <p className="text-[10px] text-gray-400 leading-relaxed">
               <AlertCircle size={10} className="inline mr-1" />
-              Connection is currently <strong>mocked at the OAuth boundary</strong>. AI generation and scheduling work fully; cross-posting will activate once Meta/TikTok/X business OAuth keys are added.
+              This adds a <strong>planning account</strong>. It does not connect to your social platform or enable publishing. Provider integration and account authorisation are still required.
             </p>
             <Button onClick={handleConnect} className="w-full text-white" style={{ background: theme.primary }}
               data-testid="connect-submit">

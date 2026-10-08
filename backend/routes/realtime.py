@@ -8,7 +8,10 @@ routes/auth.py. Anything else (missing token, expired, malformed) closes the
 socket with 4401 rather than accepting an unauthenticated connection.
 """
 from __future__ import annotations
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Depends, HTTPException, Query, Response
+from deps import get_user
+from database import db
+from services.shared_runtime import SharedRuntime
 import jwt
 import os
 import logging
@@ -29,7 +32,7 @@ def _verify_token(token: str):
 @router.websocket("/ws/live")
 async def live_feed(websocket: WebSocket, token: str = ""):
     payload = _verify_token(token)
-    if not payload or not payload.get("sub"):
+    if not payload or not payload.get("sub") or not payload.get("businessId") or payload.get("type") not in (None, "access"):
         await websocket.close(code=4401)
         return
     await websocket.accept()
@@ -47,3 +50,11 @@ async def live_feed(websocket: WebSocket, token: str = ""):
         logger.info(f"[realtime] socket closed: {e}")
     finally:
         realtime.unregister(websocket)
+
+
+@router.get("/realtime/events")
+async def event_feed(response: Response, cursor: str = Query(None, max_length=64), user: dict = Depends(get_user)):
+    if not user.get("businessId"):
+        raise HTTPException(403, "Business scope is required")
+    response.headers["Cache-Control"] = "private, no-store"
+    return await SharedRuntime(db).read(user["businessId"], cursor)

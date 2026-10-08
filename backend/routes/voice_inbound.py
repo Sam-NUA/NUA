@@ -48,6 +48,7 @@ from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Request, Response
 from database import db
+from services import reservation_store
 from services import voice_calls as vc
 
 
@@ -331,7 +332,7 @@ async def _finalise_booking(state: dict, call_id: str, caller: str) -> dict:
                 "cancellationCutoffHours": await snapshot_cutoff_hours(business_id),
                 **enrichment,
             }
-            await db.reservations.insert_one(booking)
+            await reservation_store.insert_one(booking)
     except BookingRuleViolation as e:
         return {"ok": False, "reason": str(e)}
     except Exception:

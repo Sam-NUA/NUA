@@ -19,3 +19,10 @@ primary_region = "syd"
     type = "requests"
     hard_limit = 300
     soft_limit = 200
+
+[[http_service.checks]]
+  interval = "30s"
+  grace_period = "15s"
+  method = "get"
+  path = "/ready"
+  timeout = "5s"

@@ -25,7 +25,10 @@ os.environ.setdefault("ADMIN_EMAIL", "owner@nua.com")
 # fallback password while this suite's fixtures keep working unchanged.
 os.environ.setdefault("ADMIN_PASSWORD", "NuaOwner2026!")
 os.environ.setdefault("DEMO_STAFF_PASSWORD", "Staff2026!")
+os.environ.setdefault("SEED_DEMO_STAFF", "true")
 os.environ.setdefault("SUPPORT_OVERRIDE_KEY", "test-only-support-override-key")
+os.environ.setdefault("OWNER_RECOVERY_KEY", "test-only-owner-recovery-key")
+os.environ.setdefault("CRON_SECRET", "test-only-cron-secret")
 
 # Swap the Mongo driver for an in-memory one before anything imports database.py.
 import mongomock_motor                     # noqa: E402
@@ -33,6 +36,9 @@ import motor.motor_asyncio as motor_asyncio  # noqa: E402
 motor_asyncio.AsyncIOMotorClient = mongomock_motor.AsyncMongoMockClient
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+
+from scripts.mongomock_compat import install as install_mongomock_compat  # noqa: E402
+install_mongomock_compat()
 
 OWNER = {"email": "owner@nua.com", "password": "NuaOwner2026!"}
 
@@ -52,19 +58,11 @@ def client(app):
 
 @pytest.fixture(autouse=True)
 def _reset_rate_limit_buckets(client):
-    """RateLimitMiddleware's request buckets live on one middleware instance
-    for the app's whole lifetime, and `app`/`client` are session-scoped — so
-    without a reset, guest-facing traffic (now rate-limited, see
-    server.py's RateLimitMiddleware) from an earlier test would carry over
-    and produce spurious 429s in a later, unrelated test. Clearing between
-    tests isolates them without weakening the limits within any single test.
+    """Each test starts with empty shared rate-limit windows.
+    Within a test, all instances still enforce the same real limit.
     """
-    mw = client.app.middleware_stack
-    while mw is not None:
-        if type(mw).__name__ == "RateLimitMiddleware":
-            mw.buckets.clear()
-            break
-        mw = getattr(mw, "app", None)
+    from database import db
+    client.portal.call(db.rate_limit_windows.delete_many, {})
     yield
 
 
@@ -85,30 +83,11 @@ _probe = [0]
 
 
 def req(client, method, path, **kw):
-    """Send one request in its own rate-limit bucket.
+    """Preserve legacy test tenant context on internal probes.
 
-    The app allows 120 requests a minute per (tenant, identity). A suite that
-    sweeps a few hundred routes blows through that and every answer comes back
-    429, which is not an authorisation result. A distinct tenant header per
-    probe keeps what we read as the auth decision.
-
-    Skipped for /api/public/* and /api/table/* — these are bucketed by IP
-    plus table/business token, not by tenant header (see server.py's
-    RateLimitMiddleware.GUEST_DEFAULT_LIMIT and PREFIX_OVERRIDES), so the
-    header serves no rate-limit purpose there. Worse, ActorContextMiddleware
-    reads the same X-Tenant-Id header as a genuine (if low-priority,
-    JWT-beats-it) business identity — for a partner/integration caller with
-    no bearer token, which is a real, intentional feature. Injecting a
-    synthetic "probe-N" value on every call made these two
-    genuinely-anonymous-by-design path prefixes look, to any code that reads
-    the actor context for tenant scoping, like a rapid string of different
-    "businesses" instead of no business at all — surfaced by
-    services/booking_rules_engine.py's guest-booking path once it started
-    actually consulting tenant scope on these routes.
-
-    Guest-surface rate-limit buckets are cleared between tests by the
-    autouse `_reset_rate_limit_buckets` fixture above, so a test that needs
-    to exceed the real limit on purpose (to prove a 429 fires) still can.
+    X-Tenant-Id no longer affects rate-limit identity. Shared counters reset
+    between tests; large auth sweeps explicitly reset them per case to keep
+    exercising authentication. Public/table probes never inject tenant context.
     """
     if path.startswith("/api/public") or path.startswith("/api/table"):
         return client.request(method, path, **kw)
@@ -125,3 +104,12 @@ def owner_headers(client):
     assert "token" in body, f"owner login failed: {r.status_code} {r.text[:200]}"
     client.cookies.clear()
     return {"Authorization": f"Bearer {body['token']}"}
+
+
+@pytest.fixture(autouse=True)
+def mock_reservation_transaction(monkeypatch):
+    # mongomock has no transactions. The replica-set suite proves atomicity.
+    from services import reservation_store
+    async def execute(operation):
+        return await operation(None)
+    monkeypatch.setattr(reservation_store, '_transaction', execute)

@@ -109,7 +109,7 @@ def test_restore_drill_proves_the_backup_matches_live_and_cleans_up():
     assert report["ok"] is True, report
     assert report["archiveVerified"] is True
     for coll, counts in report["collections"].items():
-        assert counts["matches"], f"{coll}: live={counts['liveCount']} restored={counts['restoredCount']}"
+        assert counts["matches"], f"{coll}: live={counts['archiveCount']} restored={counts['restoredCount']}"
 
     after = set(loop.run_until_complete(client.list_database_names()))
     assert after == before, "the drill's scratch database should be dropped, not left behind"

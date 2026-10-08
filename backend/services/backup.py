@@ -43,7 +43,7 @@ log = logging.getLogger(__name__)
 # useless, since a restored login lockout or a restored "already-used" TOTP
 # code would reintroduce a stale security decision rather than a clean slate.
 BACKUP_COLLECTIONS = [
-    "auth_users", "products", "categories", "modifiers", "customers",
+    "auth_users", "products", "product_images", "categories", "modifiers", "customers",
     "transactions", "refunds", "kitchen_orders", "reservations", "expenses",
     "suppliers", "bas_reports", "business_settings", "settings",
     "role_permissions", "vouchers", "loyalty_accounts", "staff_shifts",
@@ -211,7 +211,7 @@ async def restore_into(archive: bytes, database, *, wipe: bool = False) -> dict:
     return result
 
 
-async def run_restore_drill() -> dict:
+async def run_restore_drill(*, retain: bool = False) -> dict:
     """Back up the live database, restore that exact backup into a disposable
     scratch database, compare document counts, then drop the scratch database.
 
@@ -222,9 +222,13 @@ async def run_restore_drill() -> dict:
     """
     drill_name = f"{live_db.name}_restore_drill_{uuid.uuid4().hex[:8]}"
     scratch = client[drill_name]
-    report = {"startedAt": datetime.now(timezone.utc).isoformat(), "collections": {}}
+    report: dict = {"startedAt": datetime.now(timezone.utc).isoformat(), "collections": {}}
     try:
         archive = await create_backup(live_db)
+        if retain:
+            from services import durable_backups
+            metadata, archive = await durable_backups.retain(archive)
+            report["durableBackup"] = metadata
         verification = verify_backup(archive)
         report["archiveVerified"] = verification["ok"]
         report["archiveProblems"] = verification["problems"]
@@ -235,13 +239,13 @@ async def run_restore_drill() -> dict:
         await restore_into(archive, scratch, wipe=True)
 
         ok = True
-        for coll in await _collections_present(live_db):
-            live_count = await live_db[coll].count_documents({})
+        for coll, manifest_meta in verification["manifest"]["collections"].items():
+            live_count = manifest_meta["count"]
             restored_count = await scratch[coll].count_documents({})
             matches = live_count == restored_count
             ok = ok and matches
             report["collections"][coll] = {
-                "liveCount": live_count, "restoredCount": restored_count, "matches": matches,
+                "archiveCount": live_count, "restoredCount": restored_count, "matches": matches,
             }
         report["ok"] = ok
         return report

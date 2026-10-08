@@ -39,7 +39,7 @@ async def _maybe_run_drill(*, force: bool = False) -> None:
     if existing and not force:
         return
     try:
-        report = await backup.run_restore_drill()
+        report = await backup.run_restore_drill(retain=True)
     except Exception as exc:
         report = {"ok": False, "error": str(exc)}
         logger.warning("[backup] restore drill raised: %s", exc)

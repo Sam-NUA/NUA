@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import axios from 'axios';
 import { useAuth } from '../contexts/AuthContext';
 import { staffMgmtAPI, authAPI } from '../services/api';
@@ -83,11 +83,9 @@ function loginErrorMessage(err, fallback) {
 export default function Login() {
   const { login, completeTwoFactor } = useAuth();
   const navigate = useNavigate();
-  // PIN is the priority login method for staff terminals — a device
-  // defaults to PIN unless it's specifically the one an owner/manager last
-  // signed into with email (so an admin's own laptop doesn't flip to PIN
-  // just because they used it once).
-  const [mode, setMode] = useState(() => (localStorage.getItem('nua_login_mode') === 'email' ? 'email' : 'pin')); // email | pin | forgot
+  // New devices start with email. Established terminals keep their last
+  // successful sign-in method.
+  const [mode, setMode] = useState(() => (localStorage.getItem('nua_login_mode') === 'pin' ? 'pin' : 'email')); // email | pin | forgot
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [pin, setPin] = useState('');
@@ -99,6 +97,13 @@ export default function Login() {
   const [trustDevice, setTrustDevice] = useState(true);
   const [forgotEmail, setForgotEmail] = useState('');
   const [forgotSent, setForgotSent] = useState(false);
+  const [accessOptions, setAccessOptions] = useState(null);
+  const [showHelp, setShowHelp] = useState(false);
+  useEffect(() => {
+    let active = true;
+    authAPI.accessOptions().then(r => { if (active) setAccessOptions(r.data); }).catch(() => {});
+    return () => { active = false; };
+  }, []);
   const [resendCooldown, setResendCooldown] = useState(0);
   // Set when pin-login reports the staff member isn't rostered right now —
   // replaces the PIN form with a manager/owner PIN prompt to authorize on
@@ -221,7 +226,7 @@ export default function Login() {
             <Logo variant="product" background="light" size={40} />
           </div>
 
-          <StatusStrip />
+          <p className="text-center text-nua-chromeInk font-medium mb-1">Good service starts here.</p><p className="text-center text-nua-chromeMuted text-sm mb-5">Your team. Your venue. Your next great shift.</p><StatusStrip />
 
           {/* Off-roster approval — replaces the PIN form rather than sitting
               alongside it, same "no half-signed-in" reasoning as 2FA below.
@@ -310,7 +315,7 @@ export default function Login() {
                 <Lock size={28} style={{ color: '#750D28' }} />
                 <p className="text-nua-chromeInk font-medium mt-2">Reset your password</p>
                 <p className="text-nua-chromeMuted text-sm text-center mt-1">
-                  Enter your email and we'll send you a link to set a new password.
+                  Use the email saved on your account. Reset links expire after 30 minutes and work once.
                 </p>
               </div>
               {error && (
@@ -318,11 +323,16 @@ export default function Login() {
                   <AlertCircle size={16} /> {error}
                 </div>
               )}
-              {forgotSent ? (
+              {accessOptions?.emailResetAvailable === false ? (
+                <div className="text-sm text-nua-chromeInk space-y-3" data-testid="recovery-unavailable" role="status">
+                  <p>Email recovery is not available yet. Contact your venue owner or the person who set up your account.</p>
+                  {accessOptions.operatorRecoveryAvailable && <Link className="underline" to="/owner-recovery">Owner recovery with a recovery key</Link>}
+                </div>
+              ) : forgotSent ? (
                 <div>
                   <div className="flex items-start gap-2 text-[#046C4E] text-sm bg-[rgba(16,185,129,0.12)] p-3 rounded-lg mb-3" data-testid="forgot-sent">
                     <CheckCircle2 size={16} className="mt-0.5 flex-shrink-0" />
-                    If that email has an account, a reset link is on its way. Check your inbox.
+                    Request received. If your account is eligible, check your inbox and spam folder for a reset link. If it does not arrive, contact your venue owner or setup contact.
                   </div>
                   <Button variant="outline" className="w-full h-10 text-sm border-nua-chromeBorderControl text-nua-chromeInk2 hover:text-nua-chromeInk"
                     onClick={requestPasswordReset} disabled={loading || resendCooldown > 0} data-testid="forgot-resend">
@@ -352,12 +362,12 @@ export default function Login() {
           <>
           {/* Mode Toggle — PIN first: the priority login method for staff terminals */}
           <div className="flex gap-1 mb-6 bg-nua-bgAlt rounded-lg p-1">
-            <button onClick={() => setMode('pin')} data-testid="mode-pin"
+            <button onClick={() => { setMode('pin'); setError(''); }} data-testid="mode-pin"
               className={`flex-1 py-2 text-sm rounded-md font-medium transition-colors ${mode === 'pin' ? 'text-white' : 'text-nua-chromeMuted hover:text-nua-chromeInk'}`}
               style={mode === 'pin' ? { backgroundColor: '#750D28' } : {}}>
               <Hash size={14} className="inline mr-1" /> PIN Code
             </button>
-            <button onClick={() => setMode('email')} data-testid="mode-email"
+            <button onClick={() => { setMode('email'); setError(''); }} data-testid="mode-email"
               className={`flex-1 py-2 text-sm rounded-md font-medium transition-colors ${mode === 'email' ? 'text-white' : 'text-nua-chromeMuted hover:text-nua-chromeInk'}`}
               style={mode === 'email' ? { backgroundColor: '#750D28' } : {}}>
               <Mail size={14} className="inline mr-1" /> Email
@@ -374,16 +384,16 @@ export default function Login() {
             <form onSubmit={handleEmailLogin} className="space-y-4">
               <div className="relative">
                 <Mail size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-nua-chromeMuted" />
-                <Input type="email" placeholder="Email" value={email} onChange={e => setEmail(e.target.value)}
+                <Input type="email" autoComplete="username" aria-label="Email" placeholder="Email" value={email} onChange={e => setEmail(e.target.value)}
                   className="pl-10 bg-white border-nua-chromeBorderControl text-nua-chromeInk" required data-testid="login-email" />
               </div>
               <div className="relative">
                 <Lock size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-nua-chromeMuted" />
-                <Input type="password" placeholder="Password" value={password} onChange={e => setPassword(e.target.value)}
+                <Input type="password" autoComplete="current-password" aria-label="Password" placeholder="Password" value={password} onChange={e => setPassword(e.target.value)}
                   className="pl-10 bg-white border-nua-chromeBorderControl text-nua-chromeInk" required data-testid="login-password" />
               </div>
               <div className="text-right">
-                <button type="button" onClick={() => { setMode('forgot'); setError(''); }}
+                <button type="button" onClick={() => { setMode('forgot'); setForgotEmail(email.trim()); setError(''); }}
                   className="text-xs text-nua-chromeMuted hover:text-nua-chromeInk" data-testid="forgot-password-link">
                   Forgot password?
                 </button>
@@ -411,9 +421,16 @@ export default function Login() {
 
           <div className="mt-6 pt-4 border-t border-nua-chromeBorder">
             <p className="text-xs text-nua-chromeMuted text-center">
-              {mode === 'email' ? 'Owner: owner@nua.com' : 'Ask your manager for your PIN code'}
+              {mode === 'email' ? 'Sign in with your own account email. There is no shared owner login.' : 'No PIN yet? Sign in with email, or ask your venue owner.'}
             </p>
           </div>
+          <button type="button" className="mt-4 w-full text-sm underline text-nua-chromeMuted" onClick={() => setShowHelp(v => !v)} aria-expanded={showHelp} data-testid="access-help">New here or need help signing in?</button>
+          {showHelp && <div className="mt-3 text-sm text-nua-chromeInk space-y-3" data-testid="access-help-content">
+            <p><strong>Owners:</strong> use the email from your account setup. Forgotten your password? Choose Email, then Forgot password.</p>
+            <p><strong>New venue or client:</strong> ask your NUA setup contact to create your venue and owner account. Existing staff should ask their venue owner for access.</p>
+            <p><strong>Quick PIN sign-in:</strong> once signed in, the owner can set a personal PIN in Settings → Staff. A PIN must be set before it works.</p>
+            {accessOptions?.operatorRecoveryAvailable && <Link to="/owner-recovery" className="block underline">Have an owner recovery key?</Link>}
+          </div>}
           </>
           )}
         </CardContent>

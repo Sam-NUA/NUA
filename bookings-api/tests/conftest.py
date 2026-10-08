@@ -49,3 +49,19 @@ def reset_rate_limiter():
     rate_limiter.buckets.clear()
     yield
     rate_limiter.buckets.clear()
+
+
+@pytest.fixture(autouse=True)
+def mock_transaction_runner(monkeypatch):
+    """Unit tests use mongomock, which cannot prove transaction isolation.
+
+    Real commit/rollback/concurrency tests live in tests_real and have a
+    mandatory replica-set CI job. There is no production nontransactional
+    fallback.
+    """
+    import routes_v1
+
+    async def execute(venue_id, partner, operation):
+        venue = await routes_v1._own_venue(venue_id, partner)
+        return await operation(venue, None)
+    monkeypatch.setattr(routes_v1, 'run_for_venue', execute)
