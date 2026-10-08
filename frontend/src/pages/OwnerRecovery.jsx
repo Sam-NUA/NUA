@@ -18,6 +18,8 @@ export default function OwnerRecovery() {
   const [token, setToken] = useState('');
   const [password, setPassword] = useState('');
   const [confirm, setConfirm] = useState('');
+  const [pin, setPin] = useState('');
+  const [confirmPin, setConfirmPin] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
   const [done, setDone] = useState(false);
@@ -42,9 +44,12 @@ export default function OwnerRecovery() {
     setError('');
     if (password.length < 8) { setError('Password must be at least 8 characters'); return; }
     if (password !== confirm) { setError('Passwords do not match'); return; }
+    if (pin && !/^[0-9]{4}$/.test(pin)) { setError('Use a 4-digit PIN'); return; }
+    if (pin !== confirmPin) { setError('PINs do not match'); return; }
     setLoading(true);
     try {
-      await authAPI.ownerRecoveryComplete(token, password);
+      await authAPI.ownerRecoveryComplete(token, password, pin);
+      setPin(''); setConfirmPin('');
       setPassword(''); setConfirm(''); setToken('');
       localStorage.removeItem('nua_token');
       localStorage.setItem('nua_login_mode', 'email');
@@ -133,6 +138,17 @@ export default function OwnerRecovery() {
                     onChange={e => setConfirm(e.target.value)}
                     className="pl-10 bg-gray-800 border-gray-700 text-white" required
                     data-testid="owner-recovery-confirm-input" />
+                </div>
+                <div className="space-y-2">
+                  <label htmlFor="owner-new-pin" className="text-sm text-gray-300">New PIN (optional)</label>
+                  <Input id="owner-new-pin" type="password" inputMode="numeric" autoComplete="new-password"
+                    maxLength={4} value={pin} onChange={e => setPin(e.target.value)}
+                    className="bg-gray-800 border-gray-700 text-white" data-testid="owner-recovery-pin-input" />
+                  <p className="text-xs text-gray-400">Use 4 digits. Leave blank to keep your current PIN.</p>
+                  <label htmlFor="owner-confirm-pin" className="text-sm text-gray-300">Confirm PIN</label>
+                  <Input id="owner-confirm-pin" type="password" inputMode="numeric" autoComplete="new-password"
+                    maxLength={4} value={confirmPin} onChange={e => setConfirmPin(e.target.value)}
+                    className="bg-gray-800 border-gray-700 text-white" data-testid="owner-recovery-confirm-pin-input" />
                 </div>
                 <Button type="submit" className="w-full h-11 text-white font-medium hover:opacity-90"
                   style={{ backgroundColor: '#f58c14' }} disabled={loading} data-testid="owner-recovery-complete-submit">

@@ -120,6 +120,12 @@ def _issue_staff_token(user: dict) -> str:
     )
 
 
+async def _unique_pin_user(pin):
+    # Legacy or concurrent duplicate assignments must never select an arbitrary account.
+    matches = await db.auth_users.find({"pin": pin, "status": "active"}).limit(2).to_list(2)
+    return matches[0] if len(matches) == 1 else None
+
+
 @router.post("/auth/pin-login")
 async def pin_login(data: dict):
     """Login with 2-4 digit PIN code.
@@ -133,7 +139,7 @@ async def pin_login(data: dict):
     pin = str(data.get("pin", ""))
     if not pin or len(pin) < 2 or len(pin) > 4:
         raise HTTPException(status_code=400, detail="PIN must be 2-4 digits")
-    user = await db.auth_users.find_one({"pin": pin, "status": "active"})
+    user = await _unique_pin_user(pin)
     if not user:
         raise HTTPException(status_code=401, detail="Invalid PIN")
     user.pop("_id", None)
@@ -160,12 +166,11 @@ async def approve_pin_login(data: dict):
     if not staff_pin or not manager_pin:
         raise HTTPException(status_code=400, detail="Staff PIN and manager/owner PIN are both required")
 
-    staff = await db.auth_users.find_one({"pin": staff_pin, "status": "active"})
+    staff = await _unique_pin_user(staff_pin)
     if not staff:
         raise HTTPException(status_code=401, detail="Invalid staff PIN")
-    manager = await db.auth_users.find_one(
-        {"pin": manager_pin, "status": "active", "role": {"$in": ["owner", "manager"]}})
-    if not manager:
+    manager = await _unique_pin_user(manager_pin)
+    if not manager or manager.get("role") not in ("owner", "manager"):
         raise HTTPException(status_code=401, detail="Invalid manager/owner PIN")
     if manager.get("businessId") != staff.get("businessId"):
         raise HTTPException(status_code=403, detail="Manager must belong to the same business")

@@ -148,3 +148,36 @@ def test_complete_without_pin_field_leaves_existing_pin_untouched(anon):
         assert owner.get("pin") == "9405"
     finally:
         _unset_owner_pin()
+
+
+def test_recovery_selects_second_owner_and_rejects_pin_collision(anon):
+    import asyncio
+    from database import db
+    from routes.auth import hash_password
+    loop = asyncio.get_event_loop()
+    second = {"id": "recovery-second-owner", "email": "SecondOwner@example.com", "name": "Second", "role": "owner", "businessId": "second", "status": "active", "password_hash": hash_password("OriginalPass2026!"), "pin": "8462"}
+    loop.run_until_complete(db.auth_users.insert_one(second))
+    try:
+        token = req(anon, "POST", "/api/auth/owner-recovery/initiate", json={"recoveryKey": RECOVERY_KEY, "email": "secondowner@example.com"}).json()["token"]
+        changed = req(anon, "POST", "/api/auth/owner-recovery/complete", json={"token": token, "password": "SecondNewPass2026!"})
+        assert changed.status_code == 200, changed.text
+        saved = loop.run_until_complete(db.auth_users.find_one({"id": second["id"]}))
+        assert saved["pin"] == "8462"
+        token = req(anon, "POST", "/api/auth/owner-recovery/initiate", json={"recoveryKey": RECOVERY_KEY, "email": OWNER["email"]}).json()["token"]
+        rejected = req(anon, "POST", "/api/auth/owner-recovery/complete", json={"token": token, "password": "ShouldNotChange2026!", "pin": "8462"})
+        assert rejected.status_code == 409
+    finally:
+        loop.run_until_complete(db.auth_users.delete_one({"id": second["id"]}))
+
+
+def test_duplicate_pin_never_selects_an_arbitrary_account(anon):
+    import asyncio
+    from database import db
+    loop = asyncio.get_event_loop()
+    for ident in ("duplicate-pin-a", "duplicate-pin-b"):
+        loop.run_until_complete(db.auth_users.insert_one({"id": ident, "email": ident + "@example.com", "name": ident, "pin": "9753", "role": "owner", "status": "active"}))
+    try:
+        response = req(anon, "POST", "/api/auth/pin-login", json={"pin": "9753"})
+        assert response.status_code == 401
+    finally:
+        loop.run_until_complete(db.auth_users.delete_many({"id": {"$in": ["duplicate-pin-a", "duplicate-pin-b"]}}))

@@ -71,7 +71,7 @@ export const authAPI = {
   forgotPassword: (email) => api.post('/auth/forgot-password', { email }),
   resetPassword: (token, password) => api.post('/auth/reset-password', { token, password }),
   ownerRecoveryInitiate: (recoveryKey, email) => api.post('/auth/owner-recovery/initiate', { recoveryKey, email }),
-  ownerRecoveryComplete: (token, password) => api.post('/auth/owner-recovery/complete', { token, password }),
+  ownerRecoveryComplete: (token, password, pin) => api.post('/auth/owner-recovery/complete', { token, password, ...(pin ? { pin } : {}) }),
 };
 
 // Products API
