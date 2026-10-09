@@ -8,6 +8,7 @@ import { Badge } from '../components/ui/badge';
 import { useTheme } from '../contexts/ThemeContext';
 import { useAuth } from '../contexts/AuthContext';
 import { locationsAPI, advancedAPI, staffMgmtAPI, enterpriseAPI, gamificationAPI, finalizeAPI, analyticsAPI, customersAPI } from '../services/api';
+import SettingsNavigation from '../components/settings/SettingsNavigation';
 import WalletCredentialsPanel from '../components/settings/WalletCredentialsPanel';
 import PermissionsPanel from '../components/settings/PermissionsPanel';
 import CoursingSettings from '../components/settings/CoursingSettings';
@@ -26,7 +27,7 @@ const authHeader = () => ({ Authorization: `Bearer ${localStorage.getItem('nua_t
 const Settings = () => {
   const { theme, updateTheme, resetTheme, saveThemeToServer, themeSaving, themeSavedAt } = useTheme();
   const { user } = useAuth();
-  const [activeTab, setActiveTab] = useState('theme');
+  const [activeTab, setActiveTab] = useState('overview');
   const [trainingMode, setTrainingMode] = useState(false);
   const [trainingLoading, setTrainingLoading] = useState(false);
   // Locations
@@ -165,43 +166,11 @@ const Settings = () => {
     } catch { toast.error('Failed to save'); }
   };
 
-  const tabs = [
-    { id: 'theme', label: 'Theme', icon: Palette },
-    { id: 'targets', label: 'Targets & Offers', icon: Target },
-    { id: 'receipt', label: 'Receipt', icon: Receipt },
-    { id: 'print-routing', label: 'Print Routing', icon: Printer },
-    { id: 'coursing', label: 'Courses & Firing', icon: Utensils },
-    { id: 'pos-layout', label: 'POS Layout', icon: LayoutGrid },
-    { id: 'permissions', label: 'Permissions', icon: Shield },
-    { id: 'security', label: 'Security', icon: ShieldCheck },
-    { id: 'ops', label: 'System Health', icon: Activity },
-    { id: 'backup', label: 'Backup', icon: DownloadCloud },
-    { id: 'surcharge', label: 'Surcharges', icon: Zap },
-    { id: 'gratuity', label: 'Auto-Gratuity', icon: Percent },
-    { id: 'reports', label: 'Automated Reports', icon: Mail },
-    { id: 'hardware', label: 'Hardware', icon: Monitor },
-    { id: 'training', label: 'Training', icon: GraduationCap },
-    { id: 'locations', label: 'Locations', icon: MapPin },
-    { id: 'users', label: 'Staff', icon: UsersIcon },
-    { id: 'business', label: 'Business', icon: Building },
-    { id: 'wallet', label: 'Wallet Passes', icon: KeyRound },
-  ];
-
   return (
-    <div className="space-y-6" data-testid="settings-page">
-      <div><h1 className="text-3xl font-bold" style={{ color: theme.text }}>Settings</h1><p className="text-gray-500 mt-1">Manage your system preferences and configurations</p></div>
+    <div className="space-y-6 min-w-0" data-testid="settings-page">
+      <div><h1 className="text-3xl font-bold" style={{ color: theme.text }}>Settings</h1><p className="text-gray-500 mt-1">Your venue, team and POS preferences, organised in one place</p></div>
 
-      <div className="flex gap-2 border-b">
-        {tabs.map(tab => {
-          const Icon = tab.icon;
-          return (<button key={tab.id} onClick={() => setActiveTab(tab.id)} className="flex items-center gap-2 px-4 py-3 font-medium transition-colors" data-testid={`settings-tab-${tab.id}`}
-            style={{ color: activeTab === tab.id ? theme.primary : theme.text, borderBottom: activeTab === tab.id ? `2px solid ${theme.primary}` : 'none' }}>
-            <Icon size={18} />{tab.label}
-          </button>);
-        })}
-      </div>
-
-
+      <SettingsNavigation activeTab={activeTab} onSelect={setActiveTab} role={user?.role}>
       {/* Permissions */}
       {activeTab === 'permissions' && user?.role === 'owner' && (
         <PermissionsPanel staff={staff} />
@@ -216,7 +185,7 @@ const Settings = () => {
             <input type="checkbox" checked={surchargeSettings.enabled} onChange={e => setSurchargeSettings({ ...surchargeSettings, enabled: e.target.checked })} data-testid="surcharge-enabled" />
             Enable Auto Surcharging
           </label>
-          <div className="grid grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div><label className="text-sm font-medium mb-1 block">Weekend Surcharge %</label><Input type="number" step="0.5" value={surchargeSettings.weekendSurcharge} onChange={e => setSurchargeSettings({ ...surchargeSettings, weekendSurcharge: parseFloat(e.target.value) || 0 })} data-testid="weekend-surcharge" /></div>
             <div><label className="text-sm font-medium mb-1 block">Public Holiday Surcharge %</label><Input type="number" step="0.5" value={surchargeSettings.publicHolidaySurcharge} onChange={e => setSurchargeSettings({ ...surchargeSettings, publicHolidaySurcharge: parseFloat(e.target.value) || 0 })} data-testid="holiday-surcharge" /></div>
           </div>
@@ -316,7 +285,7 @@ const Settings = () => {
             <input type="checkbox" checked={reportConfig.enabled} onChange={e => setReportConfig({ ...reportConfig, enabled: e.target.checked })} data-testid="report-enabled" />
             Enable Automated Reports
           </label>
-          <div className="grid grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div><label className="text-sm font-medium mb-1 block">Frequency</label>
               <select className="w-full border rounded-md px-3 py-2 text-sm" value={reportConfig.frequency}
                 onChange={e => setReportConfig({ ...reportConfig, frequency: e.target.value })} data-testid="report-frequency">
@@ -360,7 +329,7 @@ const Settings = () => {
           <Card><CardHeader><CardTitle className="flex items-center gap-2"><Target size={18} /> Today Home Screen Targets</CardTitle></CardHeader>
           <CardContent className="space-y-4">
             <p className="text-sm text-gray-500">Drives the progress bar and exception alerts on the Today home screen.</p>
-            <div className="grid grid-cols-3 gap-4">
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
               <div><label className="text-sm font-medium mb-1 block">Daily Sales Target ($)</label>
                 <Input type="number" min="0" step="50" value={todayTargets.dailySalesTarget}
                   onChange={e => setTodayTargets({ ...todayTargets, dailySalesTarget: parseFloat(e.target.value) || 0 })}
@@ -404,6 +373,10 @@ const Settings = () => {
             }} data-testid="save-wallet-offers-btn"><Save size={16} className="mr-1" /> Save Offers</Button>
           </CardContent></Card>
 
+        </div>
+      )}
+
+      {activeTab === 'session' && (user?.role === 'owner' || user?.role === 'manager') && (
           <Card><CardHeader><CardTitle className="flex items-center gap-2"><Clock size={18} /> POS Session</CardTitle></CardHeader>
           <CardContent className="space-y-4">
             <p className="text-sm text-gray-500">
@@ -426,7 +399,6 @@ const Settings = () => {
               catch { toast.error('Failed to save'); }
             }} data-testid="save-pos-session-btn"><Save size={16} className="mr-1" /> Save</Button>
           </CardContent></Card>
-        </div>
       )}
 
       {/* Hardware */}
@@ -742,7 +714,7 @@ const Settings = () => {
             <div><label className="text-sm font-medium mb-1 block">Business Name</label><Input value={bizForm.name} onChange={e => setBizForm({ ...bizForm, name: e.target.value })} data-testid="biz-name" /></div>
             <div><label className="text-sm font-medium mb-1 block">ABN</label><Input placeholder="12 345 678 901" value={bizForm.abn} onChange={e => setBizForm({ ...bizForm, abn: e.target.value })} /></div>
             <div><label className="text-sm font-medium mb-1 block">Business Address</label><Input value={bizForm.address} onChange={e => setBizForm({ ...bizForm, address: e.target.value })} /></div>
-            <div className="grid grid-cols-2 gap-4">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div><label className="text-sm font-medium mb-1 block">Phone</label><Input value={bizForm.phone} onChange={e => setBizForm({ ...bizForm, phone: e.target.value })} /></div>
               <div><label className="text-sm font-medium mb-1 block">Email</label><Input value={bizForm.email} onChange={e => setBizForm({ ...bizForm, email: e.target.value })} /></div>
             </div>
@@ -752,11 +724,11 @@ const Settings = () => {
 
           <Card><CardHeader><CardTitle>Business Hours</CardTitle></CardHeader>
           <CardContent className="space-y-4">
-            <div className="grid grid-cols-2 gap-4">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div><label className="text-sm font-medium mb-1 block">Opening Time</label><Input type="time" value={bizHours.openTime} onChange={e => setBizHours({ ...bizHours, openTime: e.target.value })} data-testid="biz-open-time" /></div>
               <div><label className="text-sm font-medium mb-1 block">Closing Time</label><Input type="time" value={bizHours.closeTime} onChange={e => setBizHours({ ...bizHours, closeTime: e.target.value })} data-testid="biz-close-time" /></div>
             </div>
-            <div className="grid grid-cols-2 gap-4">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div><label className="text-sm font-medium mb-1 block">Online Ordering Opens</label><Input type="time" value={bizHours.onlineOpenTime} onChange={e => setBizHours({ ...bizHours, onlineOpenTime: e.target.value })} data-testid="biz-online-open" /></div>
               <div><label className="text-sm font-medium mb-1 block">Online Ordering Closes</label><Input type="time" value={bizHours.onlineCloseTime} onChange={e => setBizHours({ ...bizHours, onlineCloseTime: e.target.value })} data-testid="biz-online-close" /></div>
             </div>
@@ -770,6 +742,8 @@ const Settings = () => {
           </CardContent></Card>
         </div>
       )}
+
+      </SettingsNavigation>
 
       {/* Location Dialog */}
       <Dialog open={showLocDialog} onOpenChange={setShowLocDialog}>
