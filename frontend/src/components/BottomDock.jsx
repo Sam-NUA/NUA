@@ -14,7 +14,7 @@ import {
   ShieldAlert, AlertTriangle, Flame, ArrowLeftRight, Key, Sun, Moon
 } from 'lucide-react';
 import Logo from './brand/Logo';
-import { Dialog, DialogContent, DialogTitle, DialogDescription } from './ui/dialog';
+import { Dialog, DialogContent, DialogTitle, DialogDescription, DialogClose } from './ui/dialog';
 import { Input } from './ui/input';
 
 // Role-default quick actions (left → right) on the bottom dock.
@@ -384,10 +384,13 @@ export default function BottomDock() {
       </div>
 
       <Dialog open={showMore} onOpenChange={setMoreOpen}>
-        <DialogContent className="max-w-5xl p-0 gap-0" data-testid="more-splash"
+        <DialogContent className="max-w-5xl p-0 gap-0 [&>button]:hidden" data-testid="more-splash"
           onCloseAutoFocus={event => { event.preventDefault(); moreButtonRef.current?.focus(); }}>
           <div className="sticky top-0 bg-background border-b p-4 sm:p-6 z-10 rounded-t-xl">
-            <DialogTitle>All Features</DialogTitle>
+            <DialogTitle className="pr-12">All Features</DialogTitle>
+            <DialogClose className="absolute right-2 top-2 flex h-11 w-11 items-center justify-center rounded-lg hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring" aria-label="Close features">
+              <X size={20} />
+            </DialogClose>
             <DialogDescription className="mt-1 pr-6">Find a tool for your next task. Showing features available to your account.</DialogDescription>
             <Input aria-label="Find a feature" placeholder="Search features, bookings, inventory…" value={featureSearch}
               onChange={event => setFeatureSearch(event.target.value)} className="mt-4" />

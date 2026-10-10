@@ -18,6 +18,7 @@ test('navigation search, keyboard dismissal and responsive service screens', asy
     await page.setViewportSize({ width, height: 900 });
     for (const route of ['/today', '/pos', '/kitchen', '/staff-roster', '/reservations', '/customers', '/settings']) {
       await page.goto(route);
+      await page.waitForLoadState('networkidle');
       await expect(page.getByTestId('bottom-dock')).toBeVisible();
       await expect(page.locator('#main-content')).toBeVisible();
       await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1), { message: `${route} fits ${width}px` }).toBeTruthy();
@@ -32,7 +33,8 @@ test('navigation search, keyboard dismissal and responsive service screens', asy
     const bounds = await dialog.boundingBox();
     expect(bounds.x).toBeGreaterThanOrEqual(0);
     expect(bounds.x + bounds.width).toBeLessThanOrEqual(width);
-    await page.keyboard.press('Escape');
+    await dialog.getByRole('button', { name: 'Close features' }).click();
+    await expect(dialog).toBeHidden();
   }
 });
 
@@ -50,6 +52,7 @@ test('every registered staff screen mounts without a rendering exception', async
     await test.step(route, async () => {
       errors.length = 0;
       await page.goto(route);
+      await page.waitForLoadState('networkidle');
       await expect(page.locator('#main-content')).toBeVisible();
       await expect.poll(async () => (await page.locator('#main-content').innerText()).trim().length).toBeGreaterThan(8);
       expect(errors, `Rendering errors on ${route}`).toEqual([]);
