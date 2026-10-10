@@ -178,7 +178,7 @@ const Customers = () => {
         </div>
 
         {/* Quick stats */}
-        <div className="grid grid-cols-6 gap-3">
+        <div className="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-6 gap-3">
           {[
             { label: 'Total Spent', val: `$${(profile.totalSpent || 0).toFixed(0)}`, icon: DollarSign, color: theme.primary },
             { label: 'Visits', val: profile.visits || 0, icon: Calendar, color: '#10B981' },
@@ -313,7 +313,7 @@ const Customers = () => {
             ) : profile.feedbackHistory.map(fb => (
               <Card key={fb.id} className="border-0 shadow-sm">
                 <CardContent className="p-4">
-                  <div className="flex items-center justify-between">
+                  <div className="flex flex-wrap items-center justify-between gap-3">
                     <div className="flex items-center gap-2">
                       <div className="flex gap-0.5">
                         {[1, 2, 3, 4, 5].map(s => (
@@ -520,7 +520,7 @@ const Customers = () => {
   // List View
   return (
     <div className="space-y-6" data-testid="customers-page">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h1 className="text-2xl font-bold" style={{ color: theme.text }}>Guest CRM</h1>
           <p className="text-sm text-gray-500 mt-1">360-degree guest profiles, preferences & history</p>
@@ -531,7 +531,7 @@ const Customers = () => {
       </div>
 
       {/* Stats */}
-      <div className="grid grid-cols-4 gap-4">
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
         {[
           { label: 'Total Guests', val: stats.total, icon: Users, color: theme.primary },
           { label: 'VIP Guests', val: stats.vips, icon: Award, color: '#F59E0B' },

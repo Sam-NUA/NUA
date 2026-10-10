@@ -346,12 +346,12 @@ export default function Reservations() {
         </TabsContent>
         <TabsContent value="bookings" className="mt-6 space-y-6">
       {/* Header */}
-      <div className="flex items-center justify-between">
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h1 className="text-2xl font-bold" style={{ color: theme.text }}>Reservations</h1>
           <p className="text-sm text-gray-500 mt-1">Manage bookings, tables & guest seating</p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <Button
             variant="outline"
             onClick={() => setShowWalkinDialog(true)}
@@ -366,7 +366,7 @@ export default function Reservations() {
       </div>
 
       {/* Stats Row */}
-      <div className="grid grid-cols-4 gap-4">
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
         {[
           { label: 'Total Bookings', val: todayStats.total, icon: CalendarDays, color: theme.primary },
           { label: 'Confirmed', val: todayStats.confirmed, icon: Check, color: '#3B82F6' },
@@ -393,15 +393,15 @@ export default function Reservations() {
       {/* Controls */}
       <div className="flex items-center gap-3 flex-wrap">
         <div className="flex items-center gap-1 bg-white rounded-lg border px-1 py-1">
-          <Button variant="ghost" size="sm" onClick={() => shiftDate(-1)} data-testid="prev-date-btn"><ChevronLeft size={16} /></Button>
+          <Button variant="ghost" size="sm" onClick={() => shiftDate(-1)} aria-label="Previous day" data-testid="prev-date-btn"><ChevronLeft size={16} /></Button>
           <Input type="date" value={selectedDate} onChange={e => setSelectedDate(e.target.value)}
-            className="border-0 w-40 text-center font-medium" data-testid="date-picker" />
-          <Button variant="ghost" size="sm" onClick={() => shiftDate(1)} data-testid="next-date-btn"><ChevronRight size={16} /></Button>
+            className="border-0 w-40 text-center font-medium" aria-label="Reservation date" data-testid="date-picker" />
+          <Button variant="ghost" size="sm" onClick={() => shiftDate(1)} aria-label="Next day" data-testid="next-date-btn"><ChevronRight size={16} /></Button>
         </div>
         <div className="relative flex-1 max-w-xs">
           <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
           <Input placeholder="Search guest name or phone..." value={search} onChange={e => setSearch(e.target.value)}
-            className="pl-9" data-testid="search-reservations" />
+            className="pl-9" aria-label="Search reservations" data-testid="search-reservations" />
         </div>
         <Select value={statusFilter} onValueChange={setStatusFilter}>
           <SelectTrigger className="w-40" data-testid="status-filter">
@@ -451,7 +451,7 @@ export default function Reservations() {
                     return (
                       <tr key={r.id} className="border-b hover:bg-gray-50/50 transition-colors" data-testid={`reservation-row-${r.id}`}>
                         <td className="px-4 py-3">
-                          <div className="flex items-center gap-2">
+                          <div className="flex flex-wrap items-center gap-2">
                             <Clock size={14} className="text-gray-400" />
                             <span className="font-medium">{r.time}</span>
                             <span className="text-xs text-gray-400">{r.duration}m</span>
@@ -865,7 +865,7 @@ export default function Reservations() {
                 <p className="text-sm font-semibold text-red-800 mb-1">Booking rule blocked this reservation</p>
                 <p className="text-xs text-red-700 mb-2">{ruleViolation}</p>
                 {canOverride ? (
-                  <div className="flex gap-2">
+                  <div className="flex flex-wrap gap-2">
                     <Input placeholder="Reason for override (required, audit-logged)" value={overrideReason}
                       onChange={e => setOverrideReason(e.target.value)} className="text-xs h-8" data-testid="override-reason-input" />
                     <Button size="sm" variant="outline" disabled={!overrideReason.trim()}

@@ -369,7 +369,7 @@ export default function StaffRoster() {
 
   return (
     <div className="space-y-6" data-testid="staff-roster-page">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <div><h1 className="text-2xl font-bold" style={{ color: theme.text }}>Staff Management</h1><p className="text-sm text-gray-500">Timecards, weekly roster, payrun & reports</p></div>
         <div className="flex items-center gap-3">
           {clockStatus?.clockedIn ? (
@@ -400,16 +400,16 @@ export default function StaffRoster() {
         {/* ROSTER — Week View */}
         <TabsContent value="roster" className="mt-4 space-y-4">
           {canManage && roster.length > 0 && (
-            <div className="grid grid-cols-3 gap-4">
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
               <Card><CardContent className="p-4 text-center"><p className="text-sm text-gray-500">Total Shifts</p><p className="text-2xl font-bold" style={{ color: theme.primary }}>{roster.length}</p></CardContent></Card>
               <Card><CardContent className="p-4 text-center"><p className="text-sm text-gray-500">Total Hours</p><p className="text-2xl font-bold text-blue-600">{budget.totalHours}h</p></CardContent></Card>
               <Card><CardContent className="p-4 text-center"><p className="text-sm text-gray-500">Weekly Budget</p><p className="text-2xl font-bold text-emerald-600">${budget.totalCost}</p></CardContent></Card>
             </div>
           )}
 
-          <div className="flex justify-between items-center">
+          <div className="flex flex-wrap justify-between items-center gap-3">
             <h3 className="font-semibold">Weekly Roster</h3>
-            <div className="flex gap-2">
+            <div className="flex flex-wrap gap-2">
               {roster.length > 0 && <Button size="sm" variant="outline" onClick={printRoster} data-testid="print-roster-btn"><Printer size={14} className="mr-1" /> Print Roster</Button>}
               {canManage && <Button size="sm" variant="outline" onClick={async () => {
                 if (!window.confirm('Clear ALL shifts on the roster? This cannot be undone.')) return;
@@ -446,7 +446,7 @@ export default function StaffRoster() {
           {/* Week Grid View — Drag and Drop enabled */}
           <DndContext sensors={sensors} onDragStart={handleDragStart} onDragEnd={handleDragEnd}>
             <Card><CardContent className="p-0"><div className="overflow-x-auto">
-              <table className="w-full text-sm" data-testid="roster-table">
+              <table className="w-full min-w-[700px] text-sm" data-testid="roster-table">
                 <thead className="bg-gray-50"><tr>
                   {DAYS.map(d => (
                     <th key={d} className="text-center p-3 font-medium text-gray-500 min-w-[140px]">{d.slice(0, 3)}</th>
@@ -535,7 +535,7 @@ export default function StaffRoster() {
 
         {/* TIME OFF / LEAVE REQUESTS */}
         <TabsContent value="timeoff" className="mt-4 space-y-3">
-          <div className="flex justify-between items-center">
+          <div className="flex flex-wrap justify-between items-center gap-3">
             <h3 className="font-semibold">{canManage ? 'Time Off Requests' : 'My Time Off'}</h3>
             <Button size="sm" style={{ backgroundColor: theme.primary }} onClick={() => setShowTimeOffDialog(true)} data-testid="request-time-off-btn">
               <CalendarOff size={14} className="mr-1" /> Request Time Off
@@ -594,13 +594,13 @@ export default function StaffRoster() {
             </div>
             {payrun && (
               <div className="space-y-4">
-                <div className="grid grid-cols-4 gap-4">
+                <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
                   <Card><CardContent className="p-4 text-center"><p className="text-sm text-gray-500">Gross Pay</p><p className="text-2xl font-bold" style={{ color: theme.primary }}>${payrun.totals.grossPay}</p></CardContent></Card>
                   <Card><CardContent className="p-4 text-center"><p className="text-sm text-gray-500">Super (11.5%)</p><p className="text-2xl font-bold text-blue-600">${payrun.totals.super}</p></CardContent></Card>
                   <Card><CardContent className="p-4 text-center"><p className="text-sm text-gray-500">Tax</p><p className="text-2xl font-bold text-amber-600">${payrun.totals.tax}</p></CardContent></Card>
                   <Card><CardContent className="p-4 text-center"><p className="text-sm text-gray-500">Net Pay</p><p className="text-2xl font-bold text-emerald-600">${payrun.totals.netPay}</p></CardContent></Card>
                 </div>
-                <Card><CardContent className="p-0"><table className="w-full text-sm"><thead className="bg-gray-50"><tr><th className="text-left p-3">Staff</th><th className="text-left p-3">Role</th><th className="text-right p-3">Rate</th><th className="text-right p-3">Hours</th><th className="text-right p-3">Gross</th><th className="text-right p-3">Super</th><th className="text-right p-3">Tax</th><th className="text-right p-3">Net</th></tr></thead><tbody>
+                <Card><CardContent className="p-0 overflow-x-auto"><table className="w-full text-sm"><thead className="bg-gray-50"><tr><th className="text-left p-3">Staff</th><th className="text-left p-3">Role</th><th className="text-right p-3">Rate</th><th className="text-right p-3">Hours</th><th className="text-right p-3">Gross</th><th className="text-right p-3">Super</th><th className="text-right p-3">Tax</th><th className="text-right p-3">Net</th></tr></thead><tbody>
                   {payrun.staffPayroll.map(s => (<tr key={s.staffId} className="border-t"><td className="p-3 font-medium">{s.name}</td><td className="p-3"><Badge variant="outline" className="capitalize text-xs">{s.role}</Badge></td><td className="p-3 text-right">${s.payRate}/hr</td><td className="p-3 text-right">{s.totalHours}h</td><td className="p-3 text-right font-bold">${s.grossPay}</td><td className="p-3 text-right">${s.super}</td><td className="p-3 text-right">${s.tax}</td><td className="p-3 text-right font-bold text-emerald-600">${s.netPay}</td></tr>))}
                 </tbody></table></CardContent></Card>
                 <Button className="bg-emerald-600 hover:bg-emerald-700 text-white" onClick={handleProcessPayrun} data-testid="process-payrun-btn"><FileText size={16} className="mr-1" /> Process Payrun</Button>
@@ -620,13 +620,13 @@ export default function StaffRoster() {
             </div>
             {staffReports && (
               <div className="space-y-4">
-                <div className="grid grid-cols-4 gap-4">
+                <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
                   <Card><CardContent className="p-4 text-center"><p className="text-sm text-gray-500">Total Staff</p><p className="text-2xl font-bold">{staffReports.summary.totalStaff}</p></CardContent></Card>
                   <Card><CardContent className="p-4 text-center"><p className="text-sm text-gray-500">Total Hours</p><p className="text-2xl font-bold" style={{ color: theme.primary }}>{staffReports.summary.totalHours}h</p></CardContent></Card>
                   <Card><CardContent className="p-4 text-center"><p className="text-sm text-gray-500">Total Wages</p><p className="text-2xl font-bold text-emerald-600">${staffReports.summary.totalWages}</p></CardContent></Card>
                   <Card><CardContent className="p-4 text-center"><p className="text-sm text-gray-500">Payruns</p><p className="text-2xl font-bold text-blue-600">{staffReports.summary.totalPayruns}</p></CardContent></Card>
                 </div>
-                <Card><CardContent className="p-0"><table className="w-full text-sm" data-testid="staff-reports-table"><thead className="bg-gray-50"><tr><th className="text-left p-3">Staff</th><th className="text-left p-3">Role</th><th className="text-right p-3">Rate</th><th className="text-right p-3">Shifts</th><th className="text-right p-3">Hours</th><th className="text-right p-3">Avg/Shift</th><th className="text-right p-3">Total Wages</th><th className="text-center p-3">Status</th></tr></thead><tbody>
+                <Card><CardContent className="p-0 overflow-x-auto"><table className="w-full text-sm" data-testid="staff-reports-table"><thead className="bg-gray-50"><tr><th className="text-left p-3">Staff</th><th className="text-left p-3">Role</th><th className="text-right p-3">Rate</th><th className="text-right p-3">Shifts</th><th className="text-right p-3">Hours</th><th className="text-right p-3">Avg/Shift</th><th className="text-right p-3">Total Wages</th><th className="text-center p-3">Status</th></tr></thead><tbody>
                   {staffReports.staffStats.map(s => (<tr key={s.id} className="border-t"><td className="p-3 font-medium">{s.name}</td><td className="p-3"><Badge variant="outline" className="capitalize text-xs">{s.role}</Badge></td><td className="p-3 text-right">${s.payRate}/hr</td><td className="p-3 text-right">{s.totalShifts}</td><td className="p-3 text-right">{s.totalHours}h</td><td className="p-3 text-right">{s.avgHoursPerShift}h</td><td className="p-3 text-right font-bold" style={{ color: theme.primary }}>${s.totalWages}</td><td className="p-3 text-center">{s.currentlyClockedIn ? <Badge className="bg-green-100 text-green-700 text-xs">Active</Badge> : <Badge variant="outline" className="text-xs">Off</Badge>}</td></tr>))}
                 </tbody></table></CardContent></Card>
               </div>

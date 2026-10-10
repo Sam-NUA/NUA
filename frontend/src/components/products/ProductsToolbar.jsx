@@ -29,6 +29,7 @@ export const ProductsToolbar = ({
       <div className="relative flex-1 min-w-[200px]">
         <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400" size={16} />
         <Input
+          aria-label="Search products"
           placeholder="Search by name or SKU..."
           className="pl-9 h-9"
           value={searchTerm}
@@ -42,6 +43,7 @@ export const ProductsToolbar = ({
           className="border rounded p-1.5 text-xs"
           value={sortKey}
           onChange={e => setSortKey(e.target.value)}
+          aria-label="Sort products by"
           data-testid="sort-key-select"
         >
           <option value="name">Name</option>
@@ -64,6 +66,7 @@ export const ProductsToolbar = ({
         className="border rounded p-1.5 text-xs"
         value={filterStatus}
         onChange={e => setFilterStatus(e.target.value)}
+        aria-label="Product status"
         data-testid="filter-status-select"
       >
         <option value="all">All status</option>
@@ -100,14 +103,16 @@ export const ProductsToolbar = ({
       >
         All
       </button>
-      {categories.map(c => {
-        const on = filterCats.includes(c.id);
+      {categories.filter((c, index) => categories.findIndex(other => other.name === c.name) === index).map(c => {
+        const ids = categories.filter(other => other.name === c.name).map(other => other.id);
+        const on = ids.every(id => filterCats.includes(id));
         return (
           <button
             key={c.id}
-            onClick={() => setFilterCats(on ? filterCats.filter(x => x !== c.id) : [...filterCats, c.id])}
+            onClick={() => setFilterCats(on ? filterCats.filter(x => !ids.includes(x)) : [...new Set([...filterCats, ...ids])])}
             className={`px-2.5 py-1 text-xs rounded-full font-medium transition-colors ${on ? 'text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}
             style={on ? { background: theme.primary } : {}}
+            aria-pressed={on}
             data-testid={`filter-cat-${c.id}`}
           >
             {c.name}
@@ -118,7 +123,7 @@ export const ProductsToolbar = ({
 
     {selected.size > 0 && (
       <div
-        className="flex items-center justify-between bg-amber-50 border border-amber-200 rounded px-3 py-2"
+        className="flex flex-wrap gap-3 items-center justify-between bg-amber-50 border border-amber-200 rounded px-3 py-2"
         data-testid="bulk-action-bar"
       >
         <span className="text-sm font-medium text-amber-900">

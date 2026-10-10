@@ -777,6 +777,7 @@ const POSTerminal = () => {
       const buildCategoryList = (raw) => {
         const active = (raw || [])
           .filter(c => c.active !== false)
+          .filter((c, index, list) => list.findIndex(other => other.name === c.name) === index)
           .sort((a, b) => (a.sortOrder ?? 99) - (b.sortOrder ?? 99))
           .map(c => ({ id: c.id, name: c.name, icon: c.icon || 'Tag', color: c.color || '#6366f1' }));
         return [{ id: 'all', name: 'All', icon: 'Sparkles', color: '#6366f1' }, ...active];
@@ -1523,7 +1524,7 @@ const POSTerminal = () => {
 
   return (
     <div
-      className={`flex flex-col ${posLayout.cartPosition === 'left' ? 'lg:flex-row-reverse' : 'lg:flex-row'} gap-4 h-[calc(100vh-7rem)] -m-6 p-4 transition-colors`}
+      className={`flex flex-col ${posLayout.cartPosition === 'left' ? 'lg:flex-row-reverse' : 'lg:flex-row'} gap-4 min-h-[calc(100dvh-7rem)] lg:h-[calc(100dvh-7rem)] -m-4 sm:-m-6 p-4 transition-colors`}
       style={{ backgroundColor: theme.background, '--pos-tile-min': posLayout.tileSize === 'compact' ? '96px' : posLayout.tileSize === 'large' ? '168px' : '130px' }}
       data-testid="pos-terminal"
     >
@@ -1549,7 +1550,7 @@ const POSTerminal = () => {
           content's natural height otherwise, so the overflow-y-auto grid
           below never actually constrains — the category bar gets pushed
           around and the whole page scrolls instead of just the grid. */}
-      <div className="flex-1 flex flex-col min-w-0 min-h-0">
+      <div className="flex-1 flex flex-col min-w-0 min-h-[20rem] max-h-[60dvh] lg:min-h-0 lg:max-h-none">
         <div className="mb-3">
           {/* Compact status bar replaces the bulky "POS Terminal" title */}
           <div data-testid="pos-title">
@@ -1589,7 +1590,7 @@ const POSTerminal = () => {
           <div className="relative mb-3 flex gap-2">
             <div className="relative flex-1">
               <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400" size={16} />
-              <Input placeholder="Search products or scan a barcode..." className="pl-9 h-9" value={searchTerm}
+              <Input aria-label="Search products or scan a barcode" placeholder="Search products or scan a barcode..." className="pl-9 h-9" value={searchTerm}
                 onChange={(e) => setSearchTerm(e.target.value)} onKeyDown={handleSearchKeyDown} data-testid="pos-search" />
             </div>
             <VoiceOrderButton
@@ -1851,7 +1852,7 @@ const POSTerminal = () => {
       {/* Cart Panel — bigger for easier billing */}
       {/* Same min-h-0 fix as the products column — the cart-items list below
           uses flex-1 overflow-y-auto and needs this to actually scroll. */}
-      <div className="w-full lg:w-[440px] flex-shrink-0 flex flex-col min-h-0 border bg-white rounded-xl shadow-sm p-4" data-testid="pos-cart-panel">
+      <div className="w-full lg:w-[360px] xl:w-[440px] flex-shrink-0 flex flex-col min-h-0 border bg-white rounded-xl shadow-sm p-4" data-testid="pos-cart-panel">
         {/* Cart / staff tabs — the second tab is named after whoever is
             logged in and surfaces their own quick actions. */}
         <div className="flex gap-1 mb-3 border-b">

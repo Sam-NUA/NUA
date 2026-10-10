@@ -156,18 +156,18 @@ function StaffLayout({ children }) {
   const { darkMode } = useTheme();
   return (
     <div
-      className="min-h-screen pb-20 transition-colors"
+      className="min-h-screen pb-[calc(5rem+env(safe-area-inset-bottom))] transition-colors"
       style={{
-        backgroundColor: darkMode ? '#0b0b0f' : '#f6f7fb',
+        backgroundColor: 'hsl(var(--background))',
         color: darkMode ? '#eaeaea' : '#1f2937',
       }}
     >
       <LicenseBanner />
       <LicenseLockScreen />
-      <div className="px-6 py-6 max-w-screen-2xl mx-auto">
+      <main id="main-content" className="min-w-0 px-4 py-4 sm:px-6 sm:py-6 max-w-screen-2xl mx-auto">
         <BackButton />
         {children}
-      </div>
+      </main>
       <BottomDock />
       <AshChat />
       <NotificationBell />
