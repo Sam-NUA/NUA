@@ -58,6 +58,10 @@ test('every registered staff screen mounts without a rendering exception', async
   }
 });
 
+test.describe('session recovery', () => {
+  // Network interception must reach the page, rather than the PWA worker.
+  test.use({ serviceWorkers: 'block' });
+
 test('a temporary session-check failure keeps sign-in and offers recovery', async ({ page }) => {
   await loginAsOwner(page);
   await page.route('**/api/auth/me', route => route.fulfill({
@@ -75,4 +79,6 @@ test('a temporary session-check failure keeps sign-in and offers recovery', asyn
   }));
   await page.reload();
   await expect(page.getByTestId('login-submit')).toBeVisible();
+});
+
 });
