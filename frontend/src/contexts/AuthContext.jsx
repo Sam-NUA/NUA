@@ -7,8 +7,11 @@ const API = process.env.REACT_APP_BACKEND_URL;
 export function AuthProvider({ children }) {
   const [user, setUser] = useState(null);     // null = checking, false = not auth'd
   const [loading, setLoading] = useState(true);
+  const [authError, setAuthError] = useState(false);
 
   const checkAuth = useCallback(async () => {
+    setLoading(true);
+    setAuthError(false);
     const token = localStorage.getItem('nua_token');
     if (!token) { setUser(false); setLoading(false); return; }
     try {
@@ -16,9 +19,15 @@ export function AuthProvider({ children }) {
         headers: { Authorization: `Bearer ${token}` }
       });
       setUser(res.data);
-    } catch {
-      localStorage.removeItem('nua_token');
-      setUser(false);
+    } catch (error) {
+      if ([401, 403].includes(error.response?.status)) {
+        localStorage.removeItem('nua_token');
+        setUser(false);
+      } else {
+        // A busy or unreachable server does not invalidate a session.
+        // Keep the credential, but gate protected screens until verified.
+        setAuthError(true);
+      }
     }
     setLoading(false);
   }, []);
@@ -71,7 +80,7 @@ export function AuthProvider({ children }) {
   };
 
   return (
-    <AuthContext.Provider value={{ user, loading, login, completeTwoFactor, logout, hasPermission, checkAuth }}>
+    <AuthContext.Provider value={{ user, loading, authError, login, completeTwoFactor, logout, hasPermission, checkAuth }}>
       {children}
     </AuthContext.Provider>
   );

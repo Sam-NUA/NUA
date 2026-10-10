@@ -519,13 +519,13 @@ const Products = () => {
 
   return (
     <div className="space-y-6" data-testid="products-page">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h1 className="text-3xl font-bold" style={{ color: theme.text }}>Products & Promotions</h1>
           <p className="text-gray-500 mt-1">Manage your catalog, pricing, and special offers</p>
         </div>
         {view === 'products' ? (
-          <div className="flex gap-2">
+          <div className="flex flex-wrap gap-2">
             <Button variant="outline" className="gap-2" onClick={bulkAutoTranslateMenu} disabled={bulkTranslating} data-testid="bulk-translate-btn">
               <Sparkles className="w-4 h-4" style={{ color: '#8b5cf6' }} />
               {bulkTranslating ? 'Translating menu…' : 'Translate menu with AI'}
@@ -552,7 +552,7 @@ const Products = () => {
         )}
       </div>
 
-      <div className="flex gap-2">
+      <div className="flex flex-wrap gap-2">
         <Button
           variant={view === 'products' ? 'default' : 'outline'}
           onClick={() => setView('products')}
@@ -707,7 +707,7 @@ const Products = () => {
                         </div>
                       )}
                     </div>
-                    <div className="flex gap-2">
+                    <div className="flex flex-wrap gap-2">
                       <Button variant="outline" size="sm" onClick={() => openEditPromo(promo)} data-testid={`edit-promo-${promo.id}`}><Edit size={14} /></Button>
                       <Button variant="outline" size="sm" className="text-red-500" onClick={() => deletePromo(promo.id)} data-testid={`delete-promo-${promo.id}`}><Trash2 size={14} /></Button>
                     </div>
@@ -750,7 +750,7 @@ const Products = () => {
             <div>
               <label className="text-xs font-medium text-gray-500 mb-1 block">Image</label>
               {productForm.image && <img src={productForm.image} alt="" className="w-full h-32 object-cover rounded mb-2 border" />}
-              <div className="flex gap-2">
+              <div className="flex flex-wrap gap-2">
                 <Input placeholder="Image URL or pick from library →" value={productForm.image} onChange={e => setProductForm({ ...productForm, image: e.target.value })} data-testid="product-image-input" />
                 <Button type="button" variant="outline" onClick={() => setImageLibraryOpen(true)} data-testid="open-image-library">
                   <ImageIcon size={14} className="mr-1.5" /> Library

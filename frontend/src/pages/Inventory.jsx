@@ -109,7 +109,12 @@ const Inventory = () => {
               </a>
             </div>
           </div>
-          <p className="text-sm text-[#8a4a00]">{lowStockProducts.map(p => p.name).join(', ')} — consider reordering.</p>
+          <details className="text-sm text-amber-900 dark:text-amber-200 mt-2">
+            <summary className="cursor-pointer py-2">{lowStockProducts.length} items need restocking — view items</summary>
+            <ul className="mt-2 max-h-48 overflow-y-auto space-y-1 list-disc pl-5">
+              {lowStockProducts.map(p => <li key={p.id}>{p.name}{p.sku ? ` · ${p.sku}` : ''}</li>)}
+            </ul>
+          </details>
         </CardContent></Card>
       )}
 

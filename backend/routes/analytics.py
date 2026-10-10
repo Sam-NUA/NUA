@@ -1012,8 +1012,10 @@ async def get_today_pulse(_user: dict = Depends(require_owner_or_manager)):
     low_stock = await db.products.find(
         {"active": {"$ne": False}, "stock": {"$gt": 0, "$lte": 5}, **tenant_scope_filter()},
         {"_id": 0, "id": 1, "name": 1, "stock": 1}).to_list(50)
+    stockout_filter = {"active": {"$ne": False}, "stock": {"$lte": 0}, **tenant_scope_filter()}
+    stockout_count = await db.products.count_documents(stockout_filter)
     stockouts = await db.products.find(
-        {"active": {"$ne": False}, "stock": {"$lte": 0}, **tenant_scope_filter()},
+        stockout_filter,
         {"_id": 0, "id": 1, "name": 1, "stock": 1}).to_list(50)
 
     bookings_tonight = await db.reservations.count_documents({"date": today_iso, **tenant_scope_filter()})
@@ -1039,8 +1041,8 @@ async def get_today_pulse(_user: dict = Depends(require_owner_or_manager)):
     if stockouts:
         names = ", ".join(p["name"] for p in stockouts[:3])
         alerts.append({"severity": "critical", "kind": "stockout", "link": "/inventory",
-                       "message": f"{len(stockouts)} item(s) out of stock: {names}"
-                                  + ("…" if len(stockouts) > 3 else "")})
+                       "message": f"{stockout_count} item(s) out of stock: {names}"
+                                  + ("…" if stockout_count > 3 else "")})
     if labor_pct is not None and labor_pct > cfg["laborPctThreshold"]:
         alerts.append({"severity": "warning", "kind": "labor", "link": "/staff-roster",
                        "message": f"Labor at {labor_pct}% of sales (threshold {cfg['laborPctThreshold']}%)"})

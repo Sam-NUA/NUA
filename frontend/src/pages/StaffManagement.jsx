@@ -110,7 +110,7 @@ export default function StaffManagement() {
                     {' '}&middot; ~${(effectiveHourlyRate(s.payRate, s.salaryType) * 38).toFixed(0)}/week
                   </p>
                 )}
-                <div className="flex items-center justify-between">
+                <div className="flex flex-wrap items-center justify-between gap-3">
                   <Badge variant="outline" className={s.status === 'active' ? 'text-green-600' : 'text-gray-400'}>
                     {s.status}
                   </Badge>

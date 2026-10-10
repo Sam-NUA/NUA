@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { useTheme } from '../contexts/ThemeContext';
 import { useAuth } from '../contexts/AuthContext';
@@ -14,6 +14,8 @@ import {
   ShieldAlert, AlertTriangle, Flame, ArrowLeftRight, Key, Sun, Moon
 } from 'lucide-react';
 import Logo from './brand/Logo';
+import { Dialog, DialogContent, DialogTitle, DialogDescription, DialogClose } from './ui/dialog';
+import { Input } from './ui/input';
 
 // Role-default quick actions (left → right) on the bottom dock.
 // 4 most-common items per role, then "More" splash button. `kitchen` and
@@ -247,6 +249,8 @@ export default function BottomDock() {
   const navigate = useNavigate();
   const location = useLocation();
   const [showMore, setShowMore] = useState(false);
+  const [featureSearch, setFeatureSearch] = useState('');
+  const moreButtonRef = useRef(null);
   const [badges, setBadges] = useState({});
 
   useEffect(() => {
@@ -292,6 +296,10 @@ export default function BottomDock() {
       ? { ...g, group: menuLabels.group, items: g.items.map(it => it.path === '/products' ? { ...it, label: menuLabels.itemLabel } : it) }
       : g);
 
+  const search = featureSearch.trim().toLowerCase();
+  const filteredGroups = visibleFeatureGroups.map(group => ({ ...group, items: group.items.filter(isAllowed).filter(item => !search || `${group.group} ${item.label} ${item.path}`.toLowerCase().includes(search)) })).filter(group => group.items.length);
+  const setMoreOpen = (open) => { setShowMore(open); if (!open) setFeatureSearch(''); };
+
   const handleLogout = async () => { setShowMore(false); await logout(); navigate('/'); };
 
   return (
@@ -299,11 +307,11 @@ export default function BottomDock() {
       {/* BOTTOM DOCK */}
       <div
         className={`fixed bottom-0 left-0 right-0 z-40 backdrop-blur-md border-t shadow-[0_-4px_20px_rgba(0,0,0,0.06)] ${darkMode ? 'border-white/10' : 'border-gray-200'}`}
-        style={{ backgroundColor: darkMode ? 'rgba(21,21,29,0.95)' : 'rgba(255,255,255,0.95)' }}
+        style={{ backgroundColor: darkMode ? 'rgba(21,21,29,0.95)' : 'rgba(255,255,255,0.95)', paddingBottom: 'env(safe-area-inset-bottom)' }}
         data-testid="bottom-dock"
       >
-        <div className="max-w-screen-2xl mx-auto px-4 h-16 flex items-center justify-between">
-          <div className="flex items-center gap-1 text-sm">
+        <div className="max-w-screen-2xl mx-auto px-2 sm:px-4 h-16 flex items-center justify-between gap-2">
+          <div className="hidden md:flex items-center gap-1 text-sm">
             {/* In-product chrome — product variant only, never the marketing
                 lockup (BRAND-SPEC §3). Wordmark colour follows the dock's own
                 background, not the theme accent (BRAND-SPEC §2). */}
@@ -312,7 +320,7 @@ export default function BottomDock() {
             </span>
             <span className={`text-[10px] mr-2 hidden sm:inline ${darkMode ? 'text-zinc-500' : 'text-gray-400'}`}>{user.name} · {role}</span>
           </div>
-          <div className="flex items-center gap-1 flex-1 justify-center max-w-xl">
+          <div className="flex items-center gap-1 flex-1 min-w-0 justify-evenly md:justify-center md:max-w-xl" role="navigation" aria-label="Main navigation">
             {quick.map(q => {
               const Icon = q.icon;
               const isActive = location.pathname === q.path;
@@ -325,7 +333,8 @@ export default function BottomDock() {
                 <button
                   key={q.path}
                   onClick={() => navigate(q.path)}
-                  className={`relative flex flex-col items-center gap-0.5 px-3 py-2 rounded-xl transition-all min-w-[64px] ${isActive ? 'text-white' : (darkMode ? 'text-zinc-400 hover:text-white hover:bg-white/5' : 'text-gray-500 hover:text-gray-800 hover:bg-gray-100')}`}
+                  aria-current={isActive ? 'page' : undefined}
+                  className={`relative flex flex-col items-center gap-0.5 px-1 sm:px-3 py-2 rounded-xl transition-all min-w-0 flex-1 md:flex-none md:min-w-[64px] ${isActive ? 'text-white' : (darkMode ? 'text-zinc-400 hover:text-white hover:bg-white/5' : 'text-gray-500 hover:text-gray-800 hover:bg-gray-100')}`}
                   style={isActive ? { backgroundColor: theme.primary } : {}}
                   data-testid={`dock-${q.path.replace('/', '')}`}
                 >
@@ -342,15 +351,17 @@ export default function BottomDock() {
               );
             })}
             <button
-              onClick={() => setShowMore(true)}
-              className={`flex flex-col items-center gap-0.5 px-3 py-2 rounded-xl transition-all min-w-[64px] ${darkMode ? 'text-zinc-400 hover:text-white hover:bg-white/5' : 'text-gray-500 hover:text-gray-800 hover:bg-gray-100'}`}
+              ref={moreButtonRef}
+              aria-haspopup="dialog" aria-expanded={showMore}
+              onClick={() => setMoreOpen(true)}
+              className={`flex flex-col items-center gap-0.5 px-1 sm:px-3 py-2 rounded-xl transition-all min-w-0 flex-1 md:flex-none md:min-w-[64px] ${darkMode ? 'text-zinc-400 hover:text-white hover:bg-white/5' : 'text-gray-500 hover:text-gray-800 hover:bg-gray-100'}`}
               data-testid="dock-more"
             >
               <MoreHorizontal size={18} />
               <span className="text-[10px] font-medium">More</span>
             </button>
           </div>
-          <div className="flex items-center gap-1">
+          <div className="hidden md:flex items-center gap-1">
             <button
               onClick={toggleDarkMode}
               className={`flex items-center justify-center w-9 h-9 rounded-xl transition-all ${darkMode ? 'text-amber-400 hover:bg-white/5' : 'text-zinc-500 hover:bg-gray-100'}`}
@@ -362,6 +373,7 @@ export default function BottomDock() {
             <button
               onClick={handleLogout}
               className={`flex items-center gap-1 px-3 py-2 rounded-xl transition-all ${darkMode ? 'text-zinc-500 hover:text-red-400 hover:bg-red-500/10' : 'text-gray-400 hover:text-red-500 hover:bg-red-50'}`}
+              aria-label="Sign out"
               data-testid="dock-logout"
             >
               <LogOut size={16} />
@@ -371,50 +383,46 @@ export default function BottomDock() {
         </div>
       </div>
 
-      {/* MORE SPLASH — full-screen modal */}
-      {showMore && (
-        <div className="fixed inset-0 z-50 bg-gray-900/40 backdrop-blur-sm flex items-end sm:items-center justify-center animate-in fade-in duration-200" data-testid="more-splash" onClick={() => setShowMore(false)}>
-          <div className="bg-white w-full sm:w-[90vw] sm:max-w-5xl max-h-[85vh] sm:max-h-[80vh] overflow-y-auto rounded-t-3xl sm:rounded-2xl shadow-2xl animate-in slide-in-from-bottom duration-300" onClick={e => e.stopPropagation()}>
-            <div className="sticky top-0 bg-white border-b px-6 py-4 flex items-center justify-between z-10">
-              <div>
-                <h2 className="text-xl font-bold" style={{ color: theme.text }}>All Features</h2>
-                <p className="text-xs text-gray-500">Tap any tile to navigate · Showing what {user.name} can access</p>
-              </div>
-              <button onClick={() => setShowMore(false)} className="p-2 hover:bg-gray-100 rounded-lg" data-testid="close-more-btn"><X size={20} /></button>
-            </div>
-            <div className="px-6 py-5 space-y-6">
-              {visibleFeatureGroups.map(group => {
-                const visible = group.items.filter(isAllowed);
-                if (visible.length === 0) return null;
-                return (
-                  <div key={group.group}>
-                    <h3 className="text-[11px] font-bold uppercase tracking-widest text-gray-400 mb-2.5">{group.group}</h3>
-                    <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-6 gap-2.5">
-                      {visible.map(item => {
-                        const Icon = item.icon;
-                        return (
-                          <button
-                            key={item.path}
-                            onClick={() => { setShowMore(false); navigate(item.path); }}
-                            className="flex flex-col items-center justify-center gap-1.5 p-3 rounded-xl border bg-white hover:shadow-md hover:-translate-y-0.5 transition-all"
-                            style={{ borderColor: '#f3f4f6' }}
-                            data-testid={`splash-${item.path.replace('/', '')}`}
-                          >
-                            <div className="w-10 h-10 rounded-lg flex items-center justify-center" style={{ backgroundColor: `${theme.primary}15`, color: theme.primary }}>
-                              <Icon size={18} />
-                            </div>
-                            <span className="text-[11px] text-center text-gray-700 font-medium leading-tight">{item.label}</span>
-                          </button>
-                        );
-                      })}
-                    </div>
-                  </div>
-                );
-              })}
+      <Dialog open={showMore} onOpenChange={setMoreOpen}>
+        <DialogContent className="max-w-5xl p-0 gap-0 [&>button]:hidden" data-testid="more-splash"
+          onCloseAutoFocus={event => { event.preventDefault(); moreButtonRef.current?.focus(); }}>
+          <div className="sticky top-0 bg-background border-b p-4 sm:p-6 z-10 rounded-t-xl">
+            <DialogTitle className="pr-12">All Features</DialogTitle>
+            <DialogClose className="absolute right-2 top-2 flex h-11 w-11 items-center justify-center rounded-lg hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring" aria-label="Close features">
+              <X size={20} />
+            </DialogClose>
+            <DialogDescription className="mt-1 pr-6">Find a tool for your next task. Showing features available to your account.</DialogDescription>
+            <Input aria-label="Find a feature" placeholder="Search features, bookings, inventory…" value={featureSearch}
+              onChange={event => setFeatureSearch(event.target.value)} className="mt-4" />
+            <div className="flex flex-wrap items-center gap-3 mt-3 text-sm">
+              <span className="text-muted-foreground flex-1" role="status">{filteredGroups.reduce((count, group) => count + group.items.length, 0)} features</span>
+              <button onClick={toggleDarkMode} className="md:hidden rounded-lg border px-3 py-2">{darkMode ? 'Light mode' : 'Dark mode'}</button>
+              <button onClick={handleLogout} className="md:hidden rounded-lg border px-3 py-2">Sign out</button>
             </div>
           </div>
-        </div>
-      )}
+          <div className="p-4 sm:p-6 space-y-6">
+            {filteredGroups.length === 0 && <div className="py-8 text-center text-muted-foreground">
+              <p>No features found.</p><button className="mt-3 underline" onClick={() => setFeatureSearch('')}>Clear search</button>
+            </div>}
+            {filteredGroups.map(group => <section key={group.group} aria-label={group.group}>
+              <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-3">{group.group === 'Enterprise (v25)' ? 'Advanced operations' : group.group}</h3>
+              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
+                {group.items.map(item => {
+                  const Icon = item.icon;
+                  const active = location.pathname + location.search === item.path;
+                  return <button key={item.path} onClick={() => { setMoreOpen(false); navigate(item.path); }}
+                    aria-current={active ? 'page' : undefined}
+                    className={`flex items-center gap-3 p-3 min-h-16 text-left rounded-xl border transition-colors hover:bg-accent ${active ? 'bg-accent border-primary' : 'bg-card'}`}
+                    data-testid={`splash-${item.path.replace('/', '')}`}>
+                    <span className="w-9 h-9 shrink-0 rounded-lg flex items-center justify-center" style={{ backgroundColor: `${theme.primary}15`, color: theme.primary }}><Icon size={18} /></span>
+                    <span className="text-sm font-medium break-words">{item.label}</span>
+                  </button>;
+                })}
+              </div>
+            </section>)}
+          </div>
+        </DialogContent>
+      </Dialog>
     </>
   );
 }

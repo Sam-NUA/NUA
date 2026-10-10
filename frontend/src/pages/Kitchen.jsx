@@ -542,7 +542,7 @@ export default function Kitchen() {
             <p className="text-sm text-gray-500">Course lifecycle + docket detail | Auto-refresh 10s</p>
           </div>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <select
             className="h-9 text-sm border rounded-md px-2 bg-white"
             value={station}
@@ -642,7 +642,7 @@ export default function Kitchen() {
       </div>
 
       {/* Stats — colours per NUA_POS_DESIGN_TOKENS.md §6 (Kitchen display). */}
-      <div className="grid grid-cols-4 gap-4">
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
         {[
           { label: 'Active Orders', val: stats.total, color: theme.primary },
           { label: 'New', val: stats.newCount, color: '#7c3aed' },
@@ -659,7 +659,7 @@ export default function Kitchen() {
       </div>
 
       {/* Kanban */}
-      <div className="grid grid-cols-3 gap-4" data-testid="kitchen-kanban">
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4" data-testid="kitchen-kanban">
         <div>
           <div className="flex items-center gap-2 mb-3 px-1">
             <Bell size={16} className="text-blue-500" />

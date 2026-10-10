@@ -114,7 +114,7 @@ const Today = () => {
   return (
     <div className="space-y-5" data-testid="today-page">
       {/* Header */}
-      <div className="flex items-center justify-between">
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-3">
           <div className="w-12 h-12 rounded-xl flex items-center justify-center" style={{ background: `linear-gradient(135deg, ${theme.primary}, ${theme.accent || '#F59E0B'})` }}>
             <Sun size={24} className="text-white" />
@@ -134,7 +134,7 @@ const Today = () => {
       {/* Money & ops — owner/manager only, same numbers Today.jsx always showed */}
       {isOwnerOrManager && (
         <>
-          <div className="grid grid-cols-2 lg:grid-cols-3 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
             <Card data-testid="today-sales">
               <CardContent className="p-4">
                 <p className="text-xs text-gray-500 uppercase tracking-wide">Sales today</p>
@@ -256,7 +256,7 @@ const Today = () => {
             ))}
           </div>
 
-          <div className="grid grid-cols-3 gap-4">
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             <Card className="border-0 shadow-sm col-span-1">
               <CardHeader className="pb-2">
                 <CardTitle className="text-sm flex items-center gap-2">
@@ -436,6 +436,7 @@ const Today = () => {
                     </tr>
                   </thead>
                   <tbody>
+                    {!(service.reservations || []).length && <tr><td colSpan={7} className="py-8 text-center text-muted-foreground">No reservations scheduled for today.</td></tr>}
                     {(service.reservations || []).map(r => (
                       <tr key={r.id} className="border-b hover:bg-gray-50/50">
                         <td className="px-3 py-2 font-mono font-medium">{r.time}</td>

@@ -423,12 +423,12 @@ export default function FloorPlan() {
   return (
     <div className="space-y-6" data-testid="floor-plan-page">
       {/* Header */}
-      <div className="flex items-center justify-between">
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h1 className="text-2xl font-bold" style={{ color: theme.text }}>Floor Plan</h1>
           <p className="text-sm text-gray-500 mt-1">Manage table layouts, sections & real-time status</p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           {plans.length > 1 && (
             <Select value={activePlanId || ''} onValueChange={switchPlan}>
               <SelectTrigger className="w-40" data-testid="plan-selector">
@@ -573,7 +573,7 @@ export default function FloorPlan() {
               </CardHeader>
               <CardContent className="p-4 pt-0 space-y-2">
                 {sections.map((s, i) => (
-                  <div key={s.id || i} className="flex items-center gap-2">
+                  <div key={s.id || i} className="flex flex-wrap items-center gap-2">
                     <div className="w-3 h-3 rounded-full" style={{ background: s.color }} />
                     <Input value={s.name} className="h-8 text-sm" onChange={e => {
                       const updated = [...sections];

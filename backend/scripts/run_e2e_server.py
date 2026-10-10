@@ -53,7 +53,18 @@ async def test_transaction(operation):
 reservation_store._transaction = test_transaction
 
 import uvicorn
+import server
+
+# The route census intentionally makes hundreds of authenticated requests
+# in seconds. Keep production throttling unchanged; raise only the default
+# bucket in this isolated, in-memory browser harness. Dedicated security
+# tests exercise the real limits separately.
+_rate_limit_init = server.RateLimitMiddleware.__init__
+def _browser_rate_limit_init(self, app):
+    _rate_limit_init(self, app)
+    self.limit = 100_000
+server.RateLimitMiddleware.__init__ = _browser_rate_limit_init
 
 if __name__ == "__main__":
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 8001
-    uvicorn.run("server:app", host="127.0.0.1", port=port, log_level="warning")
+    uvicorn.run(server.app, host="127.0.0.1", port=port, log_level="warning")
