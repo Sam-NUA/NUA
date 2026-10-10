@@ -178,7 +178,7 @@ function StaffLayout({ children }) {
 }
 
 function ProtectedRoutes() {
-  const { user, loading, logout } = useAuth();
+  const { user, loading, authError, checkAuth, logout } = useAuth();
   // Called unconditionally (Rules of Hooks) even though it only matters
   // once a user is logged in — same reasoning as useIdleLogout below.
   const { business, loading: businessLoading } = useBusiness();
@@ -192,6 +192,15 @@ function ProtectedRoutes() {
   // the login redirect drops the query string.
   const shell = getAppShell();
   if (loading) return <div className="min-h-screen flex items-center justify-center"><div className="animate-pulse text-gray-500 text-lg">Loading...</div></div>;
+  if (authError) return (
+    <div className="min-h-screen flex items-center justify-center p-6">
+      <div role="alert" className="max-w-md space-y-4 text-center">
+        <h1 className="text-xl font-semibold">Unable to check your session</h1>
+        <p className="text-muted-foreground">The server is busy or your connection was interrupted. Your sign-in has been kept. Wait a moment, then try again.</p>
+        <button className="rounded-lg bg-primary px-5 py-3 text-primary-foreground" onClick={checkAuth}>Try again</button>
+      </div>
+    </div>
+  );
   if (!user) return <Login />;
 
   // First-login setup wizard — owner only (a cashier/manager logging in

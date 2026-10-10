@@ -19,7 +19,7 @@ test('navigation search, keyboard dismissal and responsive service screens', asy
     for (const route of ['/today', '/pos', '/kitchen', '/staff-roster', '/reservations', '/customers', '/settings']) {
       await page.goto(route);
       await expect(page.getByTestId('bottom-dock')).toBeVisible();
-      await expect(page.locator('main')).toBeVisible();
+      await expect(page.locator('#main-content')).toBeVisible();
       await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1), { message: `${route} fits ${width}px` }).toBeTruthy();
     }
     await page.getByTestId('dock-more').click();
@@ -50,10 +50,29 @@ test('every registered staff screen mounts without a rendering exception', async
     await test.step(route, async () => {
       errors.length = 0;
       await page.goto(route);
-      await expect(page.locator('main')).toBeVisible();
-      await expect.poll(async () => (await page.locator('main').innerText()).trim().length).toBeGreaterThan(8);
+      await expect(page.locator('#main-content')).toBeVisible();
+      await expect.poll(async () => (await page.locator('#main-content').innerText()).trim().length).toBeGreaterThan(8);
       expect(errors, `Rendering errors on ${route}`).toEqual([]);
       await page.screenshot({ path: `test-results/routes/${route.slice(1)}.png` });
     });
   }
+});
+
+test('a temporary session-check failure keeps sign-in and offers recovery', async ({ page }) => {
+  await loginAsOwner(page);
+  await page.route('**/api/auth/me', route => route.fulfill({
+    status: 429, contentType: 'application/json', body: JSON.stringify({ detail: 'Server busy' }),
+  }));
+  await page.reload();
+  await expect(page.getByRole('heading', { name: 'Unable to check your session' })).toBeVisible();
+  await expect(page.locator('#main-content')).toHaveCount(0);
+  await page.unroute('**/api/auth/me');
+  await page.getByRole('button', { name: 'Try again', exact: true }).click();
+  await expect(page.getByTestId('bottom-dock')).toBeVisible();
+  // An invalid session must still return to the sign-in screen.
+  await page.route('**/api/auth/me', route => route.fulfill({
+    status: 401, contentType: 'application/json', body: JSON.stringify({ detail: 'Invalid session' }),
+  }));
+  await page.reload();
+  await expect(page.getByTestId('login-submit')).toBeVisible();
 });

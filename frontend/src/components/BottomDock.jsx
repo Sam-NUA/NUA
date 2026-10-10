@@ -281,7 +281,7 @@ export default function BottomDock() {
     if (!matchesVertical(item)) return false;
     if (role === 'owner') return true;
     if (hasCustomPerms) {
-      const key = item.path.split('?')[0].replace('/', '') || 'dashboard';
+      const key = item.path.replace('/', '') || 'dashboard';
       return customPerms.includes(key);
     }
     return item.access?.includes(role);
