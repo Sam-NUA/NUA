@@ -29,9 +29,9 @@ def on_vercel(monkeypatch):
 def test_health_is_not_degraded_on_vercel_when_cron_has_recently_run(client, on_vercel):
     now_iso = datetime.now(timezone.utc).isoformat()
     _run(db.scheduler_locks.update_one(
-        {"_id": "ash-hourly"}, {"$set": {"_id": "ash-hourly", "claimedAt": now_iso}}, upsert=True))
+        {"_id": "ash-hourly"}, {"$set": {"_id": "ash-hourly", "lastSuccessAt": now_iso, "status": "succeeded"}}, upsert=True))
     _run(db.scheduler_locks.update_one(
-        {"_id": "coursing-tick"}, {"$set": {"_id": "coursing-tick", "claimedAt": now_iso}}, upsert=True))
+        {"_id": "coursing-tick"}, {"$set": {"_id": "coursing-tick", "lastSuccessAt": now_iso, "status": "succeeded"}}, upsert=True))
 
     r = req(client, "GET", "/api/health")
     assert r.status_code == 200, r.text[:300]
@@ -45,10 +45,10 @@ def test_health_is_not_degraded_on_vercel_when_cron_has_recently_run(client, on_
 def test_health_flags_coursing_cron_as_unhealthy_once_stale_on_vercel(client, on_vercel):
     stale_iso = (datetime.now(timezone.utc) - timedelta(minutes=30)).isoformat()
     _run(db.scheduler_locks.update_one(
-        {"_id": "ash-hourly"}, {"$set": {"_id": "ash-hourly", "claimedAt": datetime.now(timezone.utc).isoformat()}},
+        {"_id": "ash-hourly"}, {"$set": {"_id": "ash-hourly", "lastSuccessAt": datetime.now(timezone.utc).isoformat(), "status": "succeeded"}},
         upsert=True))
     _run(db.scheduler_locks.update_one(
-        {"_id": "coursing-tick"}, {"$set": {"_id": "coursing-tick", "claimedAt": stale_iso}}, upsert=True))
+        {"_id": "coursing-tick"}, {"$set": {"_id": "coursing-tick", "lastSuccessAt": stale_iso, "status": "succeeded"}}, upsert=True))
 
     r = req(client, "GET", "/api/health")
     assert r.status_code == 200, r.text[:300]
@@ -57,16 +57,12 @@ def test_health_flags_coursing_cron_as_unhealthy_once_stale_on_vercel(client, on
     assert body["status"] == "degraded"
 
 
-def test_health_does_not_report_degraded_for_a_cron_job_never_yet_observed(client, on_vercel):
-    """A fresh deployment with no claim history yet is "unknown", not
-    "unhealthy" — matches this check's existing not-False-means-ok
-    convention for every other "ok: None" case."""
-    r = req(client, "GET", "/api/health")
-    assert r.status_code == 200, r.text[:300]
-    body = r.json()
-    assert body["checks"]["ashCron"]["ok"] is None
-    assert body["checks"]["coursingCron"]["ok"] is None
-    assert body["status"] == "ok"
+def test_health_reports_missing_cron_completion_as_degraded(client, on_vercel):
+    _run(db.scheduler_locks.delete_many({"_id": {"$in": ["ash-hourly", "coursing-tick"]}}))
+    body = req(client, "GET", "/api/health").json()
+    assert body["checks"]["ashCron"] == {"ok": False, "state": "never_observed"}
+    assert body["checks"]["coursingCron"]["ok"] is False
+    assert body["status"] == "degraded"
 
 
 def test_health_uses_local_scheduler_checks_when_not_on_vercel(client, monkeypatch):
@@ -77,3 +73,18 @@ def test_health_uses_local_scheduler_checks_when_not_on_vercel(client, monkeypat
     assert "ashScheduler" in body["checks"]
     assert "coursingScheduler" in body["checks"]
     assert "ashCron" not in body["checks"]
+
+
+@pytest.mark.parametrize("fields, state", [
+    ({"status": "running", "claimedAt": datetime.now(timezone.utc).isoformat()}, "no_successful_completion"),
+    ({"status": "failed", "lastSuccessAt": datetime.now(timezone.utc).isoformat()}, "failed"),
+    ({"status": "running", "lastSuccessAt": datetime.now(timezone.utc).isoformat(),
+      "lockedUntil": "2000-01-01T00:00:00+00:00"}, "stalled"),
+    ({"lastSuccessAt": "invalid"}, "unavailable"),
+])
+def test_claims_failures_and_stalls_never_look_healthy(client, on_vercel, fields, state):
+    _run(db.scheduler_locks.delete_one({"_id": "coursing-tick"}))
+    _run(db.scheduler_locks.insert_one({"_id": "coursing-tick", **fields}))
+    body = req(client, "GET", "/api/health").json()
+    assert body["checks"]["coursingCron"] == {"ok": False, "state": state}
+    assert body["status"] == "degraded"

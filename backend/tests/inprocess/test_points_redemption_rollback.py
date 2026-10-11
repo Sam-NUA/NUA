@@ -1,17 +1,7 @@
-"""routes/transactions.py's create_transaction atomically decrements a
-customer's loyalty points BEFORE the sale itself is ever inserted — a real
-launch-risk flagged in docs/launch-audit-2026-10-11/REPORT.md ("point
-redemption occurs before insert"). If the insert then fails for any
-reason, the customer had already been charged points for a sale that was
-never recorded — a silently lost balance with nothing to show for it.
+"""HTTP rejection, rollback and ambiguous-commit regressions.
 
-This isn't a real multi-document ACID transaction (mongomock can't prove
-that either way — see TRUST_RELEASE_FINAL_REPORT.md and the real-replica-
-set suite for what would). It's a narrower, independently useful fix: a
-compensating refund whenever the insert doesn't end up being THIS
-request's own recorded sale, covering both a genuine insert failure and
-the concurrent-duplicate-clientOpId race (where the loser's redemption was
-previously never refunded even though only the winner's sale was kept).
+In-process transaction double covers route behavior; tests_real supplies the
+real MongoDB rollback/concurrency proof. No unconditional refund is safe.
 """
 import uuid
 
@@ -58,7 +48,15 @@ class _FailingTransactions:
         self._raises = raises
 
     async def insert_one(self, *args, **kwargs):
+        self._raises.calls += 1
         raise self._raises
+
+    async def find_one(self, query, *args, **kwargs):
+        # Hide the pre-existing race winner until the attempted insert fails,
+        # so neither the route nor transactional replay guard can short-circuit.
+        if isinstance(self._raises, DuplicateKeyError) and not self._raises.calls:
+            return None
+        return await self._real.find_one(query, *args, **kwargs)
 
     def __getattr__(self, name):
         return getattr(self._real, name)
@@ -80,11 +78,13 @@ class _DBWithFailingTransactions:
 @pytest.fixture
 def failing_insert(monkeypatch):
     def _install(exc):
+        exc.calls = 0
         monkeypatch.setattr(transactions_route, "db", _DBWithFailingTransactions(db, exc))
+        return exc
     return _install
 
 
-def test_a_sale_insert_that_fails_outright_refunds_the_redeemed_points(
+def test_a_sale_insert_that_fails_rolls_back_the_points_and_ledger(
         client, owner_headers, customer_with_points, failing_insert):
     failing_insert(RuntimeError("simulated dropped connection"))
 
@@ -99,7 +99,7 @@ def test_a_sale_insert_that_fails_outright_refunds_the_redeemed_points(
     )
 
 
-def test_losing_a_concurrent_duplicate_clientopid_race_refunds_this_attempts_own_redemption(
+def test_duplicate_insert_is_exercised_and_rolls_back_this_attempts_redemption(
         client, owner_headers, customer_with_points, failing_insert):
     """Simulates the race deterministically rather than with real
     concurrency (mongomock-motor has no genuine suspend point to force an
@@ -118,13 +118,15 @@ def test_losing_a_concurrent_duplicate_clientopid_race_refunds_this_attempts_own
         "paymentMethod": "cash", "location": "Main", "cashier": "Winner Cashier",
     }
     client.portal.call(db.transactions.insert_one, dict(winner_txn))
-    failing_insert(DuplicateKeyError("E11000 Duplicate Key Error", 11000))
+    failure = failing_insert(DuplicateKeyError("E11000 Duplicate Key Error", 11000))
 
     try:
         r = req(client, "POST", "/api/transactions", headers=owner_headers,
                 json=_sale_payload(customer_with_points, clientOpId=client_op_id))
         assert r.status_code == 200, r.text[:300]
         assert r.json()["id"] == "TXN-WINNER"
+        assert failure.calls == 1, "must reach insert, not the early replay return"
+        assert client.portal.call(db.loyalty_ledger.count_documents, {"transactionId": r.json()["id"], "type": "redeem"}) == 0
 
         balance = client.portal.call(db.customers.find_one,
                                       {"id": customer_with_points}, {"_id": 0, "points": 1})
@@ -135,3 +137,39 @@ def test_losing_a_concurrent_duplicate_clientopid_race_refunds_this_attempts_own
         )
     finally:
         client.portal.call(db.transactions.delete_one, {"id": "TXN-WINNER"})
+
+
+def test_lost_response_after_commit_never_refunds_or_redebits_on_replay(
+        client, owner_headers, customer_with_points, monkeypatch):
+    from services import pos_sale_store
+    from pymongo.errors import AutoReconnect
+    original = pos_sale_store._transaction
+
+    async def commit_then_lose_response(operation):
+        await original(operation)
+        raise AutoReconnect("simulated response lost after durable commit")
+
+    monkeypatch.setattr(pos_sale_store, "_transaction", commit_then_lose_response)
+    payload = _sale_payload(customer_with_points, clientOpId=f"lost-response-{uuid.uuid4()}")
+    response = req(client, "POST", "/api/transactions", headers=owner_headers, json=payload)
+    assert response.status_code == 500
+    saved = client.portal.call(db.transactions.find_one, {"clientOpId": payload["clientOpId"]})
+    assert saved is not None
+    assert client.portal.call(db.customers.find_one, {"id": customer_with_points})["points"] == 50
+    assert client.portal.call(db.loyalty_ledger.count_documents, {"transactionId": saved["id"], "type": "redeem"}) == 1
+    replay = req(client, "POST", "/api/transactions", headers=owner_headers, json=payload)
+    assert replay.status_code == 200
+    assert replay.json()["id"] == saved["id"]
+    assert client.portal.call(db.customers.find_one, {"id": customer_with_points})["points"] == 50
+
+
+def test_later_split_guest_failure_rolls_back_earlier_guest_debit(client, owner_headers, customer_with_points):
+    response = req(client, "POST", "/api/transactions", headers=owner_headers,
+                   json=_sale_payload(customer_with_points, splitDetails=[{
+                       "payerName": "Missing account", "amount": 5, "method": "cash",
+                       "customerId": "missing-or-foreign", "pointsRedeemed": 20,
+                   }]))
+    assert response.status_code == 400
+    assert client.portal.call(db.customers.find_one, {"id": customer_with_points})["points"] == 100
+    assert client.portal.call(db.transactions.count_documents, {"customerId": customer_with_points}) == 0
+    assert client.portal.call(db.loyalty_ledger.count_documents, {"customerId": customer_with_points, "type": "redeem"}) == 0
