@@ -3,7 +3,7 @@ from typing import Optional
 import logging
 from datetime import datetime, timezone
 from database import db
-from deps import get_user, require_permission
+from deps import get_user, require_permission, require_owner_or_manager
 from middleware.actor_context import tenant_scope_filter
 from models.kitchen_order import KitchenOrder, KitchenOrderCreate
 
@@ -526,6 +526,20 @@ async def set_order_priority(order_id: str, priority: str = "rush", user: dict =
 
 
 # ─── Owner-configurable docket display ────────────────────────────────────
+# Historically a single `_id: "singleton"` document shared by every business
+# on the deployment — one venue's font-size/notes preferences silently applied
+# to every other venue's kitchen. Scoped per business using the same
+# get_scoped_singleton/set_scoped_singleton helpers `loyalty_config` and
+# `agent_autonomy` already use for this exact shape (services/tenant_settings.py):
+# a logical `match` key plus a real businessId field, never the bare `_id`.
+# The legacy `_id: "singleton"` document is left exactly as it was — never
+# read as a per-business default, never deleted, never auto-assigned to any
+# business — see `get_legacy_docket_config_report` below for the dry-run-first
+# way to look at it before a human decides what, if anything, to do with it.
+LEGACY_DOCKET_CONFIG_ID = "singleton"
+DOCKET_CONFIG_MATCH = {"id": "docket-config"}
+
+
 DEFAULT_DOCKET_CONFIG = {
     "showStaffName": True,
     "showDevice": True,
@@ -546,29 +560,55 @@ DEFAULT_DOCKET_CONFIG = {
 
 
 @router.get("/kitchen/docket-config")
-async def get_docket_config(_: dict = Depends(get_user)):
-    row = await db.kitchen_docket_config.find_one({"_id": "singleton"}, {"_id": 0})
+async def get_docket_config(user: dict = Depends(get_user)):
+    from services.tenant_settings import get_scoped_singleton, set_scoped_singleton
+    business_id = user.get("businessId")
+    if not isinstance(business_id, str) or not business_id.strip():
+        raise HTTPException(status_code=400, detail="Business context required")
+    row = await get_scoped_singleton(db.kitchen_docket_config, DOCKET_CONFIG_MATCH, business_id)
     if not row:
         row = dict(DEFAULT_DOCKET_CONFIG)
-        await db.kitchen_docket_config.insert_one({"_id": "singleton", **row})
+        await set_scoped_singleton(db.kitchen_docket_config, DOCKET_CONFIG_MATCH, row, business_id)
     return row
 
 
 @router.put("/kitchen/docket-config")
 async def update_docket_config(body: dict, user: dict = Depends(get_user)):
+    from services.tenant_settings import get_scoped_singleton, set_scoped_singleton
     if user.get("role") not in ("owner", "manager"):
         raise HTTPException(status_code=403, detail="Owner or manager only")
+    business_id = user.get("businessId")
+    if not isinstance(business_id, str) or not business_id.strip():
+        raise HTTPException(status_code=400, detail="Business context required")
     allowed = set(DEFAULT_DOCKET_CONFIG.keys())
     patch = {k: v for k, v in body.items() if k in allowed}
     patch["updatedAt"] = _now()
     patch["updatedBy"] = user.get("email")
-    await db.kitchen_docket_config.update_one(
-        {"_id": "singleton"},
-        {"$set": {"_id": "singleton", **patch}},
-        upsert=True,
-    )
-    row = await db.kitchen_docket_config.find_one({"_id": "singleton"}, {"_id": 0})
+    await set_scoped_singleton(db.kitchen_docket_config, DOCKET_CONFIG_MATCH, patch, business_id)
+    row = await get_scoped_singleton(db.kitchen_docket_config, DOCKET_CONFIG_MATCH, business_id)
     return row
+
+
+@router.get("/kitchen/docket-config/legacy-singleton-report")
+async def get_legacy_docket_config_report(user: dict = Depends(require_owner_or_manager)):
+    """Dry-run-first visibility into the old shared `_id: "singleton"` docket
+    document, for the owner/manager deciding whether anything in it is worth
+    reviewing against their own venue's settings. Read-only: it never copies
+    the legacy row into this business's config, and this endpoint has no
+    corresponding write path — adopting any of these values means the owner
+    re-enters them through the ordinary `PUT /kitchen/docket-config` after
+    reviewing them, so the decision and its evidence are explicit and scoped
+    to the business that made it."""
+    legacy = await db.kitchen_docket_config.find_one({"_id": LEGACY_DOCKET_CONFIG_ID}, {"_id": 0})
+    return {
+        "exists": legacy is not None,
+        "legacyConfig": legacy,
+        "note": (
+            "This is the pre-migration shared docket config, kept only for "
+            "manual review. It is never read as a default and was not "
+            "assigned to any business by this report."
+        ),
+    }
 
 
 # ============ PREP MANAGEMENT API ============

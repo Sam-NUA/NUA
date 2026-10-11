@@ -344,7 +344,7 @@ async def create_transaction(transaction: TransactionCreate, user: dict = Depend
         from services.wallet_service import redeem_wallet_voucher
         for d in applied_discounts:
             if d.get("voucherId"):
-                await redeem_wallet_voucher(d["voucherId"], txn_dict["id"], d["amount"])
+                await redeem_wallet_voucher(d["voucherId"], txn_dict["id"], d["amount"], business_id=business_id)
     except Exception:
         pass
     # Audit trail + GL auto-post + rules-engine emit — shared with any

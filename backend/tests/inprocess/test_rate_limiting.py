@@ -64,6 +64,19 @@ def test_twilio_retries_are_not_blocked_by_the_voice_inbound_rate_limit(anon, mo
         _run(db.voice_calls.delete_many({"twilioCallSid": {"$regex": "^CA-RL-RETRY-"}}))
 
 
+def test_waitlist_track_endpoint_is_rate_limited_to_the_enumeration_risk_tier(anon):
+    """The tracking code is an 8-char uuid4 prefix (~32 bits) and the lookup
+    is fully unauthenticated — the generic 120/min default would let one IP
+    brute-force a meaningful slice of the code space. Same (10, 60) tier as
+    the guest-lookup overrides, added alongside the launch audit's foreign-
+    reference fixes in routes/reservations.py."""
+    for i in range(10):
+        r = anon.get("/api/waitlist/track/WL-RLTEST0")
+        assert r.status_code != 429, f"request {i} was rate-limited too early"
+    r = anon.get("/api/waitlist/track/WL-RLTEST0")
+    assert r.status_code == 429, "the 11th lookup within the window must be rejected"
+
+
 def test_two_tables_guest_traffic_does_not_share_a_rate_limit_bucket(anon):
     """Several guests at one venue commonly share a single WiFi NAT's public
     IP — the guest-default bucket is keyed by table_id (not just IP) so one

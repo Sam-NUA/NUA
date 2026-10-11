@@ -109,12 +109,20 @@ class ChannelMenuPatch(BaseModel):
 
 @router.post("/channel-menus/{channel}/patch")
 async def patch_row(channel: str, body: ChannelMenuPatch, user: dict = Depends(require_owner_or_manager)):
+    biz = user.get("businessId")
+    # The override write below is already tenant-scoped and can't leak
+    # another business's data, but without this check it could silently
+    # create a channel-menu row pointing at a product that doesn't exist,
+    # or that belongs to a different business — an invalid reference this
+    # business's own channel-menu UI would then render against nothing.
+    product = await db.products.find_one({"id": body.productId, **tenant_scope_filter(biz)}, {"_id": 0, "id": 1})
+    if not product:
+        raise HTTPException(status_code=404, detail="Product not found")
     update: dict = {k: v for k, v in body.dict().items() if k != "productId" and v is not None}
     if not update:
         return {"updated": 0}
     update["lastSyncedAt"] = datetime.now(timezone.utc).isoformat()
     update["channel"] = channel
-    biz = user.get("businessId")
     res = await db.channel_menus.update_one(
         {"channel": channel, "productId": body.productId, **tenant_scope_filter(biz)},
         {"$set": update, "$setOnInsert": {"id": str(uuid.uuid4()), "businessId": biz}},
@@ -184,9 +192,14 @@ async def ai_prep_times(channel: str, user: dict = Depends(require_owner_or_mana
     """
     biz = user.get("businessId")
     cutoff = (datetime.now(timezone.utc) - timedelta(minutes=30)).isoformat()
-    ticket_count = await db.kds_orders.count_documents({
+    # Tickets are written to kitchen_orders (routes/kitchen.py), never to
+    # kds_orders — nothing in this codebase writes that collection, so this
+    # query always returned 0 and heat was always reported "cool" regardless
+    # of actual kitchen load. "new"/"preparing" matches the same active-ticket
+    # statuses routes/kitchen.py's own queue-depth calculation uses.
+    ticket_count = await db.kitchen_orders.count_documents({
         "createdAt": {"$gte": cutoff},
-        "status": {"$in": ["pending", "in_progress", "preparing"]},
+        "status": {"$in": ["new", "preparing"]},
         **tenant_scope_filter(biz),
     })
     if ticket_count > 10:
