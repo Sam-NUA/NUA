@@ -13,6 +13,9 @@ terminal remembers its last successful method.
   the current password and the new password twice. Sign in again afterward.
 - PIN: the owner sets each person's PIN in **Settings → Staff**. Creating or
   changing an email password does not create a PIN.
+- PIN access requires an active business membership. Accounts requiring two-factor
+  authentication must use email sign-in and their authenticator; PIN-only manager
+  approval is also unavailable for those accounts.
 - Two-factor authentication: keep the recovery codes offered in Security.
   Password recovery does not remove two-factor authentication.
 
