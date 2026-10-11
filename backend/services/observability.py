@@ -186,17 +186,51 @@ async def check_health() -> dict:
     except Exception as e:
         checks["database"] = {"ok": False, "error": str(e)[:200]}
 
-    try:
-        from services.nua_scheduler import is_running as ash_running
-        checks["ashScheduler"] = {"ok": ash_running()}
-    except Exception:
-        checks["ashScheduler"] = {"ok": None}   # not an error — just unknown in this build
+    # server.py starts the in-process scheduler loops only when not on
+    # Vercel (an idle serverless instance can't host a perpetual loop
+    # between invocations) — Vercel Cron hits the /api/cron/* endpoints
+    # directly instead (vercel.json). is_running() reports the LOCAL loop,
+    # which is correctly, intentionally False on Vercel regardless of
+    # whether Cron itself is working — checking it there made this health
+    # check report "degraded" permanently on Vercel even when everything
+    # was fine, and said nothing about whether Cron invocations were
+    # actually landing. On Vercel, check cron_jobs' own claim record
+    # instead — "ash-hourly"/"coursing-tick" are the same job names
+    # routes/cron.py's handlers claim on every real invocation.
+    is_vercel = os.environ.get("VERCEL") == "1"
+    if is_vercel:
+        from services import cron_jobs
 
-    try:
-        from services.coursing_scheduler import is_running as coursing_running
-        checks["coursingScheduler"] = {"ok": coursing_running()}
-    except Exception:
-        checks["coursingScheduler"] = {"ok": None}
+        async def _cron_recency_ok(job_name: str, max_age_minutes: float) -> Optional[bool]:
+            row = await cron_jobs.last_run(job_name)
+            if not row or not row.get("claimedAt"):
+                return None  # not an error — just never observed in this check's window
+            try:
+                claimed_at = datetime.fromisoformat(row["claimedAt"])
+            except (TypeError, ValueError):
+                return None
+            if claimed_at.tzinfo is None:
+                claimed_at = claimed_at.replace(tzinfo=timezone.utc)
+            age = datetime.now(timezone.utc) - claimed_at
+            return age <= timedelta(minutes=max_age_minutes)
+
+        # Generous grace above each job's own cadence (vercel.json: hourly
+        # and every-1-minute respectively) — this distinguishes "Cron
+        # stopped firing" from ordinary schedule jitter, not a tight SLA.
+        checks["ashCron"] = {"ok": await _cron_recency_ok("ash-hourly", max_age_minutes=75)}
+        checks["coursingCron"] = {"ok": await _cron_recency_ok("coursing-tick", max_age_minutes=5)}
+    else:
+        try:
+            from services.nua_scheduler import is_running as ash_running
+            checks["ashScheduler"] = {"ok": ash_running()}
+        except Exception:
+            checks["ashScheduler"] = {"ok": None}   # not an error — just unknown in this build
+
+        try:
+            from services.coursing_scheduler import is_running as coursing_running
+            checks["coursingScheduler"] = {"ok": coursing_running()}
+        except Exception:
+            checks["coursingScheduler"] = {"ok": None}
 
     healthy = all(c.get("ok") is not False for c in checks.values())
     return {"status": "ok" if healthy else "degraded", "checks": checks,
