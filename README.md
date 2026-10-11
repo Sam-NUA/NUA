@@ -72,13 +72,10 @@ Both services are managed by **supervisord** with hot reload. Use `sudo supervis
 
 ## Demo credentials
 
-| Role     | Email                | Password           |
-| -------- | -------------------- | ------------------ |
-| Owner    | `owner@nua.com`     | `NuaOwner2026!`   |
-| Manager  | `manager@nua.com`   | `Staff2026!`       |
-| Cashier  | `cashier@nua.com`   | `Staff2026!`       |
-| Kitchen  | `kitchen@nua.com`   | `Staff2026!`       |
-| 2FA code | `123456`             | (demo only)        |
+There are no default production passwords, PINs, or two-factor codes. Owner
+bootstrap requires operator-provided environment settings and creates accounts
+once; it does not reset existing accounts. Test fixtures are not production
+credentials. See [Owner access](docs/OWNER_ACCESS.md) for setup and recovery.
 
 ## Feature map
 
