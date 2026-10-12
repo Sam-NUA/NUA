@@ -462,6 +462,9 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
     # dict can't key on. First matching prefix wins, checked before the
     # generic public/table default.
     PREFIX_OVERRIDES = (
+        # Mongo-backed IP bucket across guesses and both PIN endpoints.
+        # Guessed PINs and untrusted tenant/proxy headers cannot reset it.
+        ("/api/auth/pin-login", 10, 60),
         # Booking/waitlist creation — a real, moderately-costly write on a
         # fully anonymous surface; same tier as the guest-lookup overrides
         # above.

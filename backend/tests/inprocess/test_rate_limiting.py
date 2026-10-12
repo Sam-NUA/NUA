@@ -89,3 +89,18 @@ def test_two_tables_guest_traffic_does_not_share_a_rate_limit_bucket(anon):
     assert r.status_code != 429, "a different table must not share table A's exhausted bucket"
     r = anon.get("/api/table/rl-test-table-a/menu")
     assert r.status_code == 429, "table A's own bucket should still be exhausted"
+
+
+def test_pin_guesses_share_bucket_across_values_endpoints_and_spoofed_headers(anon, monkeypatch):
+    import server
+    monkeypatch.setattr(server, "time", lambda: 1800000000.0)
+    for i in range(10):
+        path = "/api/auth/pin-login" + ("/approve" if i % 2 else "")
+        response = anon.post(path, json={"pin": f"{i:04d}", "staffPin": f"{i:04d}", "managerPin": "9999"},
+                             headers={"X-Tenant-Id": str(i), "X-Forwarded-For": f"192.0.2.{i}"})
+        assert response.status_code != 429
+    blocked = anon.post("/api/auth/pin-login/approve", json={"staffPin": "8123", "managerPin": "7123"})
+    assert blocked.status_code == 429
+    assert int(blocked.headers["Retry-After"]) > 0
+    monkeypatch.setattr(server, "time", lambda: 1800000061.0)
+    assert anon.post("/api/auth/pin-login", json={"pin": "8124"}).status_code != 429

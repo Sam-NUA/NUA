@@ -186,36 +186,16 @@ async def create_transaction(transaction: TransactionCreate, user: dict = Depend
     min_redeem = int(loyalty_cfg.get("minRedeem", 10))
     redeem_rate = float(loyalty_cfg.get("redeemRate", 0.01))
 
-    # The redemption below is a real, atomic balance decrement that happens
-    # before the sale itself is ever written — not one database transaction
-    # with the insert further down (mongomock can't prove that either way;
-    # see the real-replica-set suite). Tracked here so a sale that redeems
-    # points but then fails to insert for any reason can refund them rather
-    # than silently taking a customer's points for a sale that never
-    # happened. This is a compensating action, not a substitute for a real
-    # multi-document transaction — see the launch audit report for what
-    # that would take.
-    redeemed_points: list[tuple[str, int]] = []
+    # Pricing builds a redemption plan without changing balances. The sale,
+    # all debits and redemption ledger records commit atomically below.
+    redemptions = []
 
     async def _redeem(customer_id: str, points: int) -> float:
-        """Atomically check-and-decrement one customer's points balance.
-        Raises 400 on insufficient balance/below minimum. Returns the $
-        value to apply as a discount."""
         if points < min_redeem:
             raise HTTPException(status_code=400, detail=f"Minimum {min_redeem} points required to redeem")
-        redeemed_doc = await db.customers.find_one_and_update(
-            {**scope, "id": customer_id, "points": {"$gte": points}, "loyaltyLocked": {"$ne": True}},
-            {"$inc": {"points": -points}},
-        )
-        if not redeemed_doc:
-            locked = await db.customers.find_one({**scope, "id": customer_id, "loyaltyLocked": True}, {"_id": 0, "id": 1})
-            if locked:
-                raise HTTPException(status_code=403, detail="Loyalty account locked pending fraud review")
-        if not redeemed_doc:
-            balance = int((await db.customers.find_one({**scope, "id": customer_id}, {"_id": 0, "points": 1}) or {}).get("points", 0))
-            raise HTTPException(status_code=400, detail=f"Insufficient points: {balance} available, {points} requested")
-        redeemed_points.append((customer_id, points))
-        return round(points * redeem_rate, 2)
+        value = round(points * redeem_rate, 2)
+        redemptions.append((customer_id, points, value))
+        return value
 
     points_redeemed = max(int(transaction.pointsRedeemed or 0), 0)
     points_discount = 0.0
@@ -318,67 +298,22 @@ async def create_transaction(transaction: TransactionCreate, user: dict = Depend
         "clientOpId": transaction.clientOpId,
     }
 
-    async def _refund_redeemed_points(reason: str) -> None:
-        """Compensating action for a sale that redeemed points but was
-        never actually recorded as this attempt's own transaction — a
-        losing side of a concurrent clientOpId race, or any other insert
-        failure. Best-effort per customer: one refund failing must not
-        stop the others, and every outcome is logged since a silently
-        lost or silently doubled refund is exactly the failure mode this
-        exists to avoid."""
-        for customer_id, points in redeemed_points:
-            try:
-                await db.customers.update_one({**scope, "id": customer_id}, {"$inc": {"points": points}})
-            except Exception as refund_err:
-                log_and_continue(
-                    logger,
-                    f"Failed to refund {points} points to customer {customer_id} after {reason} "
-                    f"(clientOpId={transaction.clientOpId}) — balance may be short and needs manual review",
-                    refund_err,
-                )
-
-    try:
-        await db.transactions.insert_one(txn_dict)
-    except DuplicateKeyError:
-        # A genuinely concurrent duplicate — another request with the same
-        # clientOpId won the race between our own find_one check above and
-        # this insert. Return that winner's transaction rather than raising;
-        # the caller (the offline queue) just wants "this sale exists now",
-        # not a 500 for having asked twice. This attempt's own redemption
-        # (if any) must still be refunded: the winner's own txn_dict already
-        # accounts for its own redemption, so if this losing attempt's isn't
-        # refunded the customer is charged points twice for one sale.
-        await _refund_redeemed_points("a concurrent duplicate request")
-        winner = await db.transactions.find_one({"clientOpId": transaction.clientOpId, **scope}, {"_id": 0})
-        if winner:
-            return Transaction(**winner)
-        raise
-    except Exception:
-        # Anything else — a dropped connection, a validation error this
-        # function didn't anticipate — means the sale was never recorded
-        # at all. Refund before re-raising so the client's error is the
-        # only effect of this failed attempt, not a silently lost balance.
-        await _refund_redeemed_points("a failed sale insert")
-        raise
-    txn_dict.pop("_id", None)
-
-    # Record the redemption on the loyalty ledger for history/reporting — the
-    # balance itself was already decremented atomically above, before the
-    # transaction was inserted, so this is audit trail only.
-    if points_redeemed > 0:
+    if redemptions:
+        from services.pos_sale_store import insert_with_redemptions
+        txn_dict, inserted = await insert_with_redemptions(db, txn_dict, redemptions)
+        if not inserted:
+            return Transaction(**txn_dict)
+    else:
         try:
-            await db.loyalty_ledger.insert_one({
-                "id": f"LP-{str(uuid.uuid4())[:8].upper()}",
-                "customerId": transaction.customerId,
-                "transactionId": txn_dict["id"],
-                "type": "redeem",
-                "points": -points_redeemed,
-                "value": points_discount,
-                "businessId": business_id,
-                "createdAt": datetime.utcnow().isoformat(),
-            })
-        except Exception:
-            pass
+            await db.transactions.insert_one(txn_dict)
+        except DuplicateKeyError:
+            if transaction.clientOpId:
+                winner = await db.transactions.find_one(
+                    {"clientOpId": transaction.clientOpId, **scope}, {"_id": 0})
+                if winner:
+                    return Transaction(**winner)
+            raise
+        txn_dict.pop("_id", None)
 
     # Consume wallet vouchers used as discounts (no-op for v26 commerce
     # vouchers, which track their own redemption counts).

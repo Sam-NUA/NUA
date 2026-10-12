@@ -4,6 +4,7 @@ silently applied to every other venue's kitchen. Now scoped per business via
 services.tenant_settings.{get,set}_scoped_singleton, the same helpers
 loyalty_config/agent_autonomy already use for this shape.
 """
+import os
 import uuid
 
 import pytest
@@ -92,7 +93,7 @@ def test_legacy_singleton_is_reported_but_never_adopted(client, owner_headers):
     client.portal.call(db.kitchen_docket_config.insert_one,
                         {"_id": "singleton", "fontSize": "large", "updatedBy": "legacy@old-deploy.test"})
     try:
-        report = req(client, "GET", "/api/kitchen/docket-config/legacy-singleton-report", headers=owner_headers)
+        report = req(client, "GET", "/api/kitchen/docket-config/legacy-singleton-report", headers={**owner_headers, "X-Support-Override": os.environ["SUPPORT_OVERRIDE_KEY"]})
         assert report.status_code == 200, report.text
         body = report.json()
         assert body["exists"] is True
@@ -121,3 +122,22 @@ def test_legacy_singleton_report_requires_owner_or_manager(client):
     finally:
         client.portal.call(db.auth_users.delete_one, {"id": identifier})
         client.portal.call(db.roster_overrides.delete_many, {"staffId": identifier})
+
+
+@pytest.mark.parametrize("support", [None, "wrong-key"])
+def test_ordinary_owners_cannot_read_legacy_even_from_different_venues(
+        client, owner_headers, second_business_owner_headers, support):
+    for owner in (owner_headers, second_business_owner_headers):
+        headers = dict(owner)
+        if support:
+            headers["X-Support-Override"] = support
+        response = req(client, "GET", "/api/kitchen/docket-config/legacy-singleton-report", headers=headers)
+        assert response.status_code == 403
+        assert "legacyConfig" not in response.json()
+
+
+def test_legacy_report_fails_closed_without_configured_support_key(client, owner_headers, monkeypatch):
+    monkeypatch.delenv("SUPPORT_OVERRIDE_KEY", raising=False)
+    response = req(client, "GET", "/api/kitchen/docket-config/legacy-singleton-report",
+                   headers={**owner_headers, "X-Support-Override": "anything"})
+    assert response.status_code == 403

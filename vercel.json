@@ -1,6 +1,6 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
-  "git": {"deploymentEnabled": {"codex/launch-audit-owner-access": false, "codex/review-launch-audit-2026-10-11": false}},
+  "git": {"deploymentEnabled": {"codex/launch-audit-owner-access": false, "codex/review-launch-audit-2026-10-11": false, "codex/launch-review-corrections": false}},
   "services": {
     "web": {
       "root": "frontend",

@@ -27,7 +27,7 @@ import time
 import traceback
 import uuid
 from datetime import datetime, timedelta, timezone
-from typing import Optional
+from typing import Any, Optional
 
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse
@@ -177,7 +177,7 @@ async def check_health() -> dict:
     thin on detail (no stack traces, no internal hostnames) since it's the
     one endpoint on the public allow-list that runs unauthenticated code.
     """
-    checks = {}
+    checks: dict[str, dict[str, Any]] = {}
 
     t0 = time.monotonic()
     try:
@@ -186,39 +186,40 @@ async def check_health() -> dict:
     except Exception as e:
         checks["database"] = {"ok": False, "error": str(e)[:200]}
 
-    # server.py starts the in-process scheduler loops only when not on
-    # Vercel (an idle serverless instance can't host a perpetual loop
-    # between invocations) — Vercel Cron hits the /api/cron/* endpoints
-    # directly instead (vercel.json). is_running() reports the LOCAL loop,
-    # which is correctly, intentionally False on Vercel regardless of
-    # whether Cron itself is working — checking it there made this health
-    # check report "degraded" permanently on Vercel even when everything
-    # was fine, and said nothing about whether Cron invocations were
-    # actually landing. On Vercel, check cron_jobs' own claim record
-    # instead — "ash-hourly"/"coursing-tick" are the same job names
-    # routes/cron.py's handlers claim on every real invocation.
+    # A claim proves invocation only. Read successful completion separately
+    # and reject missing, failed, stale or stalled runs on Vercel.
     is_vercel = os.environ.get("VERCEL") == "1"
     if is_vercel:
         from services import cron_jobs
 
-        async def _cron_recency_ok(job_name: str, max_age_minutes: float) -> Optional[bool]:
-            row = await cron_jobs.last_run(job_name)
-            if not row or not row.get("claimedAt"):
-                return None  # not an error — just never observed in this check's window
+        async def cron_health(job_name, max_age_minutes):
             try:
-                claimed_at = datetime.fromisoformat(row["claimedAt"])
-            except (TypeError, ValueError):
-                return None
-            if claimed_at.tzinfo is None:
-                claimed_at = claimed_at.replace(tzinfo=timezone.utc)
-            age = datetime.now(timezone.utc) - claimed_at
-            return age <= timedelta(minutes=max_age_minutes)
+                row = await cron_jobs.last_run(job_name)
+                if not row:
+                    return {"ok": False, "state": "never_observed"}
+                if row.get("status") == "failed":
+                    return {"ok": False, "state": "failed"}
+                if not row.get("lastSuccessAt"):
+                    return {"ok": False, "state": "no_successful_completion"}
+                stamp = datetime.fromisoformat(row["lastSuccessAt"])
+                if stamp.tzinfo is None:
+                    stamp = stamp.replace(tzinfo=timezone.utc)
+                now = datetime.now(timezone.utc)
+                if row.get("status") == "running":
+                    lease = datetime.fromisoformat(row["lockedUntil"])
+                    if lease.tzinfo is None:
+                        lease = lease.replace(tzinfo=timezone.utc)
+                    if lease < now:
+                        return {"ok": False, "state": "stalled"}
+                age = now - stamp
+                healthy = timedelta(0) <= age <= timedelta(minutes=max_age_minutes)
+                return {"ok": healthy, "state": "current" if healthy else "stale",
+                        "lastSuccessAt": stamp.isoformat()}
+            except Exception:
+                return {"ok": False, "state": "unavailable"}
 
-        # Generous grace above each job's own cadence (vercel.json: hourly
-        # and every-1-minute respectively) — this distinguishes "Cron
-        # stopped firing" from ordinary schedule jitter, not a tight SLA.
-        checks["ashCron"] = {"ok": await _cron_recency_ok("ash-hourly", max_age_minutes=75)}
-        checks["coursingCron"] = {"ok": await _cron_recency_ok("coursing-tick", max_age_minutes=5)}
+        checks["ashCron"] = await cron_health("ash-hourly", 75)
+        checks["coursingCron"] = await cron_health("coursing-tick", 5)
     else:
         try:
             from services.nua_scheduler import is_running as ash_running

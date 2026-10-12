@@ -1,9 +1,9 @@
-from fastapi import APIRouter, HTTPException, Depends, Request
+from fastapi import Request, APIRouter, HTTPException, Depends, Request
 from typing import Optional
 import logging
 from datetime import datetime, timezone
 from database import db
-from deps import get_user, require_permission, require_owner_or_manager
+from deps import get_user, require_permission, require_owner
 from middleware.actor_context import tenant_scope_filter
 from models.kitchen_order import KitchenOrder, KitchenOrderCreate
 
@@ -590,15 +590,15 @@ async def update_docket_config(body: dict, user: dict = Depends(get_user)):
 
 
 @router.get("/kitchen/docket-config/legacy-singleton-report")
-async def get_legacy_docket_config_report(user: dict = Depends(require_owner_or_manager)):
-    """Dry-run-first visibility into the old shared `_id: "singleton"` docket
-    document, for the owner/manager deciding whether anything in it is worth
-    reviewing against their own venue's settings. Read-only: it never copies
-    the legacy row into this business's config, and this endpoint has no
-    corresponding write path — adopting any of these values means the owner
-    re-enters them through the ordinary `PUT /kitchen/docket-config` after
-    reviewing them, so the decision and its evidence are explicit and scoped
-    to the business that made it."""
+async def get_legacy_docket_config_report(request: Request, user: dict = Depends(require_owner)):
+    """Support-only inspection of unowned legacy data; never assigns it.
+
+    Ordinary venue roles cannot establish ownership of this shared row.
+    Apply the same owner + separately configured support secret gate as
+    ownership_migration's cross-tenant legacy inspection endpoints.
+    """
+    from routes.ownership_migration import _require_support_override
+    _require_support_override(request)
     legacy = await db.kitchen_docket_config.find_one({"_id": LEGACY_DOCKET_CONFIG_ID}, {"_id": 0})
     return {
         "exists": legacy is not None,
