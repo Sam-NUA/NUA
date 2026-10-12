@@ -15,40 +15,24 @@ export function AuthProvider({ children }) {
     setAuthError(false);
     const token = await SecureStorageService.getToken();
     if (!token) { setUser(false); setLoading(false); return; }
-    const attempt = () => axios.get(`${API}/api/auth/me`, {
-      headers: { Authorization: `Bearer ${token}` }
-    });
     try {
-      const res = await attempt();
+      const res = await axios.get(`${API}/api/auth/me`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
       setUser(res.data);
-    } catch (err) {
-      const status = err?.response?.status;
-      if (status === 401 || status === 403) {
+    } catch (error) {
+      if ([401, 403].includes(error.response?.status)) {
         // The backend actually rejected this token (expired, revoked by a
         // password change or a device revocation, invalid) — it really is
         // a signed-out session.
         await SecureStorageService.clearToken();
         setUser(false);
       } else {
-        // No response at all (network drop, timeout) or a 5xx — the
-        // backend didn't tell us the token is bad, so it probably isn't.
-        // One short retry absorbs a single blip (a flaky connection, a
-        // backend redeploying mid-request) without booting an active
-        // cashier; the token is never cleared for this case either way,
-        // so even a failed retry leaves a later manual retry/reload able
-        // to succeed instead of forcing a full re-login.
-        try {
-          const retryRes = await new Promise((resolve, reject) => {
-            setTimeout(() => attempt().then(resolve, reject), 1500);
-          });
-          setUser(retryRes.data);
-        } catch (retryErr) {
-          const retryStatus = retryErr?.response?.status;
-          if (retryStatus === 401 || retryStatus === 403) {
-            await SecureStorageService.clearToken();
-          }
-          setUser(false);
-        }
+        // A busy or unreachable server does not invalidate a session.
+        // Keep the credential, but gate protected screens until verified —
+        // see App.js's ProtectedRoutes, which renders a "try again" screen
+        // on authError rather than treating this the same as a real 401.
+        setAuthError(true);
       }
     }
     setLoading(false);
