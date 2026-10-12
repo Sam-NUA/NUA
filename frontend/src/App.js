@@ -151,6 +151,7 @@ const TrackWaitlist = lazy(() => import('./pages/TrackWaitlist'));
 const LoyaltyGuestPortal = lazy(() => import('./pages/LoyaltyGuestPortal'));
 import { useTheme } from './contexts/ThemeContext';
 import useIdleLogout from './hooks/useIdleLogout';
+import useDeviceRegistration from './hooks/useDeviceRegistration';
 
 function StaffLayout({ children }) {
   const { darkMode } = useTheme();
@@ -186,6 +187,7 @@ function ProtectedRoutes() {
   // unconditionally (Rules of Hooks) — the hook itself no-ops while
   // enabled is false, i.e. before there's a session to time out.
   useIdleLogout(!!user, logout);
+  useDeviceRegistration(user);
   // Read (and persist) the shell BEFORE the login gate — a ?shell= query
   // param only ever shows up on the very first, pre-login page load, so it
   // must be captured into localStorage right away or it's lost the moment

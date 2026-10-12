@@ -1,5 +1,6 @@
 // Printer service for LAN/Network receipt printing
 // Uses ESC/POS commands for thermal printers
+import { PrintService } from '../platform';
 
 class PrinterService {
   constructor() {
@@ -175,19 +176,12 @@ class PrinterService {
     }
   }
 
-  // Fallback browser print
+  // Fallback browser/native print — see docs/platform/ADR-001's
+  // PrintService: network ESC/POS (above) stays the primary path on every
+  // platform; this only ever runs as its fallback.
   printBrowser(transaction, printerConfig = {}) {
-    const printWindow = window.open('', '_blank');
     const html = this.generateHTMLReceipt(transaction, printerConfig);
-    
-    printWindow.document.write(html);
-    printWindow.document.close();
-    printWindow.focus();
-    
-    setTimeout(() => {
-      printWindow.print();
-      printWindow.close();
-    }, 250);
+    PrintService.printHtml(html);
   }
 
   // Generate HTML receipt for browser printing

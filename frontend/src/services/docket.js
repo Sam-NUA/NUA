@@ -162,10 +162,11 @@ export function generateDocketHTML(job) {
 }
 
 export function printDocket(job) {
-  const w = window.open('', '_blank');
-  if (!w) return;
-  w.document.write(generateDocketHTML(job));
-  w.document.close();
-  w.focus();
-  setTimeout(() => { w.print(); w.close(); }, 250);
+  // Lazy import — this module is called from hot order-entry paths and
+  // the platform singleton is tiny, but keeping it out of this file's own
+  // top-level import list avoids a circular-import risk with anything
+  // under platform/ that might one day want docket formatting.
+  import('../platform').then(({ PrintService }) => {
+    PrintService.printHtml(generateDocketHTML(job));
+  });
 }

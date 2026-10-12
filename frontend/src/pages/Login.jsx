@@ -3,6 +3,7 @@ import { Link, useNavigate } from 'react-router-dom';
 import axios from 'axios';
 import { useAuth } from '../contexts/AuthContext';
 import { staffMgmtAPI, authAPI } from '../services/api';
+import { SecureStorageService } from '../platform';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
 import { Card, CardContent } from '../components/ui/card';
@@ -160,7 +161,7 @@ export default function Login() {
         setLoading(false);
         return;
       }
-      localStorage.setItem('nua_token', res.data.token);
+      await SecureStorageService.setToken(res.data.token);
       localStorage.setItem('nua_login_mode', 'pin');
       window.location.assign('/clock-in');
     } catch (err) {
@@ -174,7 +175,7 @@ export default function Login() {
     setError(''); setLoading(true);
     try {
       const res = await staffMgmtAPI.approvePinLogin(pin, managerPin);
-      localStorage.setItem('nua_token', res.data.token);
+      await SecureStorageService.setToken(res.data.token);
       localStorage.setItem('nua_login_mode', 'pin');
       window.location.assign('/clock-in');
     } catch (err) {

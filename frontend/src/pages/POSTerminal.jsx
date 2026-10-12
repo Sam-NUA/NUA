@@ -33,6 +33,7 @@ import { CategoryIcon } from './Categories';
 import { createTransactionResilient, courseActionResilient, cacheCatalogue, getCachedCatalogue, isNetworkFailure } from '../lib/offlineQueue';
 import { subscribeTickets, streamHealthy } from '../lib/ticketStream';
 import useOfflineQueue from '../hooks/useOfflineQueue';
+import { DialogService, ClipboardService } from '../platform';
 import { WifiOff } from 'lucide-react';
 
 // SwipeableCartItem and CustomerCombobox now live in components/pos/.
@@ -251,7 +252,7 @@ const POSTerminal = () => {
 
   const resumeHeldCheckout = async (tab) => {
     if (cart.length > 0) {
-      const proceed = window.confirm('This will replace the current cart with the held sale. Continue?');
+      const proceed = await DialogService.confirm('This will replace the current cart with the held sale. Continue?');
       if (!proceed) return;
     }
     clearCart();
@@ -263,7 +264,7 @@ const POSTerminal = () => {
   };
 
   const cancelHeldCheckout = async (tab) => {
-    const proceed = window.confirm(
+    const proceed = await DialogService.confirm(
       `Cancel this held sale? If the guest still completes the ${tab.checkoutProvider === 'crypto' ? 'crypto' : 'Stripe'} `
       + `payment from a re-opened link, it will still ring up automatically — this only clears the hold on this screen.`
     );
@@ -1518,7 +1519,7 @@ const POSTerminal = () => {
   };
 
   const copyToClipboard = (text) => {
-    navigator.clipboard.writeText(text);
+    ClipboardService.copyText(text);
     toast({ title: "Copied!", description: "UPI ID copied to clipboard" });
   };
 

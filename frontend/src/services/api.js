@@ -1,4 +1,5 @@
 import axios from 'axios';
+import { SecureStorageService } from '../platform';
 
 const API_BASE_URL = `${process.env.REACT_APP_BACKEND_URL}/api`;
 
@@ -15,9 +16,11 @@ const api = axios.create({
 // session, and a staff member testing the guest flow on a browser where
 // they're ALSO logged in as staff must not have that call silently
 // switched to their staff credential).
-api.interceptors.request.use((config) => {
-  const token = localStorage.getItem('nua_token');
-  if (token && !config.headers.Authorization) config.headers.Authorization = `Bearer ${token}`;
+api.interceptors.request.use(async (config) => {
+  if (!config.headers.Authorization) {
+    const token = await SecureStorageService.getToken();
+    if (token) config.headers.Authorization = `Bearer ${token}`;
+  }
   return config;
 });
 
@@ -47,7 +50,7 @@ api.interceptors.response.use(
         const r = await refreshPromise;
         const newToken = r.data?.token;
         if (newToken) {
-          localStorage.setItem('nua_token', newToken);
+          await SecureStorageService.setToken(newToken);
           original.headers.Authorization = `Bearer ${newToken}`;
           return api(original);
         }
@@ -56,8 +59,8 @@ api.interceptors.response.use(
         // over, not just the access token. Fall through to the rejection
         // below; AuthContext's next checkAuth (or a protected-route guard)
         // is what actually navigates to /login, this just stops pretending
-        // localStorage still holds something usable.
-        localStorage.removeItem('nua_token');
+        // storage still holds something usable.
+        await SecureStorageService.clearToken();
       }
     }
     return Promise.reject(error);
@@ -72,6 +75,18 @@ export const authAPI = {
   resetPassword: (token, password) => api.post('/auth/reset-password', { token, password }),
   ownerRecoveryInitiate: (recoveryKey, email) => api.post('/auth/owner-recovery/initiate', { recoveryKey, email }),
   ownerRecoveryComplete: (token, password, pin) => api.post('/auth/owner-recovery/complete', { token, password, ...(pin ? { pin } : {}) }),
+};
+
+// Device identity (backend/routes/devices.py) — see docs/platform/
+// DEVICE_IDENTITY_MODEL.md. The register/heartbeat calls are made with
+// whatever session is active at the time (no elevated role required to
+// register); list/revoke require owner/manager and are surfaced in
+// Settings, not here.
+export const devicesAPI = {
+  register: (data) => api.post('/devices/register', data),
+  list: () => api.get('/devices'),
+  heartbeat: (deviceId) => api.post(`/devices/${deviceId}/heartbeat`),
+  revoke: (deviceId) => api.post(`/devices/${deviceId}/revoke`),
 };
 
 // Products API
@@ -526,10 +541,23 @@ export const advancedAPI = {
   getSegmentCustomers: (id) => api.get(`/marketing/segments/${id}/customers`),
 };
 
+// PIN login is the primary sign-in path on a registered terminal (a tablet
+// at the counter, not an individual's own device) — attaches this
+// device's X-Device-Id itself, same as AuthContext's email/password login,
+// so a revoked terminal is rejected outright rather than only on its next
+// password-login attempt. Most callers (web, an unregistered device) have
+// no stored device id and this is a no-op header-wise, exactly as before.
+async function _deviceHeaders() {
+  const { DeviceIdentityService } = await import('../platform');
+  const deviceId = await DeviceIdentityService.getStoredDeviceId();
+  return deviceId ? { 'X-Device-Id': deviceId } : {};
+}
+
 // Staff Management — PIN, Timecards, Roster, Payrun
 export const staffMgmtAPI = {
-  pinLogin: (pin) => api.post('/auth/pin-login', { pin }),
-  approvePinLogin: (staffPin, managerPin) => api.post('/auth/pin-login/approve', { staffPin, managerPin }),
+  pinLogin: async (pin) => api.post('/auth/pin-login', { pin }, { headers: await _deviceHeaders() }),
+  approvePinLogin: async (staffPin, managerPin) =>
+    api.post('/auth/pin-login/approve', { staffPin, managerPin }, { headers: await _deviceHeaders() }),
   setPin: (staffId, pin) => api.post(`/auth/staff/${staffId}/set-pin`, { pin }),
   clockIn: () => api.post('/staff/clock-in'),
   clockOut: (data) => api.post('/staff/clock-out', data || {}),
