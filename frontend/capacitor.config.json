@@ -2,7 +2,6 @@
   "appId": "com.nua.pos",
   "appName": "NUA POS",
   "webDir": "build",
-  "bundledWebRuntime": false,
   "server": {
     "androidScheme": "https"
   },
