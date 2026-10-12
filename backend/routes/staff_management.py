@@ -117,10 +117,10 @@ async def _has_roster_override_today(staff_id: str, business_id: Optional[str] =
     ) is not None
 
 
-def _issue_staff_token(user: dict) -> str:
+def _issue_staff_token(user: dict, device_id: Optional[str] = None) -> str:
     # Share issue-time/revocation semantics with password sign-in.
     from routes.auth import create_access_token
-    return create_access_token(user["id"], user["email"], user["role"], user.get("businessId"))
+    return create_access_token(user["id"], user["email"], user["role"], user.get("businessId"), device_id)
 
 
 async def _require_pin_eligible(user: dict) -> None:
@@ -131,11 +131,11 @@ async def _require_pin_eligible(user: dict) -> None:
         raise HTTPException(status_code=403, detail="Two-factor authentication required. Use email sign-in and your authenticator.")
 
 
-async def _pin_login_result(user: dict) -> dict:
+async def _pin_login_result(user: dict, device_id: Optional[str] = None) -> dict:
     from routes.auth import public_user, effective_permissions
     safe_user = public_user(user)
     safe_user["permissions"] = await effective_permissions(user)
-    return {"user": safe_user, "token": _issue_staff_token(user)}
+    return {"user": safe_user, "token": _issue_staff_token(user, device_id)}
 
 
 
@@ -180,8 +180,13 @@ async def _clear_pin_lockout(pin: str) -> None:
     await db.login_attempts.delete_one({"identifier": f"pin:{pin}"})
 
 
+async def _resolve_device_id_for_pin(request: Request) -> Optional[str]:
+    from routes.auth import _resolve_device_id
+    return await _resolve_device_id(request)
+
+
 @router.post("/auth/pin-login")
-async def pin_login(data: dict):
+async def pin_login(data: dict, request: Request = None):
     """Login with 2-4 digit PIN code.
 
     Owners/managers can always sign in — they're the ones who approve
@@ -200,17 +205,18 @@ async def pin_login(data: dict):
         raise HTTPException(status_code=401, detail="Invalid PIN")
     await _clear_pin_lockout(pin)
     await _require_pin_eligible(user)
+    device_id = await _resolve_device_id_for_pin(request)
 
     if user["role"] not in ("owner", "manager"):
         if (not await _is_rostered_now(user["id"], business_id=user.get("businessId"))
                 and not await _has_roster_override_today(user["id"], user.get("businessId"))):
             return {"needsApproval": True, "staffId": user["id"], "staffName": user["name"]}
 
-    return await _pin_login_result(user)
+    return await _pin_login_result(user, device_id)
 
 
 @router.post("/auth/pin-login/approve")
-async def approve_pin_login(data: dict):
+async def approve_pin_login(data: dict, request: Request = None):
     """A manager/owner authorizes a non-rostered staff member's login right
     there at the terminal, by entering their own PIN alongside the staff
     member's. Records a roster_overrides row for today (audit trail, and
@@ -261,7 +267,8 @@ async def approve_pin_login(data: dict):
     except Exception:
         pass
 
-    return await _pin_login_result(staff)
+    device_id = await _resolve_device_id_for_pin(request)
+    return await _pin_login_result(staff, device_id)
 
 @router.post("/auth/staff/{staff_id}/set-pin")
 async def set_staff_pin(staff_id: str, data: dict, user: dict = Depends(require_owner)):

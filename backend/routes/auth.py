@@ -62,17 +62,48 @@ def verify_password(plain: str, hashed: str) -> bool:
     except ValueError:
         return False
 
-def create_access_token(user_id: str, email: str, role: str, business_id: str = None) -> str:
+def create_access_token(user_id: str, email: str, role: str, business_id: str = None,
+                         device_id: str = None) -> str:
     # businessId travels in the token (not just a header) so ActorContextMiddleware
     # can stamp createdBy/businessId on every write without a DB round-trip per
     # request — see middleware/actor_context.py.
+    # deviceId is only present for a session that identified a registered
+    # device at login (see _resolve_device_id below) — most sessions (web,
+    # staff without a registered terminal) carry none, and are exactly as
+    # revocable as before this feature existed (not at all, by device).
     payload = {"sub": user_id, "email": email, "role": role, "businessId": business_id,
+               "deviceId": device_id,
                "iat": datetime.now(timezone.utc).timestamp(),
                "exp": datetime.now(timezone.utc) + timedelta(hours=8), "type": "access"}
     return jwt.encode(payload, _secret(), algorithm=JWT_ALGORITHM)
 
-def create_refresh_token(user_id: str) -> str:
-    payload = {"sub": user_id, "iat": datetime.now(timezone.utc).timestamp(),
+
+async def _resolve_device_id(request: Optional[Request]) -> Optional[str]:
+    """An X-Device-Id header is only trusted when it names a device
+    actually registered (by any staff member) to SOME business — the
+    caller's own tenant match still has to hold once the rest of login
+    resolves their businessId, which the two call sites below check
+    themselves. A revoked device's id is rejected outright here, which is
+    the enforcement point for "this device can no longer sign in," distinct
+    from RequireAuthMiddleware's check that an *existing* token's device
+    hasn't been revoked since it was issued."""
+    if not request:
+        return None
+    device_id = request.headers.get("X-Device-Id")
+    if not device_id:
+        return None
+    from services.device_auth import is_device_revoked_or_missing
+    if await is_device_revoked_or_missing(device_id):
+        raise HTTPException(status_code=403, detail="This device has been revoked. Contact the business owner.")
+    return device_id
+
+def create_refresh_token(user_id: str, device_id: str = None) -> str:
+    # Carries deviceId too — /refresh mints a fresh access token from this,
+    # and without it here a revoked device would silently regain a valid
+    # access token on its very next refresh (up to 7 days of the revocation
+    # being meaningless, not just the 8-hour access-token window).
+    payload = {"sub": user_id, "deviceId": device_id,
+               "iat": datetime.now(timezone.utc).timestamp(),
                "exp": datetime.now(timezone.utc) + timedelta(days=7), "type": "refresh"}
     return jwt.encode(payload, _secret(), algorithm=JWT_ALGORITHM)
 
@@ -105,6 +136,10 @@ async def get_current_user(request: Request) -> dict:
         if not user:
             raise HTTPException(status_code=401, detail="User not found")
         _check_password_changed(user, payload)
+        if payload.get("deviceId"):
+            from services.device_auth import is_device_revoked_or_missing
+            if await is_device_revoked_or_missing(payload["deviceId"]):
+                raise HTTPException(status_code=401, detail="This device has been revoked")
         if user.get("status") != "active" or not user.get("businessId"):
             raise HTTPException(status_code=403, detail="Active business membership required")
         set_actor_context({**get_actor_context(), "businessId": user["businessId"],
@@ -242,7 +277,7 @@ async def login(req: LoginRequest, request: Request, response: Response):
                     "recoveryAvailable": await two_factor.recovery_codes_remaining(user["id"]) > 0,
                     "message": "Enter the 6-digit code from your authenticator app"}
 
-    return await _complete_login(user, response)
+    return await _complete_login(user, response, request)
 
 
 def create_challenge_token(user_id: str, purpose: str = "2fa", expires_minutes: int = 5) -> str:
@@ -278,9 +313,10 @@ def public_user(user: dict) -> dict:
     return {key: value for key, value in user.items() if key not in hidden}
 
 
-async def _complete_login(user: dict, response: Response) -> dict:
-    access = create_access_token(user["id"], user["email"], user["role"], user.get("businessId"))
-    refresh = create_refresh_token(user["id"])
+async def _complete_login(user: dict, response: Response, request: Optional[Request] = None) -> dict:
+    device_id = await _resolve_device_id(request)
+    access = create_access_token(user["id"], user["email"], user["role"], user.get("businessId"), device_id)
+    refresh = create_refresh_token(user["id"], device_id)
     _set_tokens(response, access, refresh)
     user = public_user(user)
     # Add effective permissions (custom > role DB override > code default)
@@ -332,7 +368,7 @@ async def two_factor_challenge(req: TwoFactorChallenge, request: Request, respon
         raise HTTPException(status_code=401, detail=detail)
 
     await db.login_attempts.delete_one({"identifier": identifier})
-    out = await _complete_login(user, response)
+    out = await _complete_login(user, response, request)
     out["verifiedBy"] = how
     if how == "recovery":
         out["recoveryCodesRemaining"] = await two_factor.recovery_codes_remaining(user_id)
@@ -519,7 +555,12 @@ async def refresh_token(request: Request, response: Response):
         _check_password_changed(user, payload)
         if user.get("status") != "active":
             raise HTTPException(status_code=401, detail="Account is not active")
-        access = create_access_token(user["id"], user["email"], user["role"], user.get("businessId"))
+        device_id = payload.get("deviceId")
+        if device_id:
+            from services.device_auth import is_device_revoked_or_missing
+            if await is_device_revoked_or_missing(device_id):
+                raise HTTPException(status_code=401, detail="This device has been revoked")
+        access = create_access_token(user["id"], user["email"], user["role"], user.get("businessId"), device_id)
         response.set_cookie("access_token", access, httponly=True, secure=_cookie_secure(), samesite="lax", max_age=28800, path="/")
         # The frontend authenticates every API call with a Bearer header read
         # from localStorage, not the httpOnly cookie above — this endpoint

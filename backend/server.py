@@ -12,6 +12,7 @@ from typing import Optional
 
 from database import client, db
 
+from routes.devices import router as devices_router
 from routes.products import router as products_router
 from routes.stock_transfers import router as stock_transfers_router
 from routes.appointments import router as appointments_router
@@ -87,6 +88,7 @@ api_router = APIRouter(prefix="/api")
 
 # Include all route modules
 api_router.include_router(auth_router)
+api_router.include_router(devices_router)
 api_router.include_router(cron_router)
 api_router.include_router(products_router)
 api_router.include_router(stock_transfers_router)
@@ -407,6 +409,10 @@ class RequireAuthMiddleware(BaseHTTPMiddleware):
             changed_at = datetime.fromisoformat(account["passwordChangedAt"]).timestamp()
             if payload.get("iat", 0) < changed_at:
                 return JSONResponse(status_code=401, content={"detail": "Password changed — please sign in again"})
+        if payload.get("deviceId"):
+            from services.device_auth import is_device_revoked_or_missing
+            if await is_device_revoked_or_missing(payload["deviceId"]):
+                return JSONResponse(status_code=401, content={"detail": "This device has been revoked"})
         return await call_next(request)
 
 
