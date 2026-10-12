@@ -96,8 +96,8 @@ async def _redeem_both_after_both_have_read(voucher_id, amount_a, amount_b):
     wallet_service.db = _GatedDB(real_db, voucher_id, reached=[], release=asyncio.Event())
     try:
         return await asyncio.gather(
-            wallet_service.redeem_wallet_voucher(voucher_id, "wallet-conc-txn-a", amount_a),
-            wallet_service.redeem_wallet_voucher(voucher_id, "wallet-conc-txn-b", amount_b),
+            wallet_service.redeem_wallet_voucher(voucher_id, "wallet-conc-txn-a", amount_a, business_id="default"),
+            wallet_service.redeem_wallet_voucher(voucher_id, "wallet-conc-txn-b", amount_b, business_id="default"),
         )
     finally:
         wallet_service.db = real_db

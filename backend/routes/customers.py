@@ -88,7 +88,7 @@ async def get_customer_wallet(customer_id: str, user: dict = Depends(get_user)):
     if not existing or not tenant_owns(existing.get("businessId"), user.get("businessId")):
         raise HTTPException(status_code=404, detail="Customer not found")
     from services.wallet_service import get_wallet
-    wallet = await get_wallet(customer_id)
+    wallet = await get_wallet(customer_id, business_id=user.get("businessId"))
     if wallet is None:
         raise HTTPException(status_code=404, detail="Customer not found")
     return wallet

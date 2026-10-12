@@ -78,6 +78,10 @@ async def get_product_variants(product_id: str, business: Optional[str] = None, 
     if tenant_filter:
         query = {"$and": [query, tenant_filter]}
     variants = await db.products.find(query).to_list(500)
+    if not user:
+        for variant in variants:
+            for field in GUEST_HIDDEN_PRODUCT_FIELDS:
+                variant.pop(field, None)
     return [Product(**v) for v in variants]
 
 @router.post("/products", response_model=Product)
@@ -134,6 +138,7 @@ async def adjust_stock(product_id: str, data: dict, user: dict = Depends(require
             raise HTTPException(status_code=400, detail="Stock cannot go below zero")
         await db.products.update_one({"$and": [{"id": product_id}, tenant_scope_filter(user.get("businessId"))]}, {"$set": {f"stockByLocation.{location}": new_location_stock}})
         await db.stock_adjustments.insert_one({
+            "businessId": user["businessId"],
             "productId": product_id, "productName": product.get("name", ""), "location": location,
             "previousStock": current, "adjustment": adjustment,
             "newStock": new_location_stock, "reason": reason,
@@ -146,6 +151,7 @@ async def adjust_stock(product_id: str, data: dict, user: dict = Depends(require
         raise HTTPException(status_code=400, detail="Stock cannot go below zero")
     await db.products.update_one({"$and": [{"id": product_id}, tenant_scope_filter(user.get("businessId"))]}, {"$set": {"stock": new_stock}})
     await db.stock_adjustments.insert_one({
+            "businessId": user["businessId"],
         "productId": product_id, "productName": product.get("name", ""),
         "previousStock": product.get("stock", 0), "adjustment": adjustment,
         "newStock": new_stock, "reason": reason,
@@ -278,7 +284,7 @@ async def bulk_auto_translate_products(only_missing: bool = True, user: dict = D
                 logger.warning(f"Bulk auto-translate failed for product {p['id']}: {e}")
                 counts["failed"] += 1
                 return
-        await db.products.update_one({"id": p["id"]}, {"$set": {"translations": cleaned}})
+        await db.products.update_one({"id": p["id"], **tenant_scope_filter(user.get("businessId"))}, {"$set": {"translations": cleaned}})
         counts["translated"] += 1
 
     await asyncio.gather(*(_one(p) for p in products))
@@ -368,7 +374,7 @@ async def bulk_edit_products(payload: BulkProductEdit, user: dict = Depends(requ
             if payload.removeModifierIds:
                 existing_mods = [m for m in existing_mods if m not in payload.removeModifierIds]
             patch["modifierIds"] = existing_mods
-        await db.products.update_one({"id": pid}, {"$set": patch})
+        await db.products.update_one({"id": pid, **tenant_filter}, {"$set": patch})
         updated += 1
     return {"updated": updated, "failed": failed, "mode": "per_row"}
 

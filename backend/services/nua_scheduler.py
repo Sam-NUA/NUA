@@ -92,8 +92,9 @@ async def run_tick_once() -> dict:
         businesses = await db.businesses.find({"status": {"$ne": "inactive"}}, {"id": 1}).to_list(10000)
     except Exception:
         logger.exception("[ash] cannot load businesses for scheduled work")
-        businesses = []
+        raise
     scanned = 0
+    failures = 0
     for business in businesses:
         if not business.get("id"):
             continue
@@ -104,6 +105,7 @@ async def run_tick_once() -> dict:
                 logger.info(f"[ash] hourly scan generated={result['generated']} categories={list(result['perCategory'].keys())}")
                 await _maybe_send_daily_digest()
             except Exception as e:
+                failures += 1
                 logger.warning(f"[ash] scheduler loop error: {e}")
             try:
                 from services import predictive_signals
@@ -111,6 +113,7 @@ async def run_tick_once() -> dict:
                 if pred["emitted"]:
                     logger.info(f"[ash] predictive scan emitted {pred['emitted']} stockout warning(s)")
             except Exception as e:
+                failures += 1
                 logger.warning(f"[ash] predictive scan error: {e}")
             try:
                 from services import ops_signals
@@ -118,11 +121,12 @@ async def run_tick_once() -> dict:
                 if ops["server"]["emitted"] or ops["client"]["emitted"]:
                     logger.info(f"[ash] ops scan: server_emitted={ops['server']['emitted']} client_emitted={ops['client']['emitted']}")
             except Exception as e:
+                failures += 1
                 logger.warning(f"[ash] ops scan error: {e}")
             scanned += 1
         finally:
             _actor_ctx.reset(token)
-    return {"businessesScanned": scanned}
+    return {"businessesScanned": scanned, "failures": failures}
 
 
 async def _loop() -> None:

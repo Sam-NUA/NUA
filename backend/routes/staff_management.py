@@ -61,10 +61,14 @@ async def _is_rostered_now(staff_id: str, now: Optional[datetime] = None,
                            business_id: Optional[str] = None) -> bool:
     """True if staff_id has a roster_shifts entry covering the current
     moment, with a grace window either side so an early arrival or a shift
-    running slightly over isn't treated as unrostered. Same UTC-wall-clock
-    convention the rest of this file (and analytics.py's labor-cost calc)
-    already uses for startTime/endTime — not truly timezone-aware, but
-    consistent with how shifts are compared everywhere else today.
+    running slightly over isn't treated as unrostered. startTime/endTime
+    are venue-local wall-clock values (the shift says "9:00am", meaning
+    9am at the venue, not 9am UTC) — compared against the venue's own
+    current local time via services/venue_time.py (business.timezone, an
+    IANA zone, falling back to UTC when unset), the same helper booking
+    rules/cancellation windows already use for this exact problem, rather
+    than the server's UTC clock directly. A fixed UTC offset would also be
+    wrong across an AEST/AEDT-style DST transition; ZoneInfo handles that.
 
     Handles overnight shifts (e.g. 20:00-01:00, ordinary for a bar): a shift
     where endTime <= startTime is treated as running past midnight, and a
@@ -72,10 +76,12 @@ async def _is_rostered_now(staff_id: str, now: Optional[datetime] = None,
     falls on today's clock but the shift itself is dated the day it started.
 
     `now` is only ever passed explicitly by tests; every real call uses the
-    actual current time."""
+    venue's actual current local time."""
     if not staff_id:
         return False
-    now = now or datetime.now(timezone.utc)
+    if now is None:
+        from services.venue_time import venue_now_for_business
+        now = await venue_now_for_business(business_id)
     today_iso = now.date().isoformat()
     yesterday_iso = (now.date() - timedelta(days=1)).isoformat()
     now_minutes = now.hour * 60 + now.minute
@@ -112,18 +118,66 @@ async def _has_roster_override_today(staff_id: str, business_id: Optional[str] =
 
 
 def _issue_staff_token(user: dict) -> str:
-    import jwt, os
-    return jwt.encode(
-        {"sub": user["id"], "email": user["email"], "role": user["role"], "businessId": user.get("businessId"),
-         "exp": datetime.now(timezone.utc) + timedelta(hours=8), "type": "access"},
-        os.environ["JWT_SECRET"], algorithm="HS256"
-    )
+    # Share issue-time/revocation semantics with password sign-in.
+    from routes.auth import create_access_token
+    return create_access_token(user["id"], user["email"], user["role"], user.get("businessId"))
+
+
+async def _require_pin_eligible(user: dict) -> None:
+    from services import two_factor
+    if not user.get("businessId"):
+        raise HTTPException(status_code=403, detail="Active business membership required")
+    if await two_factor.required_for(user):
+        raise HTTPException(status_code=403, detail="Two-factor authentication required. Use email sign-in and your authenticator.")
+
+
+async def _pin_login_result(user: dict) -> dict:
+    from routes.auth import public_user, effective_permissions
+    safe_user = public_user(user)
+    safe_user["permissions"] = await effective_permissions(user)
+    return {"user": safe_user, "token": _issue_staff_token(user)}
+
 
 
 async def _unique_pin_user(pin):
     # Legacy or concurrent duplicate assignments must never select an arbitrary account.
     matches = await db.auth_users.find({"pin": pin, "status": "active"}).limit(2).to_list(2)
     return matches[0] if len(matches) == 1 else None
+
+
+# A 2-4 digit PIN has at most 10,000 possible values and, unlike password/2FA
+# login (routes/auth.py's db.login_attempts account-keyed lockout), PIN login
+# had no brute-force throttling of its own beyond the generic per-IP rate
+# limit — enough headroom to sweep a meaningful slice of the PIN space.
+# Same lockout shape as auth.py's account-keyed guard, keyed on the PIN value
+# itself (there's no account to key on until a PIN actually matches one).
+_PIN_LOCKOUT_MAX_ATTEMPTS = 5
+_PIN_LOCKOUT_MINUTES = 15
+
+
+async def _check_pin_lockout(pin: str) -> None:
+    identifier = f"pin:{pin}"
+    attempts = await db.login_attempts.find_one({"identifier": identifier})
+    if attempts and attempts.get("count", 0) >= _PIN_LOCKOUT_MAX_ATTEMPTS:
+        locked_until = attempts.get("locked_until")
+        if locked_until and locked_until.tzinfo is None:
+            locked_until = locked_until.replace(tzinfo=timezone.utc)
+        if locked_until and datetime.now(timezone.utc) < locked_until:
+            raise HTTPException(status_code=429, detail="Too many attempts. Try again in 15 minutes.")
+        await db.login_attempts.delete_one({"identifier": identifier})
+
+
+async def _record_pin_failure(pin: str) -> None:
+    await db.login_attempts.update_one(
+        {"identifier": f"pin:{pin}"},
+        {"$inc": {"count": 1},
+         "$set": {"locked_until": datetime.now(timezone.utc) + timedelta(minutes=_PIN_LOCKOUT_MINUTES)}},
+        upsert=True,
+    )
+
+
+async def _clear_pin_lockout(pin: str) -> None:
+    await db.login_attempts.delete_one({"identifier": f"pin:{pin}"})
 
 
 @router.post("/auth/pin-login")
@@ -139,19 +193,20 @@ async def pin_login(data: dict):
     pin = str(data.get("pin", ""))
     if not pin or len(pin) < 2 or len(pin) > 4:
         raise HTTPException(status_code=400, detail="PIN must be 2-4 digits")
+    await _check_pin_lockout(pin)
     user = await _unique_pin_user(pin)
     if not user:
+        await _record_pin_failure(pin)
         raise HTTPException(status_code=401, detail="Invalid PIN")
-    user.pop("_id", None)
-    user.pop("password_hash", None)
+    await _clear_pin_lockout(pin)
+    await _require_pin_eligible(user)
 
     if user["role"] not in ("owner", "manager"):
         if (not await _is_rostered_now(user["id"], business_id=user.get("businessId"))
                 and not await _has_roster_override_today(user["id"], user.get("businessId"))):
             return {"needsApproval": True, "staffId": user["id"], "staffName": user["name"]}
 
-    token = _issue_staff_token(user)
-    return {"user": user, "token": token}
+    return await _pin_login_result(user)
 
 
 @router.post("/auth/pin-login/approve")
@@ -166,14 +221,24 @@ async def approve_pin_login(data: dict):
     if not staff_pin or not manager_pin:
         raise HTTPException(status_code=400, detail="Staff PIN and manager/owner PIN are both required")
 
+    await _check_pin_lockout(staff_pin)
     staff = await _unique_pin_user(staff_pin)
     if not staff:
+        await _record_pin_failure(staff_pin)
         raise HTTPException(status_code=401, detail="Invalid staff PIN")
+    await _clear_pin_lockout(staff_pin)
+
+    await _check_pin_lockout(manager_pin)
     manager = await _unique_pin_user(manager_pin)
     if not manager or manager.get("role") not in ("owner", "manager"):
+        await _record_pin_failure(manager_pin)
         raise HTTPException(status_code=401, detail="Invalid manager/owner PIN")
+    await _clear_pin_lockout(manager_pin)
     if manager.get("businessId") != staff.get("businessId"):
         raise HTTPException(status_code=403, detail="Manager must belong to the same business")
+
+    await _require_pin_eligible(staff)
+    await _require_pin_eligible(manager)
 
     today_iso = datetime.now(timezone.utc).date().isoformat()
     await db.roster_overrides.update_one(
@@ -196,10 +261,7 @@ async def approve_pin_login(data: dict):
     except Exception:
         pass
 
-    staff.pop("_id", None)
-    staff.pop("password_hash", None)
-    token = _issue_staff_token(staff)
-    return {"user": staff, "token": token}
+    return await _pin_login_result(staff)
 
 @router.post("/auth/staff/{staff_id}/set-pin")
 async def set_staff_pin(staff_id: str, data: dict, user: dict = Depends(require_owner)):

@@ -272,16 +272,17 @@ def read_challenge_token(token: str, purpose: str = "2fa") -> str:
     return payload["sub"]
 
 
+def public_user(user: dict) -> dict:
+    """Account profile only; authentication material never leaves these routes."""
+    hidden = {"_id", "password_hash", "pin", "twoFactorSecret", "twoFactorSecretPending", "recoveryCodes"}
+    return {key: value for key, value in user.items() if key not in hidden}
+
+
 async def _complete_login(user: dict, response: Response) -> dict:
     access = create_access_token(user["id"], user["email"], user["role"], user.get("businessId"))
     refresh = create_refresh_token(user["id"])
     _set_tokens(response, access, refresh)
-    user = dict(user)
-    user.pop("_id", None)
-    user.pop("password_hash", None)
-    user.pop("twoFactorSecret", None)
-    user.pop("twoFactorSecretPending", None)
-    user.pop("recoveryCodes", None)
+    user = public_user(user)
     # Add effective permissions (custom > role DB override > code default)
     user["permissions"] = await effective_permissions(user)
     return {"user": user, "token": access}
@@ -391,7 +392,7 @@ async def register(req: RegisterRequest, response: Response, request: Request):
 
 @router.get("/me")
 async def me(request: Request):
-    user = await get_current_user(request)
+    user = public_user(await get_current_user(request))
     user["permissions"] = await effective_permissions(user)
     return user
 

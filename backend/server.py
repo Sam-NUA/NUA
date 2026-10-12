@@ -462,11 +462,23 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
     # dict can't key on. First matching prefix wins, checked before the
     # generic public/table default.
     PREFIX_OVERRIDES = (
+        # Mongo-backed IP bucket across guesses and both PIN endpoints.
+        # Guessed PINs and untrusted tenant/proxy headers cannot reset it.
+        ("/api/auth/pin-login", 10, 60),
         # Booking/waitlist creation — a real, moderately-costly write on a
         # fully anonymous surface; same tier as the guest-lookup overrides
         # above.
         ("/api/public/book", 10, 60),
         ("/api/public/join-waitlist", 10, 60),
+        # The tracking code is the waitlist entry's own id — 8 uppercase hex
+        # chars (uuid4, truncated), ~32 bits of entropy — and this lookup is
+        # fully unauthenticated by design (a guest has no account). The
+        # generic 120/min default would let a single IP brute-force a
+        # meaningful slice of the code space; same enumeration-risk tier as
+        # the guest-lookup overrides above. Covers both the point lookup and
+        # the SSE stream (prefix catches .../track/{code} and
+        # .../track/stream/{code}).
+        ("/api/waitlist/track", 10, 60),
         # Twilio's own webhook-delivery IPs are a shared pool across every
         # customer's calls, not one IP per caller, and legitimate retry
         # behavior for a single call can itself fire several requests in

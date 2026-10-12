@@ -37,7 +37,7 @@ async def try_claim(job_name: str, ttl_seconds: int, owner_token: str | None = N
                 {"lockedUntil": {"$lt": now_iso}},
             ]},
             {"$set": {"lockedUntil": (now + timedelta(seconds=ttl_seconds)).isoformat(),
-                      "claimedAt": now_iso, "ownerToken": owner_token or uuid.uuid4().hex}},
+                      "claimedAt": now_iso, "status": "running", "ownerToken": owner_token or uuid.uuid4().hex}},
             upsert=True,
         )
         return True
@@ -57,3 +57,20 @@ async def release(job_name: str, owner_token: str) -> None:
 async def last_run(job_name: str) -> Optional[dict]:
     # Motor's stub for this dynamic collection loses the document return type.
     return await cast(Any, db.scheduler_locks).find_one({"_id": job_name}, {"_id": 0})
+
+
+async def finish(job_name: str, owner_token: str, *, error_type: str | None = None) -> bool:
+    """An old invocation cannot overwrite a newer claimant's outcome.
+
+    Keep separate attempt/success/failure timestamps. Store an error class,
+    never exception text (provider errors can contain secrets or guest data).
+    """
+    stamp = datetime.now(timezone.utc).isoformat()
+    fields: dict[str, Any] = {"completedAt": stamp, "status": "failed" if error_type else "succeeded"}
+    if error_type:
+        fields.update({"lastFailureAt": stamp, "lastErrorType": error_type})
+    else:
+        fields.update({"lastSuccessAt": stamp, "lastErrorType": None})
+    result = await db.scheduler_locks.update_one(
+        {"_id": job_name, "ownerToken": owner_token}, {"$set": fields})
+    return result.matched_count == 1

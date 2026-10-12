@@ -85,9 +85,15 @@ async def resolve_table(raw: Any, business_id: Optional[str] = None) -> Optional
     return None
 
 
-async def get_table_by_id(table_id: str) -> Optional[Tuple[Dict[str, Any], str]]:
-    """Return (table, planId) for a table by its own id, across all plans."""
-    for t in await list_tables():
+async def get_table_by_id(table_id: str, business_id: Optional[str] = None) -> Optional[Tuple[Dict[str, Any], str]]:
+    """Return (table, planId) for a table by its own id, across all plans.
+
+    `business_id` is optional only for existing in-request callers that rely
+    on the ambient actor context `list_tables`/`get_plans` already fall back
+    to; a caller validating a client-supplied table reference against a
+    known tenant (e.g. routes/reservations.py rejecting a foreign tableId)
+    should always pass it explicitly rather than trust that fallback."""
+    for t in await list_tables(business_id=business_id):
         if t.get("id") == table_id:
             return t, t.get("planId")
     return None
