@@ -1,9 +1,9 @@
-from fastapi import APIRouter, HTTPException, Depends, Request
+from fastapi import Request, APIRouter, HTTPException, Depends, Request
 from typing import Optional
 import logging
 from datetime import datetime, timezone
 from database import db
-from deps import get_user, require_permission
+from deps import get_user, require_permission, require_owner
 from middleware.actor_context import tenant_scope_filter
 from models.kitchen_order import KitchenOrder, KitchenOrderCreate
 
@@ -61,7 +61,7 @@ async def _clear_overnight_tickets(business_id: Optional[str] = None) -> int:
     stale_ids = [o["id"] for o in stale if (o.get("createdAt") or "")[:10] < today]
     if stale_ids:
         await db.kitchen_orders.update_many(
-            {"id": {"$in": stale_ids}},
+            {"id": {"$in": stale_ids}, **tenant_scope_filter(business_id)},
             {"$set": {"status": "cancelled", "cancelledAt": _now(),
                       "autoCleared": True, "notes": "Auto-cleared overnight — not served by close of previous day"}},
         )
@@ -213,12 +213,14 @@ async def create_kitchen_order(order: KitchenOrderCreate, request: Request, user
     if not order_dict.get("deviceId"):
         order_dict["deviceId"] = hdr_devid or (request.client.host if request.client else "?")
 
-    # Enrich from reservation if present
-    if order_dict.get("reservationId") and (not order_dict.get("covers") or not order_dict.get("guestName")):
-        res = await db.reservations.find_one({"id": order_dict["reservationId"]}, {"_id": 0})
-        if res:
-            order_dict["covers"] = order_dict.get("covers") or res.get("partySize") or res.get("guests")
-            order_dict["guestName"] = order_dict.get("guestName") or res.get("customerName") or res.get("guestName")
+    # Validate the relationship even when the caller supplies docket details.
+    if order_dict.get("reservationId"):
+        res = await db.reservations.find_one(
+            {"id": order_dict["reservationId"], **tenant_scope_filter(user.get("businessId"))}, {"_id": 0})
+        if not res:
+            raise HTTPException(status_code=404, detail="Reservation not found")
+        order_dict["covers"] = order_dict.get("covers") or res.get("partySize") or res.get("guests")
+        order_dict["guestName"] = res.get("customerName") or res.get("guestName")
 
     order_obj = KitchenOrder(**order_dict)
     await db.kitchen_orders.insert_one(order_obj.dict())
@@ -524,6 +526,20 @@ async def set_order_priority(order_id: str, priority: str = "rush", user: dict =
 
 
 # ─── Owner-configurable docket display ────────────────────────────────────
+# Historically a single `_id: "singleton"` document shared by every business
+# on the deployment — one venue's font-size/notes preferences silently applied
+# to every other venue's kitchen. Scoped per business using the same
+# get_scoped_singleton/set_scoped_singleton helpers `loyalty_config` and
+# `agent_autonomy` already use for this exact shape (services/tenant_settings.py):
+# a logical `match` key plus a real businessId field, never the bare `_id`.
+# The legacy `_id: "singleton"` document is left exactly as it was — never
+# read as a per-business default, never deleted, never auto-assigned to any
+# business — see `get_legacy_docket_config_report` below for the dry-run-first
+# way to look at it before a human decides what, if anything, to do with it.
+LEGACY_DOCKET_CONFIG_ID = "singleton"
+DOCKET_CONFIG_MATCH = {"id": "docket-config"}
+
+
 DEFAULT_DOCKET_CONFIG = {
     "showStaffName": True,
     "showDevice": True,
@@ -544,29 +560,55 @@ DEFAULT_DOCKET_CONFIG = {
 
 
 @router.get("/kitchen/docket-config")
-async def get_docket_config(_: dict = Depends(get_user)):
-    row = await db.kitchen_docket_config.find_one({"_id": "singleton"}, {"_id": 0})
+async def get_docket_config(user: dict = Depends(get_user)):
+    from services.tenant_settings import get_scoped_singleton, set_scoped_singleton
+    business_id = user.get("businessId")
+    if not isinstance(business_id, str) or not business_id.strip():
+        raise HTTPException(status_code=400, detail="Business context required")
+    row = await get_scoped_singleton(db.kitchen_docket_config, DOCKET_CONFIG_MATCH, business_id)
     if not row:
         row = dict(DEFAULT_DOCKET_CONFIG)
-        await db.kitchen_docket_config.insert_one({"_id": "singleton", **row})
+        await set_scoped_singleton(db.kitchen_docket_config, DOCKET_CONFIG_MATCH, row, business_id)
     return row
 
 
 @router.put("/kitchen/docket-config")
 async def update_docket_config(body: dict, user: dict = Depends(get_user)):
+    from services.tenant_settings import get_scoped_singleton, set_scoped_singleton
     if user.get("role") not in ("owner", "manager"):
         raise HTTPException(status_code=403, detail="Owner or manager only")
+    business_id = user.get("businessId")
+    if not isinstance(business_id, str) or not business_id.strip():
+        raise HTTPException(status_code=400, detail="Business context required")
     allowed = set(DEFAULT_DOCKET_CONFIG.keys())
     patch = {k: v for k, v in body.items() if k in allowed}
     patch["updatedAt"] = _now()
     patch["updatedBy"] = user.get("email")
-    await db.kitchen_docket_config.update_one(
-        {"_id": "singleton"},
-        {"$set": {"_id": "singleton", **patch}},
-        upsert=True,
-    )
-    row = await db.kitchen_docket_config.find_one({"_id": "singleton"}, {"_id": 0})
+    await set_scoped_singleton(db.kitchen_docket_config, DOCKET_CONFIG_MATCH, patch, business_id)
+    row = await get_scoped_singleton(db.kitchen_docket_config, DOCKET_CONFIG_MATCH, business_id)
     return row
+
+
+@router.get("/kitchen/docket-config/legacy-singleton-report")
+async def get_legacy_docket_config_report(request: Request, user: dict = Depends(require_owner)):
+    """Support-only inspection of unowned legacy data; never assigns it.
+
+    Ordinary venue roles cannot establish ownership of this shared row.
+    Apply the same owner + separately configured support secret gate as
+    ownership_migration's cross-tenant legacy inspection endpoints.
+    """
+    from routes.ownership_migration import _require_support_override
+    _require_support_override(request)
+    legacy = await db.kitchen_docket_config.find_one({"_id": LEGACY_DOCKET_CONFIG_ID}, {"_id": 0})
+    return {
+        "exists": legacy is not None,
+        "legacyConfig": legacy,
+        "note": (
+            "This is the pre-migration shared docket config, kept only for "
+            "manual review. It is never read as a default and was not "
+            "assigned to any business by this report."
+        ),
+    }
 
 
 # ============ PREP MANAGEMENT API ============

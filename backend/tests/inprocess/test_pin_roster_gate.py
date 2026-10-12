@@ -3,8 +3,21 @@ needsApproval instead of a token, and a manager/owner can authorize them
 on the spot with their own PIN (POST /auth/pin-login/approve). Owners and
 managers are exempt — they're the ones who approve everyone else."""
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 from conftest import req
+
+# The "default" business (routes/multi_tenant.py's seed_default_business)
+# carries timezone "Australia/Sydney" — _is_rostered_now compares a shift's
+# startTime/endTime (venue-local wall clock) against the venue's own current
+# local time (services/venue_time.py), not the server's UTC clock. Tests
+# that build a shift window "around now" need the same venue-local now the
+# route itself uses, or a Sydney-vs-UTC offset makes the window miss.
+_SYDNEY = ZoneInfo("Australia/Sydney")
+
+
+def _venue_now():
+    return datetime.now(_SYDNEY).replace(tzinfo=None)
 
 
 def _today_iso():
@@ -30,7 +43,7 @@ def test_unrostered_staff_gets_needs_approval_not_a_token(client, owner_headers)
 
 def test_rostered_staff_logs_in_normally(client, owner_headers):
     staff = _add_staff(client, owner_headers, "ZZZ Rostered Cashier", "7712")
-    now = datetime.now(timezone.utc)
+    now = _venue_now()  # the "default" business is Australia/Sydney
     # Clamped to today's calendar day: an uncapped now-1h/now+4h window can
     # cross midnight in either direction and land on the wrong side of the
     # "date" field below, which is a real scenario but a different one
@@ -41,7 +54,7 @@ def test_rostered_staff_logs_in_normally(client, owner_headers):
     start = max(now - timedelta(hours=1), midnight)
     end = min(now + timedelta(hours=4), end_of_day)
     req(client, "POST", "/api/staff/roster", headers=owner_headers, json={
-        "staffId": staff["id"], "staffName": staff["name"], "date": _today_iso(),
+        "staffId": staff["id"], "staffName": staff["name"], "date": now.date().isoformat(),
         "startTime": start.strftime("%H:%M"),
         "endTime": end.strftime("%H:%M"),
     })
@@ -146,6 +159,61 @@ def test_is_rostered_now_handles_overnight_shifts_deterministically():
 
         broad_daylight = datetime.combine(today, datetime.min.time(), tzinfo=timezone.utc).replace(hour=12, minute=0)
         assert await _is_rostered_now(staff_id, now=broad_daylight, business_id="biz-default") is False
+    asyncio.get_event_loop().run_until_complete(run())
+
+
+def test_is_rostered_now_compares_against_venue_local_time_not_utc():
+    """A shift's startTime/endTime is venue-local wall clock — a UTC-wall-
+    clock comparison would be wrong by the venue's UTC offset (and, across
+    a DST boundary, by the wrong amount even then). Sydney is UTC+10/+11,
+    so a shift window built from `datetime.now(timezone.utc)` directly
+    covers the current UTC moment but NOT the current Sydney moment — the
+    gap this test actually exercises — while a window built from the
+    venue's own local now does."""
+    import asyncio
+    from zoneinfo import ZoneInfo
+    from routes.staff_management import _is_rostered_now
+    from database import db
+
+    async def run():
+        business_id = "tz-regression-biz"
+        await db.businesses.update_one(
+            {"id": business_id}, {"$set": {"id": business_id, "timezone": "Australia/Sydney"}}, upsert=True)
+        staff_id = "tz-regression-staff"
+        await db.roster_shifts.delete_many({"staffId": staff_id})
+        sydney_now = datetime.now(ZoneInfo("Australia/Sydney")).replace(tzinfo=None)
+        utc_now = datetime.now(timezone.utc).replace(tzinfo=None)
+        try:
+            # A 20-minute window around the current Sydney moment — covers
+            # "now" only if the comparison is actually venue-local.
+            await db.roster_shifts.insert_one({
+                "id": "SHIFT-TZ-TEST", "staffId": staff_id, "staffName": "TZ Tester",
+                "date": sydney_now.date().isoformat(),
+                "startTime": (sydney_now - timedelta(minutes=10)).strftime("%H:%M"),
+                "endTime": (sydney_now + timedelta(minutes=10)).strftime("%H:%M"),
+                "businessId": business_id,
+            })
+            assert await _is_rostered_now(staff_id, business_id=business_id) is True
+
+            if abs((sydney_now.replace(tzinfo=None) - utc_now).total_seconds()) < 90:
+                return  # Sydney happens to equal UTC right now (impossible in practice, but don't flake)
+            # The same staff member, same lookup, but the shift window is
+            # instead built around the current UTC moment — if the roster
+            # check were still comparing against UTC wall clock (the bug),
+            # this would ALSO be True; comparing against venue-local time
+            # (the fix) correctly says they're not on shift right now.
+            await db.roster_shifts.update_one(
+                {"id": "SHIFT-TZ-TEST"},
+                {"$set": {
+                    "date": utc_now.date().isoformat(),
+                    "startTime": (utc_now - timedelta(minutes=10)).strftime("%H:%M"),
+                    "endTime": (utc_now + timedelta(minutes=10)).strftime("%H:%M"),
+                }},
+            )
+            assert await _is_rostered_now(staff_id, business_id=business_id) is False
+        finally:
+            await db.roster_shifts.delete_many({"staffId": staff_id})
+            await db.businesses.delete_one({"id": business_id})
 
     asyncio.get_event_loop().run_until_complete(run())
 

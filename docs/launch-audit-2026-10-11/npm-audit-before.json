@@ -1,0 +1,4269 @@
+{
+  "auditReportVersion": 2,
+  "vulnerabilities": {
+    "@capacitor/cli": {
+      "name": "@capacitor/cli",
+      "severity": "high",
+      "isDirect": true,
+      "via": [
+        "tar"
+      ],
+      "effects": [],
+      "range": "0.0.10 - 1.1.1 || 3.0.0-alpha.0 - 7.4.5 || 8.0.0-alpha.1 - 8.0.2-nightly-20260127T151145.0",
+      "nodes": [
+        "node_modules/@capacitor/cli"
+      ],
+      "fixAvailable": {
+        "name": "@capacitor/cli",
+        "version": "8.5.3",
+        "isSemVerMajor": true
+      }
+    },
+    "@csstools/postcss-cascade-layers": {
+      "name": "@csstools/postcss-cascade-layers",
+      "severity": "moderate",
+      "isDirect": false,
+      "via": [
+        "postcss-selector-parser"
+      ],
+      "effects": [
+        "postcss-preset-env"
+      ],
+      "range": "<=5.0.0",
+      "nodes": [
+        "node_modules/@csstools/postcss-cascade-layers"
+      ],
+      "fixAvailable": true
+    },
+    "@csstools/postcss-is-pseudo-class": {
+      "name": "@csstools/postcss-is-pseudo-class",
+      "severity": "moderate",
+      "isDirect": false,
+      "via": [
+        "postcss-selector-parser"
+      ],
+      "effects": [
+        "postcss-preset-env"
+      ],
+      "range": "<=5.0.0",
+      "nodes": [
+        "node_modules/@csstools/postcss-is-pseudo-class"
+      ],
+      "fixAvailable": true
+    },
+    "@electron/get": {
+      "name": "@electron/get",
+      "severity": "moderate",
+      "isDirect": false,
+      "via": [
+        "global-agent"
+      ],
+      "effects": [
+        "electron"
+      ],
+      "range": "1.6.0 - 4.0.3",
+      "nodes": [
+        "node_modules/@electron/get"
+      ],
+      "fixAvailable": {
+        "name": "electron",
+        "version": "44.7.0",
+        "isSemVerMajor": true
+      }
+    },
+    "@electron/rebuild": {
+      "name": "@electron/rebuild",
+      "severity": "high",
+      "isDirect": false,
+      "via": [
+        "node-gyp",
+        "tar"
+      ],
+      "effects": [
+        "app-builder-lib"
+      ],
+      "range": "3.2.10 - 4.0.2",
+      "nodes": [
+        "node_modules/@electron/rebuild"
+      ],
+      "fixAvailable": {
+        "name": "electron-builder",
+        "version": "26.15.3",
+        "isSemVerMajor": true
+      }
+    },
+    "@eslint/plugin-kit": {
+      "name": "@eslint/plugin-kit",
+      "severity": "low",
+      "isDirect": false,
+      "via": [
+        {
+          "source": 1106734,
+          "name": "@eslint/plugin-kit",
+          "dependency": "@eslint/plugin-kit",
+          "title": "@eslint/plugin-kit is vulnerable to Regular Expression Denial of Service attacks through ConfigCommentParser",
+          "url": "https://github.com/advisories/GHSA-xffm-g5w8-qvg7",
+          "severity": "low",
+          "cwe": [
+            "CWE-1333"
+          ],
+          "cvss": {
+            "score": 0,
+            "vectorString": null
+          },
+          "range": "<0.3.4"
+        }
+      ],
+      "effects": [
+        "eslint"
+      ],
+      "range": "<0.3.4",
+      "nodes": [
+        "node_modules/@eslint/plugin-kit"
+      ],
+      "fixAvailable": {
+        "name": "eslint",
+        "version": "9.39.5",
+        "isSemVerMajor": false
+      }
+    },
+    "@istanbuljs/load-nyc-config": {
+      "name": "@istanbuljs/load-nyc-config",
+      "severity": "moderate",
+      "isDirect": false,
+      "via": [
+        "js-yaml"
+      ],
+      "effects": [
+        "babel-plugin-istanbul"
+      ],
+      "range": "*",
+      "nodes": [
+        "node_modules/@istanbuljs/load-nyc-config"
+      ],
+      "fixAvailable": {
+        "name": "react-scripts",
+        "version": "0.0.0",
+        "isSemVerMajor": true
+      }
+    },
+    "@jest/console": {
+      "name": "@jest/console",
+      "severity": "high",
+      "isDirect": false,
+      "via": [
+        "jest-message-util"
+      ],
+      "effects": [
+        "@jest/core",
+        "@jest/reporters",
+        "@jest/test-result",
+        "jest-runner"
+      ],
+      "range": "25.4.0 - 30.2.0",
+      "nodes": [
+        "node_modules/@jest/console",
+        "node_modules/jest-watcher/node_modules/@jest/console"
+      ],
+      "fixAvailable": true
+    },
+    "@jest/core": {
+      "name": "@jest/core",
+      "severity": "high",
+      "isDirect": false,
+      "via": [
+        "@jest/console",
+        "@jest/reporters",
+        "@jest/test-result",
+        "@jest/transform",
+        "jest-config",
+        "jest-haste-map",
+        "jest-message-util",
+        "jest-resolve",
+        "jest-resolve-dependencies",
+        "jest-runner",
+        "jest-runtime",
+        "jest-snapshot",
+        "jest-watcher",
+        "micromatch"
+      ],
+      "effects": [
+        "jest",
+        "jest-cli"
+      ],
+      "range": "<=30.2.0",
+      "nodes": [
+        "node_modules/@jest/core"
+      ],
+      "fixAvailable": true
+    },
+    "@jest/environment": {
+      "name": "@jest/environment",
+      "severity": "high",
+      "isDirect": false,
+      "via": [
+        "@jest/fake-timers"
+      ],
+      "effects": [
+        "@jest/globals",
+        "jest-circus",
+        "jest-environment-jsdom",
+        "jest-runner"
+      ],
+      "range": "<=30.2.0",
+      "nodes": [
+        "node_modules/@jest/environment"
+      ],
+      "fixAvailable": true
+    },
+    "@jest/fake-timers": {
+      "name": "@jest/fake-timers",
+      "severity": "high",
+      "isDirect": false,
+      "via": [
+        "jest-message-util"
+      ],
+      "effects": [
+        "@jest/environment",
+        "jest-environment-jsdom",
+        "jest-environment-node",
+        "jest-runtime"
+      ],
+      "range": "<=30.2.0",
+      "nodes": [
+        "node_modules/@jest/fake-timers"
+      ],
+      "fixAvailable": true
+    },
+    "@jest/globals": {
+      "name": "@jest/globals",
+      "severity": "high",
+      "isDirect": false,
+      "via": [
+        "@jest/environment",
+        "expect"
+      ],
+      "effects": [
+        "jest-runtime"
+      ],
+      "range": "<=30.2.0",
+      "nodes": [
+        "node_modules/@jest/globals"
+      ],
+      "fixAvailable": true
+    },
+    "@jest/reporters": {
+      "name": "@jest/reporters",
+      "severity": "high",
+      "isDirect": false,
+      "via": [
+        "@jest/console",
+        "@jest/test-result",
+        "@jest/transform",
+        "jest-haste-map",
+        "jest-resolve"
+      ],
+      "effects": [
+        "@jest/core"
+      ],
+      "range": "<=30.2.0",
+      "nodes": [
+        "node_modules/@jest/reporters"
+      ],
+      "fixAvailable": true
+    },
+    "@jest/test-result": {
+      "name": "@jest/test-result",
+      "severity": "high",
+      "isDirect": false,
+      "via": [
+        "@jest/console"
+      ],
+      "effects": [
+        "@jest/test-sequencer",
+        "jest-circus",
+        "jest-cli",
+        "jest-jasmine2",
+        "jest-runtime",
+        "jest-watcher"
+      ],
+      "range": "25.4.0 - 30.2.0",
+      "nodes": [
+        "node_modules/@jest/test-result",
+        "node_modules/jest-watcher/node_modules/@jest/test-result"
+      ],
+      "fixAvailable": true
+    },
+    "@jest/test-sequencer": {
+      "name": "@jest/test-sequencer",
+      "severity": "high",
+      "isDirect": false,
+      "via": [
+        "@jest/test-result",
+        "jest-haste-map",
+        "jest-runtime"
+      ],
+      "effects": [
+        "jest-config"
+      ],
+      "range": "<=30.2.0",
+      "nodes": [
+        "node_modules/@jest/test-sequencer"
+      ],
+      "fixAvailable": true
+    },
+    "@jest/transform": {
+      "name": "@jest/transform",
+      "severity": "high",
+      "isDirect": false,
+      "via": [
+        "babel-plugin-istanbul",
+        "jest-haste-map",
+        "micromatch"
+      ],
+      "effects": [
+        "@jest/reporters",
+        "babel-jest",
+        "jest-runner",
+        "jest-runtime",
+        "jest-snapshot"
+      ],
+      "range": "*",
+      "nodes": [
+        "node_modules/@jest/transform"
+      ],
+      "fixAvailable": {
+        "name": "react-scripts",
+        "version": "0.0.0",
+        "isSemVerMajor": true
+      }
+    },
+    "@svgr/plugin-svgo": {
+      "name": "@svgr/plugin-svgo",
+      "severity": "high",
+      "isDirect": false,
+      "via": [
+        "svgo"
+      ],
+      "effects": [
+        "@svgr/webpack"
+      ],
+      "range": "<=5.5.0",
+      "nodes": [
+        "node_modules/@svgr/plugin-svgo"
+      ],
+      "fixAvailable": {
+        "name": "react-scripts",
+        "version": "0.0.0",
+        "isSemVerMajor": true
+      }
+    },
+    "@svgr/webpack": {
+      "name": "@svgr/webpack",
+      "severity": "high",
+      "isDirect": false,
+      "via": [
+        "@svgr/plugin-svgo"
+      ],
+      "effects": [
+        "react-scripts"
+      ],
+      "range": "4.0.0 - 5.5.0",
+      "nodes": [
+        "node_modules/@svgr/webpack"
+      ],
+      "fixAvailable": {
+        "name": "react-scripts",
+        "version": "0.0.0",
+        "isSemVerMajor": true
+      }
+    },
+    "@tootallnate/once": {
+      "name": "@tootallnate/once",
+      "severity": "low",
+      "isDirect": false,
+      "via": [
+        {
+          "source": 1119438,
+          "name": "@tootallnate/once",
+          "dependency": "@tootallnate/once",
+          "title": "@tootallnate/once vulnerable to Incorrect Control Flow Scoping",
+          "url": "https://github.com/advisories/GHSA-vpq2-c234-7xj6",
+          "severity": "low",
+          "cwe": [
+            "CWE-705"
+          ],
+          "cvss": {
+            "score": 3.3,
+            "vectorString": "CVSS:3.1/AV:L/AC:L/PR:L/UI:N/S:U/C:N/I:N/A:L"
+          },
+          "range": "<2.0.1"
+        }
+      ],
+      "effects": [
+        "http-proxy-agent"
+      ],
+      "range": "<2.0.1",
+      "nodes": [
+        "node_modules/jsdom/node_modules/@tootallnate/once"
+      ],
+      "fixAvailable": true
+    },
+    "@typescript-eslint/eslint-plugin": {
+      "name": "@typescript-eslint/eslint-plugin",
+      "severity": "high",
+      "isDirect": false,
+      "via": [
+        "@typescript-eslint/type-utils",
+        "@typescript-eslint/utils"
+      ],
+      "effects": [],
+      "range": "5.9.2-alpha.0 - 8.2.1-alpha.25",
+      "nodes": [
+        "node_modules/react-scripts/node_modules/@typescript-eslint/eslint-plugin"
+      ],
+      "fixAvailable": true
+    },
+    "@typescript-eslint/experimental-utils": {
+      "name": "@typescript-eslint/experimental-utils",
+      "severity": "high",
+      "isDirect": false,
+      "via": [
+        "@typescript-eslint/utils"
+      ],
+      "effects": [],
+      "range": ">=5.9.2-alpha.0",
+      "nodes": [
+        "node_modules/react-scripts/node_modules/@typescript-eslint/experimental-utils"
+      ],
+      "fixAvailable": true
+    },
+    "@typescript-eslint/parser": {
+      "name": "@typescript-eslint/parser",
+      "severity": "high",
+      "isDirect": false,
+      "via": [
+        "@typescript-eslint/typescript-estree"
+      ],
+      "effects": [
+        "eslint-config-react-app"
+      ],
+      "range": "3.10.2-alpha.0 - 8.2.1-alpha.25",
+      "nodes": [
+        "node_modules/react-scripts/node_modules/@typescript-eslint/parser"
+      ],
+      "fixAvailable": true
+    },
+    "@typescript-eslint/type-utils": {
+      "name": "@typescript-eslint/type-utils",
+      "severity": "high",
+      "isDirect": false,
+      "via": [
+        "@typescript-eslint/typescript-estree",
+        "@typescript-eslint/utils"
+      ],
+      "effects": [
+        "@typescript-eslint/eslint-plugin"
+      ],
+      "range": "5.9.2-alpha.0 - 8.2.1-alpha.25",
+      "nodes": [
+        "node_modules/react-scripts/node_modules/@typescript-eslint/type-utils"
+      ],
+      "fixAvailable": true
+    },
+    "@typescript-eslint/typescript-estree": {
+      "name": "@typescript-eslint/typescript-estree",
+      "severity": "high",
+      "isDirect": false,
+      "via": [
+        "globby"
+      ],
+      "effects": [
+        "@typescript-eslint/parser",
+        "@typescript-eslint/type-utils",
+        "@typescript-eslint/utils"
+      ],
+      "range": "3.10.2-alpha.0 - 8.2.1-alpha.25",
+      "nodes": [
+        "node_modules/@typescript-eslint/typescript-estree"
+      ],
+      "fixAvailable": true
+    },
+    "@typescript-eslint/utils": {
+      "name": "@typescript-eslint/utils",
+      "severity": "high",
+      "isDirect": false,
+      "via": [
+        "@typescript-eslint/typescript-estree"
+      ],
+      "effects": [
+        "@typescript-eslint/eslint-plugin",
+        "@typescript-eslint/experimental-utils",
+        "@typescript-eslint/type-utils",
+        "eslint-plugin-testing-library"
+      ],
+      "range": "<=8.2.1-alpha.25",
+      "nodes": [
+        "node_modules/react-scripts/node_modules/@typescript-eslint/utils"
+      ],
+      "fixAvailable": true
+    },
+    "app-builder-lib": {
+      "name": "app-builder-lib",
+      "severity": "high",
+      "isDirect": false,
+      "via": [
+        "@electron/rebuild",
+        {
+          "source": 1124279,
+          "name": "app-builder-lib",
+          "dependency": "app-builder-lib",
+          "title": "electron-updater: Uncontrolled search path elements within `AppImage` built by `app-builder-lib`",
+          "url": "https://github.com/advisories/GHSA-7g7r-gx96-252g",
+          "severity": "high",
+          "cwe": [
+            "CWE-427"
+          ],
+          "cvss": {
+            "score": 7.8,
+            "vectorString": "CVSS:3.1/AV:L/AC:L/PR:L/UI:N/S:U/C:H/I:H/A:H"
+          },
+          "range": "<26.15.0"
+        },
+        "builder-util",
+        "builder-util-runtime",
+        "electron-publish",
+        "tar"
+      ],
+      "effects": [
+        "dmg-builder",
+        "electron-builder"
+      ],
+      "range": "<=26.14.0",
+      "nodes": [
+        "node_modules/app-builder-lib"
+      ],
+      "fixAvailable": {
+        "name": "electron-builder",
+        "version": "26.15.3",
+        "isSemVerMajor": true
+      }
+    },
+    "argparse": {
+      "name": "argparse",
+      "severity": "moderate",
+      "isDirect": false,
+      "via": [
+        "sprintf-js"
+      ],
+      "effects": [
+        "js-yaml"
+      ],
+      "range": "1.0.0 - 1.0.10",
+      "nodes": [
+        "node_modules/@istanbuljs/load-nyc-config/node_modules/argparse",
+        "node_modules/svgo/node_modules/argparse"
+      ],
+      "fixAvailable": {
+        "name": "react-scripts",
+        "version": "0.0.0",
+        "isSemVerMajor": true
+      }
+    },
+    "axios": {
+      "name": "axios",
+      "severity": "high",
+      "isDirect": true,
+      "via": [
+        {
+          "source": 1240600,
+          "name": "axios",
+          "dependency": "axios",
+          "title": "Axios: Prototype pollution gadget in fetch adapter can alter outbound requests",
+          "url": "https://github.com/advisories/GHSA-vh66-26gq-q6x8",
+          "severity": "moderate",
+          "cwe": [
+            "CWE-1321"
+          ],
+          "cvss": {
+            "score": 0,
+            "vectorString": null
+          },
+          "range": ">=1.7.0 <1.20.0"
+        },
+        {
+          "source": 1240601,
+          "name": "axios",
+          "dependency": "axios",
+          "title": "Axios: Prototype-Pollution Gadget in the Default Instance Allows Inherited Object.prototype.method to Override HTTP Method",
+          "url": "https://github.com/advisories/GHSA-9fr6-4gfg-395g",
+          "severity": "moderate",
+          "cwe": [
+            "CWE-1321"
+          ],
+          "cvss": {
+            "score": 0,
+            "vectorString": null
+          },
+          "range": ">=1.0.0 <1.20.0"
+        },
+        {
+          "source": 1240603,
+          "name": "axios",
+          "dependency": "axios",
+          "title": "Axios: ReDoS in fromDataURI data: URL parser freezes the Node event loop (DoS)",
+          "url": "https://github.com/advisories/GHSA-c29m-xwm3-cm6r",
+          "severity": "high",
+          "cwe": [
+            "CWE-1333"
+          ],
+          "cvss": {
+            "score": 0,
+            "vectorString": null
+          },
+          "range": ">=1.16.1 <1.20.0"
+        },
+        {
+          "source": 1240604,
+          "name": "axios",
+          "dependency": "axios",
+          "title": "Axios: ReDoS (O(N\u00b2)) in shouldBypassProxy host normalization, reachable via untrusted redirect Location",
+          "url": "https://github.com/advisories/GHSA-mghh-pgcx-3jjj",
+          "severity": "high",
+          "cwe": [
+            "CWE-400",
+            "CWE-1333"
+          ],
+          "cvss": {
+            "score": 0,
+            "vectorString": null
+          },
+          "range": ">=1.15.0 <1.20.0"
+        },
+        {
+          "source": 1240605,
+          "name": "axios",
+          "dependency": "axios",
+          "title": "Axios: Prototype Pollution Gadget in axios toFormData Options",
+          "url": "https://github.com/advisories/GHSA-x97p-jq2g-jp4f",
+          "severity": "high",
+          "cwe": [
+            "CWE-1321"
+          ],
+          "cvss": {
+            "score": 0,
+            "vectorString": null
+          },
+          "range": ">=1.15.1 <1.20.0"
+        },
+        {
+          "source": 1240607,
+          "name": "axios",
+          "dependency": "axios",
+          "title": "Axios: HTTP/2 adapter bypasses configured DNS lookup and proxy controls",
+          "url": "https://github.com/advisories/GHSA-3pq3-5fj3-cg6v",
+          "severity": "high",
+          "cwe": [
+            "CWE-918"
+          ],
+          "cvss": {
+            "score": 0,
+            "vectorString": null
+          },
+          "range": ">=1.13.0 <1.20.0"
+        },
+        {
+          "source": 1240608,
+          "name": "axios",
+          "dependency": "axios",
+          "title": "Axios: Denial of Service via Unhandled 'error' Event in HTTP/2 ClientHttp2Session Initialization",
+          "url": "https://github.com/advisories/GHSA-542g-h47m-68v8",
+          "severity": "high",
+          "cwe": [
+            "CWE-400"
+          ],
+          "cvss": {
+            "score": 0,
+            "vectorString": null
+          },
+          "range": ">=1.13.0 <1.20.0"
+        },
+        {
+          "source": 1240626,
+          "name": "axios",
+          "dependency": "axios",
+          "title": "Axios: Header Injection via Inherited headers After Minimal Interceptor",
+          "url": "https://github.com/advisories/GHSA-j8rh-479h-cp32",
+          "severity": "moderate",
+          "cwe": [
+            "CWE-74",
+            "CWE-1321"
+          ],
+          "cvss": {
+            "score": 0,
+            "vectorString": null
+          },
+          "range": ">=1.0.0 <1.20.0"
+        },
+        {
+          "source": 1240627,
+          "name": "axios",
+          "dependency": "axios",
+          "title": "Axios: Fetch Adapter Header Injection via Inherited FormData getHeaders",
+          "url": "https://github.com/advisories/GHSA-4hqw-qxg8-jxx2",
+          "severity": "moderate",
+          "cwe": [
+            "CWE-74",
+            "CWE-693",
+            "CWE-1321"
+          ],
+          "cvss": {
+            "score": 0,
+            "vectorString": null
+          },
+          "range": ">=1.12.0 <1.20.0"
+        },
+        {
+          "source": 1240628,
+          "name": "axios",
+          "dependency": "axios",
+          "title": "Axios: Node HTTP adapter prototype-pollution gadget allows request socket hijack via inherited createConnection",
+          "url": "https://github.com/advisories/GHSA-m8m8-qj5v-23w3",
+          "severity": "high",
+          "cwe": [
+            "CWE-441",
+            "CWE-1321"
+          ],
+          "cvss": {
+            "score": 0,
+            "vectorString": null
+          },
+          "range": ">=1.15.2 <1.20.0"
+        },
+        {
+          "source": 1240629,
+          "name": "axios",
+          "dependency": "axios",
+          "title": "Axios: CIDR-form NO_PROXY entries are ignored, causing proxy exclusion bypass for internal IP ranges",
+          "url": "https://github.com/advisories/GHSA-44g4-m2mj-wpvx",
+          "severity": "moderate",
+          "cwe": [
+            "CWE-693"
+          ],
+          "cvss": {
+            "score": 0,
+            "vectorString": null
+          },
+          "range": ">=1.15.0 <1.20.0"
+        },
+        {
+          "source": 1240634,
+          "name": "axios",
+          "dependency": "axios",
+          "title": "Axios: maxRedirects: 0 is not enforced by the fetch adapter, allowing redirect-based SSRF",
+          "url": "https://github.com/advisories/GHSA-r4gj-5m52-g5wh",
+          "severity": "high",
+          "cwe": [
+            "CWE-441",
+            "CWE-601"
+          ],
+          "cvss": {
+            "score": 0,
+            "vectorString": null
+          },
+          "range": ">=1.17.0 <1.20.0"
+        }
+      ],
+      "effects": [],
+      "range": "1.0.0 - 1.19.0",
+      "nodes": [
+        "node_modules/axios"
+      ],
+      "fixAvailable": true
+    },
+    "babel-jest": {
+      "name": "babel-jest",
+      "severity": "high",
+      "isDirect": false,
+      "via": [
+        "@jest/transform",
+        "babel-plugin-istanbul"
+      ],
+      "effects": [
+        "jest-config",
+        "react-scripts"
+      ],
+      "range": ">=24.2.0-alpha.0",
+      "nodes": [
+        "node_modules/babel-jest"
+      ],
+      "fixAvailable": {
+        "name": "react-scripts",
+        "version": "0.0.0",
+        "isSemVerMajor": true
+      }
+    },
+    "babel-plugin-istanbul": {
+      "name": "babel-plugin-istanbul",
+      "severity": "moderate",
+      "isDirect": false,
+      "via": [
+        "@istanbuljs/load-nyc-config"
+      ],
+      "effects": [
+        "@jest/transform",
+        "babel-jest"
+      ],
+      "range": ">=6.0.0-beta.0",
+      "nodes": [
+        "node_modules/babel-plugin-istanbul"
+      ],
+      "fixAvailable": {
+        "name": "react-scripts",
+        "version": "0.0.0",
+        "isSemVerMajor": true
+      }
+    },
+    "bfj": {
+      "name": "bfj",
+      "severity": "high",
+      "isDirect": false,
+      "via": [
+        "jsonpath"
+      ],
+      "effects": [],
+      "range": "7.1.0 - 9.1.2",
+      "nodes": [
+        "node_modules/bfj"
+      ],
+      "fixAvailable": true
+    },
+    "brace-expansion": {
+      "name": "brace-expansion",
+      "severity": "high",
+      "isDirect": false,
+      "via": [
+        {
+          "source": 1240100,
+          "name": "brace-expansion",
+          "dependency": "brace-expansion",
+          "title": "brace-expansion: Quadratic-time expansion of the `{a},b}` rewrite causes CPU denial of service",
+          "url": "https://github.com/advisories/GHSA-q2hr-2g5m-vwhr",
+          "severity": "moderate",
+          "cwe": [
+            "CWE-400",
+            "CWE-407"
+          ],
+          "cvss": {
+            "score": 5.3,
+            "vectorString": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:L"
+          },
+          "range": "<1.1.21"
+        },
+        {
+          "source": 1240101,
+          "name": "brace-expansion",
+          "dependency": "brace-expansion",
+          "title": "brace-expansion: Quadratic-time expansion of the `{a},b}` rewrite causes CPU denial of service",
+          "url": "https://github.com/advisories/GHSA-q2hr-2g5m-vwhr",
+          "severity": "moderate",
+          "cwe": [
+            "CWE-400",
+            "CWE-407"
+          ],
+          "cvss": {
+            "score": 5.3,
+            "vectorString": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:L"
+          },
+          "range": ">=2.0.0 <2.1.7"
+        },
+        {
+          "source": 1240103,
+          "name": "brace-expansion",
+          "dependency": "brace-expansion",
+          "title": "brace-expansion: Quadratic-time expansion of the `{a},b}` rewrite causes CPU denial of service",
+          "url": "https://github.com/advisories/GHSA-q2hr-2g5m-vwhr",
+          "severity": "moderate",
+          "cwe": [
+            "CWE-400",
+            "CWE-407"
+          ],
+          "cvss": {
+            "score": 5.3,
+            "vectorString": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:L"
+          },
+          "range": ">=4.0.0 <5.0.12"
+        },
+        {
+          "source": 1240104,
+          "name": "brace-expansion",
+          "dependency": "brace-expansion",
+          "title": "brace-expansion: DoS via uncontrolled recursion on nested brace groups causing stack exhaustion",
+          "url": "https://github.com/advisories/GHSA-qhr7-859c-m2p7",
+          "severity": "high",
+          "cwe": [
+            "CWE-400",
+            "CWE-674"
+          ],
+          "cvss": {
+            "score": 7.5,
+            "vectorString": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:H"
+          },
+          "range": "<1.1.20"
+        },
+        {
+          "source": 1240105,
+          "name": "brace-expansion",
+          "dependency": "brace-expansion",
+          "title": "brace-expansion: DoS via uncontrolled recursion on nested brace groups causing stack exhaustion",
+          "url": "https://github.com/advisories/GHSA-qhr7-859c-m2p7",
+          "severity": "high",
+          "cwe": [
+            "CWE-400",
+            "CWE-674"
+          ],
+          "cvss": {
+            "score": 7.5,
+            "vectorString": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:H"
+          },
+          "range": ">=2.0.0 <2.1.6"
+        },
+        {
+          "source": 1240107,
+          "name": "brace-expansion",
+          "dependency": "brace-expansion",
+          "title": "brace-expansion: DoS via uncontrolled recursion on nested brace groups causing stack exhaustion",
+          "url": "https://github.com/advisories/GHSA-qhr7-859c-m2p7",
+          "severity": "high",
+          "cwe": [
+            "CWE-400",
+            "CWE-674"
+          ],
+          "cvss": {
+            "score": 7.5,
+            "vectorString": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:H"
+          },
+          "range": ">=4.0.0 <5.0.11"
+        },
+        {
+          "source": 1240108,
+          "name": "brace-expansion",
+          "dependency": "brace-expansion",
+          "title": "brace-expansion: DoS via uncontrolled recursion in parseCommaParts causing stack exhaustion",
+          "url": "https://github.com/advisories/GHSA-6j4f-fj2g-mc7p",
+          "severity": "high",
+          "cwe": [
+            "CWE-400",
+            "CWE-674"
+          ],
+          "cvss": {
+            "score": 7.5,
+            "vectorString": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:H"
+          },
+          "range": "<1.1.19"
+        },
+        {
+          "source": 1240109,
+          "name": "brace-expansion",
+          "dependency": "brace-expansion",
+          "title": "brace-expansion: DoS via uncontrolled recursion in parseCommaParts causing stack exhaustion",
+          "url": "https://github.com/advisories/GHSA-6j4f-fj2g-mc7p",
+          "severity": "high",
+          "cwe": [
+            "CWE-400",
+            "CWE-674"
+          ],
+          "cvss": {
+            "score": 7.5,
+            "vectorString": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:H"
+          },
+          "range": ">=2.0.0 <2.1.5"
+        },
+        {
+          "source": 1240111,
+          "name": "brace-expansion",
+          "dependency": "brace-expansion",
+          "title": "brace-expansion: DoS via uncontrolled recursion in parseCommaParts causing stack exhaustion",
+          "url": "https://github.com/advisories/GHSA-6j4f-fj2g-mc7p",
+          "severity": "high",
+          "cwe": [
+            "CWE-400",
+            "CWE-674"
+          ],
+          "cvss": {
+            "score": 7.5,
+            "vectorString": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:H"
+          },
+          "range": ">=4.0.0 <5.0.10"
+        }
+      ],
+      "effects": [],
+      "range": "<=1.1.20 || 2.0.0 - 2.1.6 || 4.0.0 - 5.0.11",
+      "nodes": [
+        "node_modules/app-builder-lib/node_modules/brace-expansion",
+        "node_modules/brace-expansion",
+        "node_modules/minimatch/node_modules/brace-expansion"
+      ],
+      "fixAvailable": true
+    },
+    "braces": {
+      "name": "braces",
+      "severity": "high",
+      "isDirect": false,
+      "via": [
+        {
+          "source": 1240992,
+          "name": "braces",
+          "dependency": "braces",
+          "title": "braces vulnerable to stack-exhaustion denial of service through deeply nested patterns",
+          "url": "https://github.com/advisories/GHSA-vfj7-8cjw-p6xm",
+          "severity": "high",
+          "cwe": [
+            "CWE-674"
+          ],
+          "cvss": {
+            "score": 7.5,
+            "vectorString": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:H"
+          },
+          "range": "<=3.0.3"
+        }
+      ],
+      "effects": [
+        "chokidar",
+        "micromatch"
+      ],
+      "range": "*",
+      "nodes": [
+        "node_modules/braces"
+      ],
+      "fixAvailable": {
+        "name": "tailwindcss",
+        "version": "4.3.3",
+        "isSemVerMajor": true
+      }
+    },
+    "builder-util": {
+      "name": "builder-util",
+      "severity": "high",
+      "isDirect": false,
+      "via": [
+        "builder-util-runtime"
+      ],
+      "effects": [
+        "dmg-builder"
+      ],
+      "range": "2.0.0 - 25.0.6 || 25.1.2 - 26.14.0",
+      "nodes": [
+        "node_modules/builder-util"
+      ],
+      "fixAvailable": {
+        "name": "electron-builder",
+        "version": "26.15.3",
+        "isSemVerMajor": true
+      }
+    },
+    "builder-util-runtime": {
+      "name": "builder-util-runtime",
+      "severity": "high",
+      "isDirect": false,
+      "via": [
+        {
+          "source": 1124278,
+          "name": "builder-util-runtime",
+          "dependency": "builder-util-runtime",
+          "title": "electron-updater: Cross-origin redirect leaks `PRIVATE-TOKEN` and mixed-case `Authorization` credentials in `builder-util-runtime`",
+          "url": "https://github.com/advisories/GHSA-p2f4-r6v6-j797",
+          "severity": "high",
+          "cwe": [
+            "CWE-200"
+          ],
+          "cvss": {
+            "score": 0,
+            "vectorString": null
+          },
+          "range": "<9.7.0"
+        }
+      ],
+      "effects": [
+        "app-builder-lib",
+        "builder-util",
+        "dmg-builder",
+        "electron-builder",
+        "electron-publish"
+      ],
+      "range": "<9.7.0",
+      "nodes": [
+        "node_modules/builder-util-runtime"
+      ],
+      "fixAvailable": {
+        "name": "electron-builder",
+        "version": "26.15.3",
+        "isSemVerMajor": true
+      }
+    },
+    "cacache": {
+      "name": "cacache",
+      "severity": "high",
+      "isDirect": false,
+      "via": [
+        "tar"
+      ],
+      "effects": [
+        "make-fetch-happen"
+      ],
+      "range": "14.0.0 - 18.0.4",
+      "nodes": [
+        "node_modules/cacache"
+      ],
+      "fixAvailable": {
+        "name": "electron-builder",
+        "version": "26.15.3",
+        "isSemVerMajor": true
+      }
+    },
+    "chokidar": {
+      "name": "chokidar",
+      "severity": "high",
+      "isDirect": false,
+      "via": [
+        "braces"
+      ],
+      "effects": [
+        "fork-ts-checker-webpack-plugin",
+        "tailwindcss",
+        "webpack-dev-server"
+      ],
+      "range": "2.0.0 - 3.6.0",
+      "nodes": [
+        "node_modules/chokidar"
+      ],
+      "fixAvailable": {
+        "name": "react-scripts",
+        "version": "0.0.0",
+        "isSemVerMajor": true
+      }
+    },
+    "compression": {
+      "name": "compression",
+      "severity": "high",
+      "isDirect": false,
+      "via": [
+        {
+          "source": 1241221,
+          "name": "compression",
+          "dependency": "compression",
+          "title": "compression vulnerable to Denial of Service via memory leak on premature response close",
+          "url": "https://github.com/advisories/GHSA-vc2v-76pw-4v95",
+          "severity": "high",
+          "cwe": [
+            "CWE-401",
+            "CWE-459"
+          ],
+          "cvss": {
+            "score": 7.5,
+            "vectorString": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:H"
+          },
+          "range": "<1.8.2"
+        }
+      ],
+      "effects": [
+        "serve"
+      ],
+      "range": "<1.8.2",
+      "nodes": [
+        "node_modules/compression"
+      ],
+      "fixAvailable": {
+        "name": "serve",
+        "version": "10.0.2",
+        "isSemVerMajor": true
+      }
+    },
+    "concurrently": {
+      "name": "concurrently",
+      "severity": "critical",
+      "isDirect": true,
+      "via": [
+        "shell-quote"
+      ],
+      "effects": [],
+      "range": "9.2.3 - 9.2.4 || 10.0.0 - 10.0.5",
+      "nodes": [
+        "node_modules/concurrently"
+      ],
+      "fixAvailable": true
+    },
+    "css-blank-pseudo": {
+      "name": "css-blank-pseudo",
+      "severity": "moderate",
+      "isDirect": false,
+      "via": [
+        "postcss-selector-parser"
+      ],
+      "effects": [],
+      "range": "3.0.0 - 7.0.0",
+      "nodes": [
+        "node_modules/css-blank-pseudo"
+      ],
+      "fixAvailable": true
+    },
+    "css-has-pseudo": {
+      "name": "css-has-pseudo",
+      "severity": "moderate",
+      "isDirect": false,
+      "via": [
+        "postcss-selector-parser"
+      ],
+      "effects": [
+        "postcss-preset-env"
+      ],
+      "range": "<=7.0.0",
+      "nodes": [
+        "node_modules/css-has-pseudo"
+      ],
+      "fixAvailable": true
+    },
+    "css-minimizer-webpack-plugin": {
+      "name": "css-minimizer-webpack-plugin",
+      "severity": "moderate",
+      "isDirect": false,
+      "via": [
+        "cssnano",
+        "serialize-javascript"
+      ],
+      "effects": [],
+      "range": "<=7.0.4",
+      "nodes": [
+        "node_modules/css-minimizer-webpack-plugin"
+      ],
+      "fixAvailable": true
+    },
+    "css-select": {
+      "name": "css-select",
+      "severity": "high",
+      "isDirect": false,
+      "via": [
+        "nth-check"
+      ],
+      "effects": [
+        "svgo"
+      ],
+      "range": "<=3.1.0",
+      "nodes": [
+        "node_modules/svgo/node_modules/css-select"
+      ],
+      "fixAvailable": {
+        "name": "react-scripts",
+        "version": "0.0.0",
+        "isSemVerMajor": true
+      }
+    },
+    "cssnano": {
+      "name": "cssnano",
+      "severity": "moderate",
+      "isDirect": false,
+      "via": [
+        "cssnano-preset-default"
+      ],
+      "effects": [
+        "css-minimizer-webpack-plugin"
+      ],
+      "range": "4.0.0-nightly.2020.1.9 - 6.1.2",
+      "nodes": [
+        "node_modules/cssnano"
+      ],
+      "fixAvailable": true
+    },
+    "cssnano-preset-default": {
+      "name": "cssnano-preset-default",
+      "severity": "moderate",
+      "isDirect": false,
+      "via": [
+        "postcss-calc",
+        "postcss-merge-longhand",
+        "postcss-merge-rules",
+        "postcss-minify-selectors",
+        "postcss-unique-selectors"
+      ],
+      "effects": [
+        "cssnano"
+      ],
+      "range": "<=7.0.0",
+      "nodes": [
+        "node_modules/cssnano-preset-default"
+      ],
+      "fixAvailable": true
+    },
+    "dmg-builder": {
+      "name": "dmg-builder",
+      "severity": "high",
+      "isDirect": false,
+      "via": [
+        "app-builder-lib",
+        "builder-util",
+        "builder-util-runtime"
+      ],
+      "effects": [
+        "electron-builder"
+      ],
+      "range": "2.0.0 - 26.14.0",
+      "nodes": [
+        "node_modules/dmg-builder"
+      ],
+      "fixAvailable": {
+        "name": "electron-builder",
+        "version": "26.15.3",
+        "isSemVerMajor": true
+      }
+    },
+    "electron": {
+      "name": "electron",
+      "severity": "high",
+      "isDirect": true,
+      "via": [
+        "@electron/get",
+        {
+          "source": 1107272,
+          "name": "electron",
+          "dependency": "electron",
+          "title": "Electron has ASAR Integrity Bypass via resource modification",
+          "url": "https://github.com/advisories/GHSA-vmqv-hx8q-j7mg",
+          "severity": "moderate",
+          "cwe": [
+            "CWE-94",
+            "CWE-829"
+          ],
+          "cvss": {
+            "score": 6.1,
+            "vectorString": "CVSS:3.1/AV:L/AC:L/PR:L/UI:R/S:U/C:L/I:H/A:L"
+          },
+          "range": "<35.7.5"
+        },
+        {
+          "source": 1116041,
+          "name": "electron",
+          "dependency": "electron",
+          "title": "Electron: AppleScript injection in app.moveToApplicationsFolder on macOS",
+          "url": "https://github.com/advisories/GHSA-5rqw-r77c-jp79",
+          "severity": "moderate",
+          "cwe": [
+            "CWE-78"
+          ],
+          "cvss": {
+            "score": 6.5,
+            "vectorString": "CVSS:3.1/AV:L/AC:H/PR:N/UI:R/S:U/C:H/I:H/A:L"
+          },
+          "range": "<38.8.6"
+        },
+        {
+          "source": 1116045,
+          "name": "electron",
+          "dependency": "electron",
+          "title": "Electron: Service worker can spoof executeJavaScript IPC replies",
+          "url": "https://github.com/advisories/GHSA-xj5x-m3f3-5x3h",
+          "severity": "moderate",
+          "cwe": [
+            "CWE-290",
+            "CWE-345"
+          ],
+          "cvss": {
+            "score": 5.9,
+            "vectorString": "CVSS:3.1/AV:N/AC:H/PR:L/UI:N/S:U/C:L/I:H/A:N"
+          },
+          "range": "<38.8.6"
+        },
+        {
+          "source": 1116049,
+          "name": "electron",
+          "dependency": "electron",
+          "title": "Electron: Incorrect origin passed to permission request handler for iframe requests",
+          "url": "https://github.com/advisories/GHSA-r5p7-gp4j-qhrx",
+          "severity": "moderate",
+          "cwe": [
+            "CWE-346"
+          ],
+          "cvss": {
+            "score": 5.4,
+            "vectorString": "CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:U/C:L/I:L/A:N"
+          },
+          "range": "<38.8.6"
+        },
+        {
+          "source": 1116053,
+          "name": "electron",
+          "dependency": "electron",
+          "title": "Electron: Out-of-bounds read in second-instance IPC on macOS and Linux",
+          "url": "https://github.com/advisories/GHSA-3c8v-cfp5-9885",
+          "severity": "moderate",
+          "cwe": [
+            "CWE-125"
+          ],
+          "cvss": {
+            "score": 5.3,
+            "vectorString": "CVSS:3.1/AV:L/AC:H/PR:L/UI:N/S:U/C:H/I:N/A:L"
+          },
+          "range": "<38.8.6"
+        },
+        {
+          "source": 1116057,
+          "name": "electron",
+          "dependency": "electron",
+          "title": "Electron: nodeIntegrationInWorker not correctly scoped in shared renderer processes",
+          "url": "https://github.com/advisories/GHSA-xwr5-m59h-vwqr",
+          "severity": "moderate",
+          "cwe": [
+            "CWE-653"
+          ],
+          "cvss": {
+            "score": 6.8,
+            "vectorString": "CVSS:3.1/AV:N/AC:H/PR:N/UI:R/S:U/C:H/I:H/A:N"
+          },
+          "range": "<38.8.6"
+        },
+        {
+          "source": 1116060,
+          "name": "electron",
+          "dependency": "electron",
+          "title": "Electron: Use-after-free in offscreen child window paint callback",
+          "url": "https://github.com/advisories/GHSA-532v-xpq5-8h95",
+          "severity": "high",
+          "cwe": [
+            "CWE-416"
+          ],
+          "cvss": {
+            "score": 8.1,
+            "vectorString": "CVSS:3.1/AV:N/AC:H/PR:N/UI:N/S:U/C:H/I:H/A:H"
+          },
+          "range": "<39.8.1"
+        },
+        {
+          "source": 1116064,
+          "name": "electron",
+          "dependency": "electron",
+          "title": "Electron: Registry key path injection in app.setAsDefaultProtocolClient on Windows",
+          "url": "https://github.com/advisories/GHSA-mwmh-mq4g-g6gr",
+          "severity": "moderate",
+          "cwe": [
+            "CWE-20",
+            "CWE-74"
+          ],
+          "cvss": {
+            "score": 4.7,
+            "vectorString": "CVSS:3.1/AV:L/AC:H/PR:L/UI:N/S:U/C:N/I:H/A:N"
+          },
+          "range": "<38.8.6"
+        },
+        {
+          "source": 1116068,
+          "name": "electron",
+          "dependency": "electron",
+          "title": "Electron: Use-after-free in download save dialog callback",
+          "url": "https://github.com/advisories/GHSA-9w97-2464-8783",
+          "severity": "moderate",
+          "cwe": [
+            "CWE-416"
+          ],
+          "cvss": {
+            "score": 5.8,
+            "vectorString": "CVSS:3.1/AV:L/AC:H/PR:N/UI:R/S:U/C:H/I:L/A:L"
+          },
+          "range": "<38.8.6"
+        },
+        {
+          "source": 1116072,
+          "name": "electron",
+          "dependency": "electron",
+          "title": "Electron: Use-after-free in WebContents fullscreen, pointer-lock, and keyboard-lock permission callbacks",
+          "url": "https://github.com/advisories/GHSA-8337-3p73-46f4",
+          "severity": "high",
+          "cwe": [
+            "CWE-416"
+          ],
+          "cvss": {
+            "score": 7.5,
+            "vectorString": "CVSS:3.1/AV:N/AC:H/PR:N/UI:R/S:U/C:H/I:H/A:H"
+          },
+          "range": "<38.8.6"
+        },
+        {
+          "source": 1116076,
+          "name": "electron",
+          "dependency": "electron",
+          "title": "Electron: Use-after-free in PowerMonitor on Windows and macOS",
+          "url": "https://github.com/advisories/GHSA-jjp3-mq3x-295m",
+          "severity": "high",
+          "cwe": [
+            "CWE-416"
+          ],
+          "cvss": {
+            "score": 7,
+            "vectorString": "CVSS:3.1/AV:L/AC:H/PR:N/UI:R/S:U/C:H/I:H/A:H"
+          },
+          "range": "<38.8.6"
+        },
+        {
+          "source": 1116084,
+          "name": "electron",
+          "dependency": "electron",
+          "title": "Electron: Unquoted executable path in app.setLoginItemSettings on Windows",
+          "url": "https://github.com/advisories/GHSA-jfqx-fxh3-c62j",
+          "severity": "low",
+          "cwe": [
+            "CWE-428"
+          ],
+          "cvss": {
+            "score": 3.9,
+            "vectorString": "CVSS:3.1/AV:L/AC:H/PR:H/UI:N/S:U/C:L/I:L/A:L"
+          },
+          "range": "<38.8.6"
+        },
+        {
+          "source": 1116088,
+          "name": "electron",
+          "dependency": "electron",
+          "title": "Electron: HTTP Response Header Injection in custom protocol handlers and webRequest",
+          "url": "https://github.com/advisories/GHSA-4p4r-m79c-wq3v",
+          "severity": "moderate",
+          "cwe": [
+            "CWE-74",
+            "CWE-113"
+          ],
+          "cvss": {
+            "score": 5.9,
+            "vectorString": "CVSS:3.1/AV:N/AC:H/PR:N/UI:R/S:U/C:L/I:H/A:N"
+          },
+          "range": "<38.8.6"
+        },
+        {
+          "source": 1116092,
+          "name": "electron",
+          "dependency": "electron",
+          "title": "Electron: USB device selection not validated against filtered device list",
+          "url": "https://github.com/advisories/GHSA-9899-m83m-qhpj",
+          "severity": "low",
+          "cwe": [
+            "CWE-862"
+          ],
+          "cvss": {
+            "score": 3.3,
+            "vectorString": "CVSS:3.1/AV:L/AC:H/PR:L/UI:R/S:U/C:L/I:L/A:N"
+          },
+          "range": "<38.8.6"
+        },
+        {
+          "source": 1116111,
+          "name": "electron",
+          "dependency": "electron",
+          "title": "Electron: Use-after-free in offscreen shared texture release() callback",
+          "url": "https://github.com/advisories/GHSA-8x5q-pvf5-64mp",
+          "severity": "low",
+          "cwe": [
+            "CWE-416"
+          ],
+          "cvss": {
+            "score": 2.3,
+            "vectorString": "CVSS:3.1/AV:L/AC:L/PR:H/UI:N/S:U/C:N/I:N/A:L"
+          },
+          "range": ">=33.0.0-alpha.1 <39.8.5"
+        },
+        {
+          "source": 1116259,
+          "name": "electron",
+          "dependency": "electron",
+          "title": "Electron: Crash in clipboard.readImage() on malformed clipboard image data",
+          "url": "https://github.com/advisories/GHSA-f37v-82c4-4x64",
+          "severity": "low",
+          "cwe": [
+            "CWE-476"
+          ],
+          "cvss": {
+            "score": 2.8,
+            "vectorString": "CVSS:3.1/AV:L/AC:L/PR:L/UI:R/S:U/C:N/I:N/A:L"
+          },
+          "range": "<39.8.5"
+        },
+        {
+          "source": 1116320,
+          "name": "electron",
+          "dependency": "electron",
+          "title": "Electron: Named window.open targets not scoped to the opener's browsing context",
+          "url": "https://github.com/advisories/GHSA-f3pv-wv63-48x8",
+          "severity": "moderate",
+          "cwe": [
+            "CWE-668"
+          ],
+          "cvss": {
+            "score": 6,
+            "vectorString": "CVSS:3.1/AV:N/AC:H/PR:L/UI:N/S:C/C:L/I:L/A:L"
+          },
+          "range": "<39.8.5"
+        },
+        {
+          "source": 1117459,
+          "name": "electron",
+          "dependency": "electron",
+          "title": "Electron: Renderer command-line switch injection via undocumented commandLineSwitches webPreference",
+          "url": "https://github.com/advisories/GHSA-9wfr-w7mm-pc7f",
+          "severity": "high",
+          "cwe": [
+            "CWE-88",
+            "CWE-912"
+          ],
+          "cvss": {
+            "score": 7.7,
+            "vectorString": "CVSS:3.1/AV:L/AC:H/PR:N/UI:R/S:C/C:H/I:H/A:H"
+          },
+          "range": "<38.8.6"
+        },
+        {
+          "source": 1136551,
+          "name": "electron",
+          "dependency": "electron",
+          "title": "Electron: Parent process code-sign check is spoofable",
+          "url": "https://github.com/advisories/GHSA-jm7p-cc5g-qwxx",
+          "severity": "moderate",
+          "cwe": [
+            "CWE-367"
+          ],
+          "cvss": {
+            "score": 6.3,
+            "vectorString": "CVSS:3.1/AV:L/AC:H/PR:L/UI:N/S:U/C:H/I:H/A:N"
+          },
+          "range": "<39.8.8"
+        },
+        {
+          "source": 1136552,
+          "name": "electron",
+          "dependency": "electron",
+          "title": "Electron: Custom protocol with supportFetchAPI but not corsEnabled allows cross-origin reads",
+          "url": "https://github.com/advisories/GHSA-v3j7-r9gq-3gjw",
+          "severity": "high",
+          "cwe": [
+            "CWE-942"
+          ],
+          "cvss": {
+            "score": 7.4,
+            "vectorString": "CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:C/C:H/I:N/A:N"
+          },
+          "range": "<39.8.10"
+        },
+        {
+          "source": 1136559,
+          "name": "electron",
+          "dependency": "electron",
+          "title": "Electron: Extension tab APIs operate across session boundaries",
+          "url": "https://github.com/advisories/GHSA-m55f-7gqj-fr98",
+          "severity": "moderate",
+          "cwe": [
+            "CWE-284"
+          ],
+          "cvss": {
+            "score": 6.6,
+            "vectorString": "CVSS:3.1/AV:N/AC:H/PR:H/UI:N/S:C/C:H/I:L/A:N"
+          },
+          "range": "<39.8.8"
+        },
+        {
+          "source": 1136560,
+          "name": "electron",
+          "dependency": "electron",
+          "title": "Electron: shell.openPath path validation bypass via embedded null byte",
+          "url": "https://github.com/advisories/GHSA-5c9j-mhmv-5xgx",
+          "severity": "moderate",
+          "cwe": [
+            "CWE-20",
+            "CWE-158"
+          ],
+          "cvss": {
+            "score": 6,
+            "vectorString": "CVSS:3.1/AV:L/AC:H/PR:L/UI:R/S:U/C:H/I:H/A:N"
+          },
+          "range": "<39.8.6"
+        },
+        {
+          "source": 1136567,
+          "name": "electron",
+          "dependency": "electron",
+          "title": "Electron: Context isolation bypass via Function.prototype.bind hijack",
+          "url": "https://github.com/advisories/GHSA-h7rp-cf8h-j98x",
+          "severity": "high",
+          "cwe": [
+            "CWE-693"
+          ],
+          "cvss": {
+            "score": 7.5,
+            "vectorString": "CVSS:3.1/AV:N/AC:H/PR:N/UI:N/S:C/C:H/I:L/A:N"
+          },
+          "range": "<39.8.9"
+        },
+        {
+          "source": 1136571,
+          "name": "electron",
+          "dependency": "electron",
+          "title": "Electron: Cross-origin iframe can position native autofill popup",
+          "url": "https://github.com/advisories/GHSA-x8rc-wpg4-grpf",
+          "severity": "low",
+          "cwe": [
+            "CWE-1021"
+          ],
+          "cvss": {
+            "score": 3.1,
+            "vectorString": "CVSS:3.1/AV:N/AC:H/PR:N/UI:R/S:U/C:N/I:L/A:N"
+          },
+          "range": "<39.8.8"
+        },
+        {
+          "source": 1136575,
+          "name": "electron",
+          "dependency": "electron",
+          "title": "Electron: Permission Check Handler Receives Main Frame Origin Instead of Requesting Iframe Origin",
+          "url": "https://github.com/advisories/GHSA-9pf5-hg6p-4pwp",
+          "severity": "moderate",
+          "cwe": [
+            "CWE-346"
+          ],
+          "cvss": {
+            "score": 5.9,
+            "vectorString": "CVSS:3.1/AV:N/AC:H/PR:N/UI:N/S:U/C:H/I:N/A:N"
+          },
+          "range": "<39.8.7"
+        },
+        {
+          "source": 1136579,
+          "name": "electron",
+          "dependency": "electron",
+          "title": "Electron: Off-screen rendering trusts GPU-supplied geometry over shared-memory size",
+          "url": "https://github.com/advisories/GHSA-pfmc-3mgc-p6fp",
+          "severity": "low",
+          "cwe": [
+            "CWE-125"
+          ],
+          "cvss": {
+            "score": 3.9,
+            "vectorString": "CVSS:3.1/AV:L/AC:H/PR:H/UI:N/S:C/C:L/I:N/A:L"
+          },
+          "range": "<39.8.10"
+        },
+        {
+          "source": 1136590,
+          "name": "electron",
+          "dependency": "electron",
+          "title": "Electron: HTTP redirect followed into local file loader",
+          "url": "https://github.com/advisories/GHSA-v64r-4m7r-3mvq",
+          "severity": "moderate",
+          "cwe": [
+            "CWE-918"
+          ],
+          "cvss": {
+            "score": 5.9,
+            "vectorString": "CVSS:3.1/AV:N/AC:H/PR:N/UI:N/S:U/C:H/I:N/A:N"
+          },
+          "range": "<39.8.8"
+        },
+        {
+          "source": 1136597,
+          "name": "electron",
+          "dependency": "electron",
+          "title": "Electron: window.open features string controls some window options considered privileged",
+          "url": "https://github.com/advisories/GHSA-v93f-fgjr-hjrj",
+          "severity": "moderate",
+          "cwe": [
+            "CWE-20"
+          ],
+          "cvss": {
+            "score": 5.3,
+            "vectorString": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:L/I:N/A:N"
+          },
+          "range": "<39.8.8"
+        },
+        {
+          "source": 1136607,
+          "name": "electron",
+          "dependency": "electron",
+          "title": "Electron: Sandboxed iframe can bypass the allow-popups restriction via the OpenURL navigation path",
+          "url": "https://github.com/advisories/GHSA-9f4c-93c8-jc8g",
+          "severity": "high",
+          "cwe": [
+            "CWE-693",
+            "CWE-1021"
+          ],
+          "cvss": {
+            "score": 7.2,
+            "vectorString": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:C/C:L/I:L/A:N"
+          },
+          "range": "<39.8.10"
+        },
+        {
+          "source": 1136634,
+          "name": "electron",
+          "dependency": "electron",
+          "title": "Electron: Sandboxed iframes can launch external protocol handlers",
+          "url": "https://github.com/advisories/GHSA-p2rr-rvmm-c5fp",
+          "severity": "moderate",
+          "cwe": [
+            "CWE-284"
+          ],
+          "cvss": {
+            "score": 5.4,
+            "vectorString": "CVSS:3.1/AV:N/AC:H/PR:N/UI:N/S:C/C:L/I:L/A:N"
+          },
+          "range": "<39.8.8"
+        },
+        {
+          "source": 1136647,
+          "name": "electron",
+          "dependency": "electron",
+          "title": "Electron: DevTools embedder handler executes arbitrary files via shell open",
+          "url": "https://github.com/advisories/GHSA-f2r8-jv7c-xqmp",
+          "severity": "moderate",
+          "cwe": [
+            "CWE-78"
+          ],
+          "cvss": {
+            "score": 6.9,
+            "vectorString": "CVSS:3.1/AV:L/AC:H/PR:H/UI:R/S:C/C:H/I:H/A:N"
+          },
+          "range": "<39.8.9"
+        },
+        {
+          "source": 1136651,
+          "name": "electron",
+          "dependency": "electron",
+          "title": "Electron: contextBridge object copy honors prototype setters",
+          "url": "https://github.com/advisories/GHSA-ff2p-hmqr-hxm4",
+          "severity": "moderate",
+          "cwe": [
+            "CWE-1321"
+          ],
+          "cvss": {
+            "score": 5.4,
+            "vectorString": "CVSS:3.1/AV:N/AC:H/PR:N/UI:N/S:C/C:L/I:L/A:N"
+          },
+          "range": "<39.8.9"
+        },
+        {
+          "source": 1136659,
+          "name": "electron",
+          "dependency": "electron",
+          "title": "Electron: DevTools JavaScript Injection via Unsanitized Dock State Parameter",
+          "url": "https://github.com/advisories/GHSA-4f78-qhmw-8j8m",
+          "severity": "moderate",
+          "cwe": [
+            "CWE-94",
+            "CWE-116"
+          ],
+          "cvss": {
+            "score": 5.7,
+            "vectorString": "CVSS:3.1/AV:N/AC:H/PR:H/UI:R/S:U/C:H/I:H/A:N"
+          },
+          "range": "<39.8.7"
+        },
+        {
+          "source": 1239973,
+          "name": "electron",
+          "dependency": "electron",
+          "title": "Electron drops inherited HTML sandbox restrictions for popups opened through OpenURLFromTab",
+          "url": "https://github.com/advisories/GHSA-hq2x-r82h-9wj4",
+          "severity": "high",
+          "cwe": [
+            "CWE-346",
+            "CWE-693"
+          ],
+          "cvss": {
+            "score": 8.2,
+            "vectorString": "CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:C/C:H/I:L/A:N"
+          },
+          "range": "<41.10.4"
+        },
+        {
+          "source": 1239977,
+          "name": "electron",
+          "dependency": "electron",
+          "title": "Electron: Windows opened from a sandboxed top-level document do not inherit its sandbox restrictions",
+          "url": "https://github.com/advisories/GHSA-gr2m-v5gq-v685",
+          "severity": "high",
+          "cwe": [
+            "CWE-266",
+            "CWE-693"
+          ],
+          "cvss": {
+            "score": 8.2,
+            "vectorString": "CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:C/C:H/I:L/A:N"
+          },
+          "range": "<41.10.6"
+        },
+        {
+          "source": 1239981,
+          "name": "electron",
+          "dependency": "electron",
+          "title": "Electron: File and HTTP protocol handlers allow cross-origin reads without corsEnabled",
+          "url": "https://github.com/advisories/GHSA-j84w-jfhq-vhvj",
+          "severity": "high",
+          "cwe": [
+            "CWE-346"
+          ],
+          "cvss": {
+            "score": 7.4,
+            "vectorString": "CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:C/C:H/I:N/A:N"
+          },
+          "range": "<41.10.6"
+        },
+        {
+          "source": 1240060,
+          "name": "electron",
+          "dependency": "electron",
+          "title": "Electron: Local race condition in Squirrel.Mac update installation on macOS",
+          "url": "https://github.com/advisories/GHSA-vv43-5jgx-7qv8",
+          "severity": "moderate",
+          "cwe": [
+            "CWE-367"
+          ],
+          "cvss": {
+            "score": 6.7,
+            "vectorString": "CVSS:3.1/AV:L/AC:H/PR:L/UI:R/S:U/C:H/I:H/A:H"
+          },
+          "range": "<39.8.10"
+        },
+        {
+          "source": 1241657,
+          "name": "electron",
+          "dependency": "electron",
+          "title": "Electron: <webview> can enable Node.js integration in Web Workers despite embedder restrictions",
+          "url": "https://github.com/advisories/GHSA-9qh4-3jw8-366w",
+          "severity": "high",
+          "cwe": [
+            "CWE-269",
+            "CWE-1188"
+          ],
+          "cvss": {
+            "score": 8.3,
+            "vectorString": "CVSS:3.1/AV:N/AC:H/PR:N/UI:R/S:C/C:H/I:H/A:H"
+          },
+          "range": "<41.10.6"
+        },
+        "extract-zip"
+      ],
+      "effects": [],
+      "range": "<=41.10.5 || 42.0.0-alpha.1 - 42.3.3 || 43.0.0-alpha.1 - 43.0.0-beta.8",
+      "nodes": [
+        "node_modules/electron"
+      ],
+      "fixAvailable": {
+        "name": "electron",
+        "version": "44.7.0",
+        "isSemVerMajor": true
+      }
+    },
+    "electron-builder": {
+      "name": "electron-builder",
+      "severity": "high",
+      "isDirect": true,
+      "via": [
+        "app-builder-lib",
+        "builder-util",
+        "builder-util-runtime",
+        "dmg-builder"
+      ],
+      "effects": [],
+      "range": "19.25.0 || 19.28.0 - 26.14.0",
+      "nodes": [
+        "node_modules/electron-builder"
+      ],
+      "fixAvailable": {
+        "name": "electron-builder",
+        "version": "26.15.3",
+        "isSemVerMajor": true
+      }
+    },
+    "electron-publish": {
+      "name": "electron-publish",
+      "severity": "high",
+      "isDirect": false,
+      "via": [
+        "builder-util",
+        "builder-util-runtime"
+      ],
+      "effects": [],
+      "range": "19.28.0 - 25.0.6 || 25.1.2 - 26.14.0",
+      "nodes": [
+        "node_modules/electron-publish"
+      ],
+      "fixAvailable": true
+    },
+    "eslint": {
+      "name": "eslint",
+      "severity": "low",
+      "isDirect": true,
+      "via": [
+        "@eslint/plugin-kit"
+      ],
+      "effects": [],
+      "range": "9.10.0 - 9.26.0",
+      "nodes": [
+        "node_modules/eslint"
+      ],
+      "fixAvailable": {
+        "name": "eslint",
+        "version": "9.39.5",
+        "isSemVerMajor": false
+      }
+    },
+    "eslint-config-react-app": {
+      "name": "eslint-config-react-app",
+      "severity": "high",
+      "isDirect": false,
+      "via": [
+        "@typescript-eslint/parser"
+      ],
+      "effects": [],
+      "range": ">=6.0.0-next.64",
+      "nodes": [
+        "node_modules/react-scripts/node_modules/eslint-config-react-app"
+      ],
+      "fixAvailable": true
+    },
+    "eslint-plugin-testing-library": {
+      "name": "eslint-plugin-testing-library",
+      "severity": "high",
+      "isDirect": false,
+      "via": [
+        "@typescript-eslint/utils"
+      ],
+      "effects": [],
+      "range": "5.0.5 - 7.0.0-beta.6",
+      "nodes": [
+        "node_modules/react-scripts/node_modules/eslint-plugin-testing-library"
+      ],
+      "fixAvailable": true
+    },
+    "eslint-webpack-plugin": {
+      "name": "eslint-webpack-plugin",
+      "severity": "high",
+      "isDirect": false,
+      "via": [
+        "micromatch"
+      ],
+      "effects": [
+        "react-scripts"
+      ],
+      "range": "*",
+      "nodes": [
+        "node_modules/react-scripts/node_modules/eslint-webpack-plugin"
+      ],
+      "fixAvailable": {
+        "name": "react-scripts",
+        "version": "0.0.0",
+        "isSemVerMajor": true
+      }
+    },
+    "expect": {
+      "name": "expect",
+      "severity": "high",
+      "isDirect": false,
+      "via": [
+        "jest-message-util"
+      ],
+      "effects": [
+        "@jest/globals",
+        "jest-circus",
+        "jest-jasmine2",
+        "jest-snapshot"
+      ],
+      "range": "21.0.0-beta.1 - 30.2.0",
+      "nodes": [
+        "node_modules/expect"
+      ],
+      "fixAvailable": true
+    },
+    "express": {
+      "name": "express",
+      "severity": "moderate",
+      "isDirect": false,
+      "via": [
+        "qs"
+      ],
+      "effects": [],
+      "range": "4.22.2",
+      "nodes": [
+        "node_modules/express"
+      ],
+      "fixAvailable": true
+    },
+    "extract-zip": {
+      "name": "extract-zip",
+      "severity": "high",
+      "isDirect": false,
+      "via": [
+        {
+          "source": 1139346,
+          "name": "extract-zip",
+          "dependency": "extract-zip",
+          "title": "extract-zip unvalidated symlink path traversal",
+          "url": "https://github.com/advisories/GHSA-jmr9-qjv8-65gv",
+          "severity": "high",
+          "cwe": [
+            "CWE-22"
+          ],
+          "cvss": {
+            "score": 8.1,
+            "vectorString": "CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:U/C:H/I:H/A:N"
+          },
+          "range": "<=2.0.1"
+        },
+        {
+          "source": 1193685,
+          "name": "extract-zip",
+          "dependency": "extract-zip",
+          "title": "extract-zip allows arbitrary file writes through symlink archive entries",
+          "url": "https://github.com/advisories/GHSA-7pqw-9j4j-h8q3",
+          "severity": "high",
+          "cwe": [
+            "CWE-22"
+          ],
+          "cvss": {
+            "score": 8.1,
+            "vectorString": "CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:U/C:N/I:H/A:H"
+          },
+          "range": "<=2.0.1"
+        }
+      ],
+      "effects": [
+        "electron"
+      ],
+      "range": "*",
+      "nodes": [
+        "node_modules/extract-zip"
+      ],
+      "fixAvailable": {
+        "name": "electron",
+        "version": "44.7.0",
+        "isSemVerMajor": true
+      }
+    },
+    "fast-glob": {
+      "name": "fast-glob",
+      "severity": "high",
+      "isDirect": false,
+      "via": [
+        "micromatch"
+      ],
+      "effects": [
+        "globby"
+      ],
+      "range": "*",
+      "nodes": [
+        "node_modules/fast-glob"
+      ],
+      "fixAvailable": {
+        "name": "react-scripts",
+        "version": "0.0.0",
+        "isSemVerMajor": true
+      }
+    },
+    "fast-uri": {
+      "name": "fast-uri",
+      "severity": "moderate",
+      "isDirect": false,
+      "via": [
+        {
+          "source": 1240091,
+          "name": "fast-uri",
+          "dependency": "fast-uri",
+          "title": "fast-uri vulnerable to inconsistent host case normalization via percent-encoded octets",
+          "url": "https://github.com/advisories/GHSA-hrr3-gc8f-f4qj",
+          "severity": "moderate",
+          "cwe": [
+            "CWE-178"
+          ],
+          "cvss": {
+            "score": 4.8,
+            "vectorString": "CVSS:3.1/AV:N/AC:H/PR:N/UI:N/S:U/C:L/I:L/A:N"
+          },
+          "range": ">=3.0.0 <3.1.8"
+        }
+      ],
+      "effects": [],
+      "range": "3.0.0 - 3.1.7",
+      "nodes": [
+        "node_modules/fast-uri"
+      ],
+      "fixAvailable": true
+    },
+    "fork-ts-checker-webpack-plugin": {
+      "name": "fork-ts-checker-webpack-plugin",
+      "severity": "high",
+      "isDirect": false,
+      "via": [
+        "chokidar"
+      ],
+      "effects": [
+        "react-dev-utils"
+      ],
+      "range": "0.4.7 - 4.0.0-beta.5 || 6.0.0-alpha.1 - 9.0.3",
+      "nodes": [
+        "node_modules/fork-ts-checker-webpack-plugin"
+      ],
+      "fixAvailable": {
+        "name": "react-scripts",
+        "version": "0.0.0",
+        "isSemVerMajor": true
+      }
+    },
+    "global-agent": {
+      "name": "global-agent",
+      "severity": "moderate",
+      "isDirect": false,
+      "via": [
+        "roarr"
+      ],
+      "effects": [
+        "@electron/get"
+      ],
+      "range": "<=3.0.0",
+      "nodes": [
+        "node_modules/global-agent"
+      ],
+      "fixAvailable": {
+        "name": "electron",
+        "version": "44.7.0",
+        "isSemVerMajor": true
+      }
+    },
+    "globby": {
+      "name": "globby",
+      "severity": "high",
+      "isDirect": false,
+      "via": [
+        "fast-glob"
+      ],
+      "effects": [
+        "@typescript-eslint/typescript-estree",
+        "react-dev-utils"
+      ],
+      "range": ">=8.0.0",
+      "nodes": [
+        "node_modules/globby"
+      ],
+      "fixAvailable": {
+        "name": "react-scripts",
+        "version": "0.0.0",
+        "isSemVerMajor": true
+      }
+    },
+    "http-cache-semantics": {
+      "name": "http-cache-semantics",
+      "severity": "high",
+      "isDirect": false,
+      "via": [
+        {
+          "source": 1240991,
+          "name": "http-cache-semantics",
+          "dependency": "http-cache-semantics",
+          "title": "http-cache-semantics max-stale handling can disclose cross-user cached responses",
+          "url": "https://github.com/advisories/GHSA-ch52-4w7c-c8xp",
+          "severity": "high",
+          "cwe": [
+            "CWE-524"
+          ],
+          "cvss": {
+            "score": 7.5,
+            "vectorString": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N"
+          },
+          "range": "<=4.2.0"
+        }
+      ],
+      "effects": [],
+      "range": "<=4.2.0",
+      "nodes": [
+        "node_modules/http-cache-semantics"
+      ],
+      "fixAvailable": true
+    },
+    "http-proxy-agent": {
+      "name": "http-proxy-agent",
+      "severity": "low",
+      "isDirect": false,
+      "via": [
+        "@tootallnate/once"
+      ],
+      "effects": [
+        "jsdom"
+      ],
+      "range": "4.0.1",
+      "nodes": [
+        "node_modules/jsdom/node_modules/http-proxy-agent"
+      ],
+      "fixAvailable": true
+    },
+    "http-proxy-middleware": {
+      "name": "http-proxy-middleware",
+      "severity": "high",
+      "isDirect": false,
+      "via": [
+        "micromatch"
+      ],
+      "effects": [
+        "webpack-dev-server"
+      ],
+      "range": ">=0.3.0",
+      "nodes": [
+        "node_modules/http-proxy-middleware"
+      ],
+      "fixAvailable": {
+        "name": "react-scripts",
+        "version": "0.0.0",
+        "isSemVerMajor": true
+      }
+    },
+    "ip-address": {
+      "name": "ip-address",
+      "severity": "moderate",
+      "isDirect": false,
+      "via": [
+        {
+          "source": 1240097,
+          "name": "ip-address",
+          "dependency": "ip-address",
+          "title": "ip-address: isInSubnet() and isHostInSubnet() compare addresses of different families as if they shared an address space, allowing an allowlist check to admit an address outside its range",
+          "url": "https://github.com/advisories/GHSA-j6r3-76f7-8jcv",
+          "severity": "moderate",
+          "cwe": [
+            "CWE-697",
+            "CWE-843"
+          ],
+          "cvss": {
+            "score": 0,
+            "vectorString": null
+          },
+          "range": "<=10.7.0"
+        },
+        {
+          "source": 1240098,
+          "name": "ip-address",
+          "dependency": "ip-address",
+          "title": "ip-address: Address6 builds a parse diagnostic proportional to the input with no length bound, allowing a single long string to stall or crash the process",
+          "url": "https://github.com/advisories/GHSA-h3mg-xc3c-68pw",
+          "severity": "moderate",
+          "cwe": [
+            "CWE-400",
+            "CWE-770"
+          ],
+          "cvss": {
+            "score": 0,
+            "vectorString": null
+          },
+          "range": "<=10.7.0"
+        }
+      ],
+      "effects": [],
+      "range": "<=10.7.0",
+      "nodes": [
+        "node_modules/ip-address"
+      ],
+      "fixAvailable": true
+    },
+    "jest": {
+      "name": "jest",
+      "severity": "high",
+      "isDirect": false,
+      "via": [
+        "@jest/core",
+        "jest-cli"
+      ],
+      "effects": [],
+      "range": "24.2.0-alpha.0 - 30.2.0",
+      "nodes": [
+        "node_modules/jest"
+      ],
+      "fixAvailable": true
+    },
+    "jest-circus": {
+      "name": "jest-circus",
+      "severity": "high",
+      "isDirect": false,
+      "via": [
+        "@jest/environment",
+        "@jest/test-result",
+        "expect",
+        "jest-message-util",
+        "jest-runtime",
+        "jest-snapshot"
+      ],
+      "effects": [
+        "jest-config"
+      ],
+      "range": "20.1.0-alpha.1 - 30.2.0",
+      "nodes": [
+        "node_modules/jest-circus"
+      ],
+      "fixAvailable": true
+    },
+    "jest-cli": {
+      "name": "jest-cli",
+      "severity": "high",
+      "isDirect": false,
+      "via": [
+        "@jest/core",
+        "@jest/test-result",
+        "jest-config"
+      ],
+      "effects": [
+        "jest"
+      ],
+      "range": "23.5.0 - 30.2.0",
+      "nodes": [
+        "node_modules/jest-cli"
+      ],
+      "fixAvailable": true
+    },
+    "jest-config": {
+      "name": "jest-config",
+      "severity": "high",
+      "isDirect": false,
+      "via": [
+        "@jest/test-sequencer",
+        "babel-jest",
+        "jest-circus",
+        "jest-environment-jsdom",
+        "jest-environment-node",
+        "jest-jasmine2",
+        "jest-resolve",
+        "jest-runner",
+        "micromatch"
+      ],
+      "effects": [
+        "jest-cli"
+      ],
+      "range": "18.1.0 - 30.2.0",
+      "nodes": [
+        "node_modules/jest-config"
+      ],
+      "fixAvailable": true
+    },
+    "jest-environment-jsdom": {
+      "name": "jest-environment-jsdom",
+      "severity": "high",
+      "isDirect": false,
+      "via": [
+        "@jest/environment",
+        "@jest/fake-timers",
+        "jsdom"
+      ],
+      "effects": [
+        "jest-config",
+        "jest-runner"
+      ],
+      "range": "24.2.0-alpha.0 - 30.2.0",
+      "nodes": [
+        "node_modules/jest-environment-jsdom"
+      ],
+      "fixAvailable": true
+    },
+    "jest-environment-node": {
+      "name": "jest-environment-node",
+      "severity": "high",
+      "isDirect": false,
+      "via": [
+        "@jest/environment",
+        "@jest/fake-timers"
+      ],
+      "effects": [
+        "jest-runner"
+      ],
+      "range": "24.2.0-alpha.0 - 30.2.0",
+      "nodes": [
+        "node_modules/jest-environment-node"
+      ],
+      "fixAvailable": true
+    },
+    "jest-haste-map": {
+      "name": "jest-haste-map",
+      "severity": "high",
+      "isDirect": false,
+      "via": [
+        "micromatch"
+      ],
+      "effects": [
+        "@jest/reporters",
+        "@jest/test-sequencer",
+        "jest-resolve",
+        "jest-runner",
+        "jest-runtime",
+        "jest-snapshot"
+      ],
+      "range": "18.1.0 - 30.2.0",
+      "nodes": [
+        "node_modules/jest-haste-map"
+      ],
+      "fixAvailable": true
+    },
+    "jest-jasmine2": {
+      "name": "jest-jasmine2",
+      "severity": "high",
+      "isDirect": false,
+      "via": [
+        "@jest/environment",
+        "@jest/test-result",
+        "expect",
+        "jest-message-util",
+        "jest-runtime",
+        "jest-snapshot"
+      ],
+      "effects": [
+        "jest-config"
+      ],
+      "range": "18.5.0-alpha.7da3df39 - 30.2.0",
+      "nodes": [
+        "node_modules/jest-jasmine2"
+      ],
+      "fixAvailable": true
+    },
+    "jest-message-util": {
+      "name": "jest-message-util",
+      "severity": "high",
+      "isDirect": false,
+      "via": [
+        "micromatch"
+      ],
+      "effects": [
+        "@jest/console",
+        "@jest/fake-timers",
+        "expect",
+        "jest-circus",
+        "jest-jasmine2",
+        "jest-runtime",
+        "jest-snapshot"
+      ],
+      "range": "18.5.0-alpha.7da3df39 - 30.2.0",
+      "nodes": [
+        "node_modules/jest-message-util",
+        "node_modules/jest-watcher/node_modules/jest-message-util"
+      ],
+      "fixAvailable": true
+    },
+    "jest-resolve": {
+      "name": "jest-resolve",
+      "severity": "high",
+      "isDirect": false,
+      "via": [
+        "jest-haste-map"
+      ],
+      "effects": [
+        "@jest/core",
+        "@jest/reporters",
+        "jest-config",
+        "jest-runner",
+        "jest-runtime"
+      ],
+      "range": "18.1.0 - 19.0.2 || 24.2.0-alpha.0 - 24.5.0 || 27.1.0 - 30.2.0",
+      "nodes": [
+        "node_modules/jest-resolve"
+      ],
+      "fixAvailable": true
+    },
+    "jest-resolve-dependencies": {
+      "name": "jest-resolve-dependencies",
+      "severity": "high",
+      "isDirect": false,
+      "via": [
+        "jest-snapshot"
+      ],
+      "effects": [],
+      "range": "26.1.0 - 28.1.3",
+      "nodes": [
+        "node_modules/jest-resolve-dependencies"
+      ],
+      "fixAvailable": true
+    },
+    "jest-runner": {
+      "name": "jest-runner",
+      "severity": "high",
+      "isDirect": false,
+      "via": [
+        "@jest/console",
+        "@jest/environment",
+        "@jest/test-result",
+        "@jest/transform",
+        "jest-environment-jsdom",
+        "jest-environment-node",
+        "jest-haste-map",
+        "jest-message-util",
+        "jest-resolve",
+        "jest-runtime"
+      ],
+      "effects": [
+        "jest-config"
+      ],
+      "range": "21.0.0-alpha.1 - 30.2.0",
+      "nodes": [
+        "node_modules/jest-runner"
+      ],
+      "fixAvailable": true
+    },
+    "jest-runtime": {
+      "name": "jest-runtime",
+      "severity": "high",
+      "isDirect": false,
+      "via": [
+        "@jest/environment",
+        "@jest/fake-timers",
+        "@jest/globals",
+        "@jest/test-result",
+        "@jest/transform",
+        "jest-haste-map",
+        "jest-message-util",
+        "jest-resolve",
+        "jest-snapshot"
+      ],
+      "effects": [
+        "@jest/test-sequencer",
+        "jest-circus",
+        "jest-jasmine2"
+      ],
+      "range": "18.1.0 - 30.2.0",
+      "nodes": [
+        "node_modules/jest-runtime"
+      ],
+      "fixAvailable": true
+    },
+    "jest-snapshot": {
+      "name": "jest-snapshot",
+      "severity": "high",
+      "isDirect": false,
+      "via": [
+        "@jest/transform",
+        "expect",
+        "jest-haste-map",
+        "jest-message-util"
+      ],
+      "effects": [
+        "@jest/core",
+        "jest-circus",
+        "jest-jasmine2",
+        "jest-resolve-dependencies",
+        "jest-runtime"
+      ],
+      "range": "23.3.0 - 30.2.0",
+      "nodes": [
+        "node_modules/jest-snapshot"
+      ],
+      "fixAvailable": true
+    },
+    "jest-watch-typeahead": {
+      "name": "jest-watch-typeahead",
+      "severity": "high",
+      "isDirect": false,
+      "via": [
+        "jest-watcher"
+      ],
+      "effects": [],
+      "range": "0.6.0 - 2.2.2",
+      "nodes": [
+        "node_modules/jest-watch-typeahead"
+      ],
+      "fixAvailable": true
+    },
+    "jest-watcher": {
+      "name": "jest-watcher",
+      "severity": "high",
+      "isDirect": false,
+      "via": [
+        "@jest/test-result"
+      ],
+      "effects": [
+        "jest-watch-typeahead"
+      ],
+      "range": "25.4.0 - 30.2.0",
+      "nodes": [
+        "node_modules/@jest/core/node_modules/jest-watcher",
+        "node_modules/jest-watcher"
+      ],
+      "fixAvailable": true
+    },
+    "js-yaml": {
+      "name": "js-yaml",
+      "severity": "moderate",
+      "isDirect": false,
+      "via": [
+        "argparse"
+      ],
+      "effects": [
+        "@istanbuljs/load-nyc-config",
+        "svgo"
+      ],
+      "range": "3.2.7 - 3.15.2",
+      "nodes": [
+        "node_modules/@istanbuljs/load-nyc-config/node_modules/js-yaml",
+        "node_modules/svgo/node_modules/js-yaml"
+      ],
+      "fixAvailable": {
+        "name": "react-scripts",
+        "version": "0.0.0",
+        "isSemVerMajor": true
+      }
+    },
+    "jsdom": {
+      "name": "jsdom",
+      "severity": "low",
+      "isDirect": false,
+      "via": [
+        "http-proxy-agent"
+      ],
+      "effects": [
+        "jest-environment-jsdom"
+      ],
+      "range": "16.6.0 - 17.0.0",
+      "nodes": [
+        "node_modules/jsdom"
+      ],
+      "fixAvailable": true
+    },
+    "jsonpath": {
+      "name": "jsonpath",
+      "severity": "high",
+      "isDirect": false,
+      "via": [
+        "underscore"
+      ],
+      "effects": [
+        "bfj"
+      ],
+      "range": "*",
+      "nodes": [
+        "node_modules/jsonpath"
+      ],
+      "fixAvailable": true
+    },
+    "make-fetch-happen": {
+      "name": "make-fetch-happen",
+      "severity": "high",
+      "isDirect": false,
+      "via": [
+        "cacache"
+      ],
+      "effects": [
+        "node-gyp"
+      ],
+      "range": "7.1.1 - 14.0.0",
+      "nodes": [
+        "node_modules/make-fetch-happen"
+      ],
+      "fixAvailable": {
+        "name": "electron-builder",
+        "version": "26.15.3",
+        "isSemVerMajor": true
+      }
+    },
+    "micromatch": {
+      "name": "micromatch",
+      "severity": "high",
+      "isDirect": false,
+      "via": [
+        "braces"
+      ],
+      "effects": [
+        "@jest/core",
+        "@jest/transform",
+        "eslint-webpack-plugin",
+        "fast-glob",
+        "http-proxy-middleware",
+        "jest-config",
+        "jest-haste-map",
+        "jest-message-util",
+        "tailwindcss"
+      ],
+      "range": ">=0.2.0",
+      "nodes": [
+        "node_modules/micromatch"
+      ],
+      "fixAvailable": {
+        "name": "tailwindcss",
+        "version": "4.3.3",
+        "isSemVerMajor": true
+      }
+    },
+    "node-forge": {
+      "name": "node-forge",
+      "severity": "high",
+      "isDirect": false,
+      "via": [
+        {
+          "source": 1240912,
+          "name": "node-forge",
+          "dependency": "node-forge",
+          "title": "node-forge RSA PKCS#1 v1.5 signature verification accepts extra nested DigestAlgorithm elements",
+          "url": "https://github.com/advisories/GHSA-86w9-cpqp-85rv",
+          "severity": "high",
+          "cwe": [
+            "CWE-347"
+          ],
+          "cvss": {
+            "score": 7.5,
+            "vectorString": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:H/A:N"
+          },
+          "range": "<=1.4.0"
+        }
+      ],
+      "effects": [
+        "selfsigned"
+      ],
+      "range": "*",
+      "nodes": [
+        "node_modules/node-forge"
+      ],
+      "fixAvailable": {
+        "name": "react-scripts",
+        "version": "0.0.0",
+        "isSemVerMajor": true
+      }
+    },
+    "node-gyp": {
+      "name": "node-gyp",
+      "severity": "high",
+      "isDirect": false,
+      "via": [
+        "make-fetch-happen",
+        "tar"
+      ],
+      "effects": [
+        "@electron/rebuild"
+      ],
+      "range": "<=10.3.1",
+      "nodes": [
+        "node_modules/node-gyp"
+      ],
+      "fixAvailable": {
+        "name": "electron-builder",
+        "version": "26.15.3",
+        "isSemVerMajor": true
+      }
+    },
+    "nth-check": {
+      "name": "nth-check",
+      "severity": "high",
+      "isDirect": false,
+      "via": [
+        {
+          "source": 1095141,
+          "name": "nth-check",
+          "dependency": "nth-check",
+          "title": "Inefficient Regular Expression Complexity in nth-check",
+          "url": "https://github.com/advisories/GHSA-rp65-9cf3-cjxr",
+          "severity": "high",
+          "cwe": [
+            "CWE-1333"
+          ],
+          "cvss": {
+            "score": 7.5,
+            "vectorString": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:H"
+          },
+          "range": "<2.0.1"
+        }
+      ],
+      "effects": [
+        "css-select"
+      ],
+      "range": "<2.0.1",
+      "nodes": [
+        "node_modules/svgo/node_modules/nth-check"
+      ],
+      "fixAvailable": {
+        "name": "react-scripts",
+        "version": "0.0.0",
+        "isSemVerMajor": true
+      }
+    },
+    "postcss": {
+      "name": "postcss",
+      "severity": "high",
+      "isDirect": false,
+      "via": [
+        {
+          "source": 1109574,
+          "name": "postcss",
+          "dependency": "postcss",
+          "title": "PostCSS line return parsing error",
+          "url": "https://github.com/advisories/GHSA-7fh5-64p2-3v2j",
+          "severity": "moderate",
+          "cwe": [
+            "CWE-74",
+            "CWE-144"
+          ],
+          "cvss": {
+            "score": 5.3,
+            "vectorString": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:L/A:N"
+          },
+          "range": "<8.4.31"
+        },
+        {
+          "source": 1117015,
+          "name": "postcss",
+          "dependency": "postcss",
+          "title": "PostCSS has XSS via Unescaped </style> in its CSS Stringify Output",
+          "url": "https://github.com/advisories/GHSA-qx2v-qp2m-jg93",
+          "severity": "moderate",
+          "cwe": [
+            "CWE-79"
+          ],
+          "cvss": {
+            "score": 6.1,
+            "vectorString": "CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:C/C:L/I:L/A:N"
+          },
+          "range": "<8.5.10"
+        },
+        {
+          "source": 1124252,
+          "name": "postcss",
+          "dependency": "postcss",
+          "title": "PostCSS: Arbitrary file read and information disclosure via attacker-controlled sourceMappingURL in CSS comments",
+          "url": "https://github.com/advisories/GHSA-6g55-p6wh-862q",
+          "severity": "high",
+          "cwe": [
+            "CWE-22",
+            "CWE-200"
+          ],
+          "cvss": {
+            "score": 7.5,
+            "vectorString": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N"
+          },
+          "range": "<=8.5.11"
+        },
+        {
+          "source": 1130709,
+          "name": "postcss",
+          "dependency": "postcss",
+          "title": "PostCSS: incomplete fix of GHSA-6g55-p6wh-862q \u2014 attacker-controlled sourceMappingURL reads arbitrary .map files when `from` is unset",
+          "url": "https://github.com/advisories/GHSA-fxqj-rqcc-2cmp",
+          "severity": "moderate",
+          "cwe": [
+            "CWE-22",
+            "CWE-200"
+          ],
+          "cvss": {
+            "score": 0,
+            "vectorString": null
+          },
+          "range": "<=8.5.22"
+        },
+        {
+          "source": 1139510,
+          "name": "postcss",
+          "dependency": "postcss",
+          "title": "PostCSS: Path Traversal in Previous Source Map Auto-Loading (sourceMappingURL) leads to Arbitrary .map File Disclosure",
+          "url": "https://github.com/advisories/GHSA-r28c-9q8g-f849",
+          "severity": "high",
+          "cwe": [
+            "CWE-22"
+          ],
+          "cvss": {
+            "score": 7.5,
+            "vectorString": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N"
+          },
+          "range": "<=8.5.17"
+        }
+      ],
+      "effects": [
+        "resolve-url-loader"
+      ],
+      "range": "<=8.5.22",
+      "nodes": [
+        "node_modules/resolve-url-loader/node_modules/postcss"
+      ],
+      "fixAvailable": {
+        "name": "react-scripts",
+        "version": "0.0.0",
+        "isSemVerMajor": true
+      }
+    },
+    "postcss-attribute-case-insensitive": {
+      "name": "postcss-attribute-case-insensitive",
+      "severity": "moderate",
+      "isDirect": false,
+      "via": [
+        "postcss-selector-parser"
+      ],
+      "effects": [
+        "postcss-preset-env"
+      ],
+      "range": "<=7.0.0",
+      "nodes": [
+        "node_modules/postcss-attribute-case-insensitive"
+      ],
+      "fixAvailable": true
+    },
+    "postcss-calc": {
+      "name": "postcss-calc",
+      "severity": "moderate",
+      "isDirect": false,
+      "via": [
+        "postcss-selector-parser"
+      ],
+      "effects": [
+        "cssnano-preset-default"
+      ],
+      "range": "6.0.0 - 10.0.2",
+      "nodes": [
+        "node_modules/postcss-calc"
+      ],
+      "fixAvailable": true
+    },
+    "postcss-custom-selectors": {
+      "name": "postcss-custom-selectors",
+      "severity": "moderate",
+      "isDirect": false,
+      "via": [
+        "postcss-selector-parser"
+      ],
+      "effects": [
+        "postcss-preset-env"
+      ],
+      "range": "5.0.0 - 8.0.2",
+      "nodes": [
+        "node_modules/postcss-custom-selectors"
+      ],
+      "fixAvailable": true
+    },
+    "postcss-dir-pseudo-class": {
+      "name": "postcss-dir-pseudo-class",
+      "severity": "moderate",
+      "isDirect": false,
+      "via": [
+        "postcss-selector-parser"
+      ],
+      "effects": [],
+      "range": "<=9.0.0",
+      "nodes": [
+        "node_modules/postcss-dir-pseudo-class"
+      ],
+      "fixAvailable": true
+    },
+    "postcss-focus-visible": {
+      "name": "postcss-focus-visible",
+      "severity": "moderate",
+      "isDirect": false,
+      "via": [
+        "postcss-selector-parser"
+      ],
+      "effects": [
+        "postcss-preset-env"
+      ],
+      "range": "6.0.2 - 10.0.0",
+      "nodes": [
+        "node_modules/postcss-focus-visible"
+      ],
+      "fixAvailable": true
+    },
+    "postcss-focus-within": {
+      "name": "postcss-focus-within",
+      "severity": "moderate",
+      "isDirect": false,
+      "via": [
+        "postcss-selector-parser"
+      ],
+      "effects": [],
+      "range": "5.0.2 - 9.0.0",
+      "nodes": [
+        "node_modules/postcss-focus-within"
+      ],
+      "fixAvailable": true
+    },
+    "postcss-merge-longhand": {
+      "name": "postcss-merge-longhand",
+      "severity": "moderate",
+      "isDirect": false,
+      "via": [
+        "stylehacks"
+      ],
+      "effects": [],
+      "range": "3.0.0 - 6.0.5",
+      "nodes": [
+        "node_modules/postcss-merge-longhand"
+      ],
+      "fixAvailable": true
+    },
+    "postcss-merge-rules": {
+      "name": "postcss-merge-rules",
+      "severity": "moderate",
+      "isDirect": false,
+      "via": [
+        "postcss-selector-parser"
+      ],
+      "effects": [],
+      "range": "2.1.0 - 7.0.4",
+      "nodes": [
+        "node_modules/postcss-merge-rules"
+      ],
+      "fixAvailable": true
+    },
+    "postcss-minify-selectors": {
+      "name": "postcss-minify-selectors",
+      "severity": "moderate",
+      "isDirect": false,
+      "via": [
+        "postcss-selector-parser"
+      ],
+      "effects": [
+        "cssnano-preset-default"
+      ],
+      "range": "1.4.0 - 7.0.4",
+      "nodes": [
+        "node_modules/postcss-minify-selectors"
+      ],
+      "fixAvailable": true
+    },
+    "postcss-nested": {
+      "name": "postcss-nested",
+      "severity": "moderate",
+      "isDirect": false,
+      "via": [
+        "postcss-selector-parser"
+      ],
+      "effects": [],
+      "range": "2.0.3 - 6.2.0",
+      "nodes": [
+        "node_modules/postcss-nested"
+      ],
+      "fixAvailable": true
+    },
+    "postcss-nesting": {
+      "name": "postcss-nesting",
+      "severity": "moderate",
+      "isDirect": false,
+      "via": [
+        "postcss-selector-parser"
+      ],
+      "effects": [
+        "postcss-preset-env"
+      ],
+      "range": "0.1.0 || 10.0.0 - 13.0.0",
+      "nodes": [
+        "node_modules/postcss-nesting"
+      ],
+      "fixAvailable": true
+    },
+    "postcss-preset-env": {
+      "name": "postcss-preset-env",
+      "severity": "moderate",
+      "isDirect": false,
+      "via": [
+        "@csstools/postcss-cascade-layers",
+        "@csstools/postcss-is-pseudo-class",
+        "css-blank-pseudo",
+        "css-has-pseudo",
+        "postcss-attribute-case-insensitive",
+        "postcss-custom-selectors",
+        "postcss-dir-pseudo-class",
+        "postcss-focus-visible",
+        "postcss-focus-within",
+        "postcss-nesting",
+        "postcss-pseudo-class-any-link",
+        "postcss-selector-not"
+      ],
+      "effects": [],
+      "range": "<=9.6.0",
+      "nodes": [
+        "node_modules/postcss-preset-env"
+      ],
+      "fixAvailable": true
+    },
+    "postcss-pseudo-class-any-link": {
+      "name": "postcss-pseudo-class-any-link",
+      "severity": "moderate",
+      "isDirect": false,
+      "via": [
+        "postcss-selector-parser"
+      ],
+      "effects": [],
+      "range": "0.2.1 - 10.0.0",
+      "nodes": [
+        "node_modules/postcss-pseudo-class-any-link"
+      ],
+      "fixAvailable": true
+    },
+    "postcss-selector-not": {
+      "name": "postcss-selector-not",
+      "severity": "moderate",
+      "isDirect": false,
+      "via": [
+        "postcss-selector-parser"
+      ],
+      "effects": [
+        "postcss-preset-env"
+      ],
+      "range": "6.0.0 - 8.0.0",
+      "nodes": [
+        "node_modules/postcss-selector-not"
+      ],
+      "fixAvailable": true
+    },
+    "postcss-selector-parser": {
+      "name": "postcss-selector-parser",
+      "severity": "moderate",
+      "isDirect": false,
+      "via": [
+        {
+          "source": 1241232,
+          "name": "postcss-selector-parser",
+          "dependency": "postcss-selector-parser",
+          "title": "PostCSS: Quadratic complexity in flat selector parsing allows CPU exhaustion",
+          "url": "https://github.com/advisories/GHSA-rj75-hqrm-r3gf",
+          "severity": "moderate",
+          "cwe": [
+            "CWE-400",
+            "CWE-407"
+          ],
+          "cvss": {
+            "score": 5.9,
+            "vectorString": "CVSS:3.1/AV:N/AC:H/PR:N/UI:N/S:U/C:N/I:N/A:H"
+          },
+          "range": "<7.1.6"
+        }
+      ],
+      "effects": [
+        "@csstools/postcss-cascade-layers",
+        "@csstools/postcss-is-pseudo-class",
+        "css-blank-pseudo",
+        "css-has-pseudo",
+        "postcss-attribute-case-insensitive",
+        "postcss-calc",
+        "postcss-custom-selectors",
+        "postcss-dir-pseudo-class",
+        "postcss-focus-visible",
+        "postcss-focus-within",
+        "postcss-merge-rules",
+        "postcss-minify-selectors",
+        "postcss-nested",
+        "postcss-nesting",
+        "postcss-pseudo-class-any-link",
+        "postcss-selector-not",
+        "postcss-unique-selectors",
+        "stylehacks",
+        "tailwindcss"
+      ],
+      "range": "<7.1.6",
+      "nodes": [
+        "node_modules/postcss-modules-local-by-default/node_modules/postcss-selector-parser",
+        "node_modules/postcss-modules-scope/node_modules/postcss-selector-parser",
+        "node_modules/postcss-selector-parser"
+      ],
+      "fixAvailable": {
+        "name": "tailwindcss",
+        "version": "4.3.3",
+        "isSemVerMajor": true
+      }
+    },
+    "postcss-unique-selectors": {
+      "name": "postcss-unique-selectors",
+      "severity": "moderate",
+      "isDirect": false,
+      "via": [
+        "postcss-selector-parser"
+      ],
+      "effects": [
+        "cssnano-preset-default"
+      ],
+      "range": "4.0.0-nightly.2020.1.9 - 4.0.0-rc.2 || 5.0.0-rc.0 - 7.0.3",
+      "nodes": [
+        "node_modules/postcss-unique-selectors"
+      ],
+      "fixAvailable": true
+    },
+    "proxy-addr": {
+      "name": "proxy-addr",
+      "severity": "critical",
+      "isDirect": false,
+      "via": [
+        {
+          "source": 1241210,
+          "name": "proxy-addr",
+          "dependency": "proxy-addr",
+          "title": "proxy-addr vulnerable to IP spoofing via IPv4-mapped IPv6 trust subnet",
+          "url": "https://github.com/advisories/GHSA-jqcg-44mw-7w3h",
+          "severity": "critical",
+          "cwe": [
+            "CWE-290",
+            "CWE-348",
+            "CWE-697"
+          ],
+          "cvss": {
+            "score": 9.1,
+            "vectorString": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:N"
+          },
+          "range": ">=1.1.0 <2.0.8"
+        }
+      ],
+      "effects": [],
+      "range": "1.1.0 - 2.0.7",
+      "nodes": [
+        "node_modules/proxy-addr"
+      ],
+      "fixAvailable": true
+    },
+    "qs": {
+      "name": "qs",
+      "severity": "moderate",
+      "isDirect": false,
+      "via": [
+        {
+          "source": 1158506,
+          "name": "qs",
+          "dependency": "qs",
+          "title": "qs array-limit bypass via bracket-key comma parsing",
+          "url": "https://github.com/advisories/GHSA-x5fp-wj9c-mxmx",
+          "severity": "moderate",
+          "cwe": [
+            "CWE-770"
+          ],
+          "cvss": {
+            "score": 3.7,
+            "vectorString": "CVSS:3.1/AV:N/AC:H/PR:N/UI:N/S:U/C:N/I:N/A:L"
+          },
+          "range": ">=6.14.2 <=6.15.3"
+        },
+        {
+          "source": 1158507,
+          "name": "qs",
+          "dependency": "qs",
+          "title": "qs: Denial of Service via Attacker Controlled isBuffer",
+          "url": "https://github.com/advisories/GHSA-4mjr-xmp4-gh2g",
+          "severity": "moderate",
+          "cwe": [
+            "CWE-248",
+            "CWE-703"
+          ],
+          "cvss": {
+            "score": 5.3,
+            "vectorString": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:L"
+          },
+          "range": ">=2.2.5 <6.16.0"
+        }
+      ],
+      "effects": [
+        "express"
+      ],
+      "range": "2.2.5 - 6.15.3",
+      "nodes": [
+        "node_modules/qs"
+      ],
+      "fixAvailable": true
+    },
+    "react-dev-utils": {
+      "name": "react-dev-utils",
+      "severity": "high",
+      "isDirect": false,
+      "via": [
+        "fork-ts-checker-webpack-plugin",
+        "globby"
+      ],
+      "effects": [
+        "react-scripts"
+      ],
+      "range": "6.0.0-next.03604a46 - 6.0.0-next.a671462c || >=6.0.6-next.9b4009d7",
+      "nodes": [
+        "node_modules/react-dev-utils"
+      ],
+      "fixAvailable": {
+        "name": "react-scripts",
+        "version": "0.0.0",
+        "isSemVerMajor": true
+      }
+    },
+    "react-scripts": {
+      "name": "react-scripts",
+      "severity": "high",
+      "isDirect": true,
+      "via": [
+        "@svgr/webpack",
+        "babel-jest",
+        "css-minimizer-webpack-plugin",
+        "eslint-config-react-app",
+        "eslint-webpack-plugin",
+        "jest",
+        "jest-resolve",
+        "jest-watch-typeahead",
+        "react-dev-utils",
+        "resolve-url-loader",
+        "tailwindcss",
+        "webpack-dev-server",
+        "workbox-webpack-plugin"
+      ],
+      "effects": [],
+      "range": ">=0.1.0",
+      "nodes": [
+        "node_modules/react-scripts"
+      ],
+      "fixAvailable": {
+        "name": "react-scripts",
+        "version": "0.0.0",
+        "isSemVerMajor": true
+      }
+    },
+    "resolve-url-loader": {
+      "name": "resolve-url-loader",
+      "severity": "moderate",
+      "isDirect": false,
+      "via": [
+        "postcss"
+      ],
+      "effects": [
+        "react-scripts"
+      ],
+      "range": "0.0.1-experiment-postcss || 3.0.0-alpha.1 - 4.0.0",
+      "nodes": [
+        "node_modules/resolve-url-loader"
+      ],
+      "fixAvailable": {
+        "name": "react-scripts",
+        "version": "0.0.0",
+        "isSemVerMajor": true
+      }
+    },
+    "roarr": {
+      "name": "roarr",
+      "severity": "moderate",
+      "isDirect": false,
+      "via": [
+        "sprintf-js"
+      ],
+      "effects": [
+        "global-agent"
+      ],
+      "range": "<=2.15.4",
+      "nodes": [
+        "node_modules/roarr"
+      ],
+      "fixAvailable": {
+        "name": "electron",
+        "version": "44.7.0",
+        "isSemVerMajor": true
+      }
+    },
+    "rollup-plugin-terser": {
+      "name": "rollup-plugin-terser",
+      "severity": "high",
+      "isDirect": false,
+      "via": [
+        "serialize-javascript"
+      ],
+      "effects": [
+        "workbox-build"
+      ],
+      "range": "3.0.0 || >=4.0.4",
+      "nodes": [
+        "node_modules/rollup-plugin-terser"
+      ],
+      "fixAvailable": true
+    },
+    "selfsigned": {
+      "name": "selfsigned",
+      "severity": "high",
+      "isDirect": false,
+      "via": [
+        "node-forge"
+      ],
+      "effects": [
+        "webpack-dev-server"
+      ],
+      "range": "1.1.1 - 4.0.1",
+      "nodes": [
+        "node_modules/selfsigned"
+      ],
+      "fixAvailable": {
+        "name": "react-scripts",
+        "version": "0.0.0",
+        "isSemVerMajor": true
+      }
+    },
+    "serialize-javascript": {
+      "name": "serialize-javascript",
+      "severity": "high",
+      "isDirect": false,
+      "via": [
+        {
+          "source": 1113686,
+          "name": "serialize-javascript",
+          "dependency": "serialize-javascript",
+          "title": "Serialize JavaScript is Vulnerable to RCE via RegExp.flags and Date.prototype.toISOString()",
+          "url": "https://github.com/advisories/GHSA-5c6j-r48x-rmvq",
+          "severity": "high",
+          "cwe": [
+            "CWE-96"
+          ],
+          "cvss": {
+            "score": 8.1,
+            "vectorString": "CVSS:3.1/AV:N/AC:H/PR:N/UI:N/S:U/C:H/I:H/A:H"
+          },
+          "range": "<=7.0.2"
+        },
+        {
+          "source": 1119440,
+          "name": "serialize-javascript",
+          "dependency": "serialize-javascript",
+          "title": "Serialize JavaScript has CPU Exhaustion Denial of Service via crafted array-like objects",
+          "url": "https://github.com/advisories/GHSA-qj8w-gfj5-8c6v",
+          "severity": "moderate",
+          "cwe": [
+            "CWE-400",
+            "CWE-834"
+          ],
+          "cvss": {
+            "score": 5.9,
+            "vectorString": "CVSS:3.1/AV:N/AC:H/PR:N/UI:N/S:U/C:N/I:N/A:H"
+          },
+          "range": ">=5.0.0 <7.0.5"
+        }
+      ],
+      "effects": [
+        "css-minimizer-webpack-plugin",
+        "rollup-plugin-terser"
+      ],
+      "range": "<=7.0.4",
+      "nodes": [
+        "node_modules/rollup-plugin-terser/node_modules/serialize-javascript",
+        "node_modules/serialize-javascript"
+      ],
+      "fixAvailable": true
+    },
+    "serve": {
+      "name": "serve",
+      "severity": "high",
+      "isDirect": true,
+      "via": [
+        "compression"
+      ],
+      "effects": [],
+      "range": ">=10.1.0",
+      "nodes": [
+        "node_modules/serve"
+      ],
+      "fixAvailable": {
+        "name": "serve",
+        "version": "10.0.2",
+        "isSemVerMajor": true
+      }
+    },
+    "shell-quote": {
+      "name": "shell-quote",
+      "severity": "critical",
+      "isDirect": false,
+      "via": [
+        {
+          "source": 1241332,
+          "name": "shell-quote",
+          "dependency": "shell-quote",
+          "title": "shell-quote: `quote()` command injection via a line terminator in a token after a `{ comment }` token",
+          "url": "https://github.com/advisories/GHSA-pqg4-j6r4-53mv",
+          "severity": "critical",
+          "cwe": [
+            "CWE-78"
+          ],
+          "cvss": {
+            "score": 8.1,
+            "vectorString": "CVSS:3.1/AV:N/AC:H/PR:N/UI:N/S:U/C:H/I:H/A:H"
+          },
+          "range": ">=1.8.4 <1.11.0"
+        }
+      ],
+      "effects": [
+        "concurrently"
+      ],
+      "range": "1.8.4 - 1.10.0",
+      "nodes": [
+        "node_modules/concurrently/node_modules/shell-quote",
+        "node_modules/shell-quote"
+      ],
+      "fixAvailable": true
+    },
+    "sockjs": {
+      "name": "sockjs",
+      "severity": "moderate",
+      "isDirect": false,
+      "via": [
+        "uuid"
+      ],
+      "effects": [
+        "webpack-dev-server"
+      ],
+      "range": ">=0.3.17",
+      "nodes": [
+        "node_modules/sockjs"
+      ],
+      "fixAvailable": {
+        "name": "react-scripts",
+        "version": "0.0.0",
+        "isSemVerMajor": true
+      }
+    },
+    "source-map-js": {
+      "name": "source-map-js",
+      "severity": "high",
+      "isDirect": false,
+      "via": [
+        {
+          "source": 1241209,
+          "name": "source-map-js",
+          "dependency": "source-map-js",
+          "title": "source-map-js allows event-loop denial of service through indexed source-map section offsets",
+          "url": "https://github.com/advisories/GHSA-68fv-2mgg-jv7q",
+          "severity": "high",
+          "cwe": [
+            "CWE-1284"
+          ],
+          "cvss": {
+            "score": 7.5,
+            "vectorString": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:H"
+          },
+          "range": ">=1.0.0 <1.2.2"
+        }
+      ],
+      "effects": [],
+      "range": "1.0.0 - 1.2.1",
+      "nodes": [
+        "node_modules/source-map-js"
+      ],
+      "fixAvailable": true
+    },
+    "sprintf-js": {
+      "name": "sprintf-js",
+      "severity": "moderate",
+      "isDirect": false,
+      "via": [
+        {
+          "source": 1241202,
+          "name": "sprintf-js",
+          "dependency": "sprintf-js",
+          "title": "sprintf-js vulnerable to denial of service through unbounded precision specifiers",
+          "url": "https://github.com/advisories/GHSA-hp3w-g68c-fv3c",
+          "severity": "moderate",
+          "cwe": [
+            "CWE-1284"
+          ],
+          "cvss": {
+            "score": 5.3,
+            "vectorString": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:L"
+          },
+          "range": "<=1.1.3"
+        }
+      ],
+      "effects": [
+        "argparse",
+        "roarr"
+      ],
+      "range": "*",
+      "nodes": [
+        "node_modules/@istanbuljs/load-nyc-config/node_modules/sprintf-js",
+        "node_modules/sprintf-js",
+        "node_modules/svgo/node_modules/sprintf-js"
+      ],
+      "fixAvailable": {
+        "name": "react-scripts",
+        "version": "0.0.0",
+        "isSemVerMajor": true
+      }
+    },
+    "stylehacks": {
+      "name": "stylehacks",
+      "severity": "moderate",
+      "isDirect": false,
+      "via": [
+        "postcss-selector-parser"
+      ],
+      "effects": [
+        "postcss-merge-longhand"
+      ],
+      "range": "<=7.0.4",
+      "nodes": [
+        "node_modules/stylehacks"
+      ],
+      "fixAvailable": true
+    },
+    "svgo": {
+      "name": "svgo",
+      "severity": "high",
+      "isDirect": false,
+      "via": [
+        {
+          "source": 1139520,
+          "name": "svgo",
+          "dependency": "svgo",
+          "title": "SVGO removeScripts plugin leaves some executable scripts intact",
+          "url": "https://github.com/advisories/GHSA-2p49-hgcm-8545",
+          "severity": "high",
+          "cwe": [
+            "CWE-79",
+            "CWE-184"
+          ],
+          "cvss": {
+            "score": 8.2,
+            "vectorString": "CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:C/C:H/I:L/A:N"
+          },
+          "range": ">=1.0.0 <2.8.3"
+        },
+        {
+          "source": 1193737,
+          "name": "svgo",
+          "dependency": "svgo",
+          "title": "SVGO: removeScripts allows executable links through namespace and control-character bypasses",
+          "url": "https://github.com/advisories/GHSA-w27v-7q3p-w38r",
+          "severity": "high",
+          "cwe": [
+            "CWE-79",
+            "CWE-184"
+          ],
+          "cvss": {
+            "score": 8.2,
+            "vectorString": "CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:C/C:H/I:L/A:N"
+          },
+          "range": ">=1.0.0 <2.8.4"
+        },
+        {
+          "source": 1193740,
+          "name": "svgo",
+          "dependency": "svgo",
+          "title": "SVGO: removeScripts incompletely sanitizes executable HTML in SVG foreignObject elements",
+          "url": "https://github.com/advisories/GHSA-4vpr-x523-8j87",
+          "severity": "moderate",
+          "cwe": [
+            "CWE-79"
+          ],
+          "cvss": {
+            "score": 6.1,
+            "vectorString": "CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:C/C:L/I:L/A:N"
+          },
+          "range": ">=1.0.0 <2.8.4"
+        },
+        "css-select",
+        "js-yaml"
+      ],
+      "effects": [
+        "@svgr/plugin-svgo"
+      ],
+      "range": "0.5.2 - 2.8.3",
+      "nodes": [
+        "node_modules/svgo"
+      ],
+      "fixAvailable": {
+        "name": "react-scripts",
+        "version": "0.0.0",
+        "isSemVerMajor": true
+      }
+    },
+    "tailwindcss": {
+      "name": "tailwindcss",
+      "severity": "high",
+      "isDirect": true,
+      "via": [
+        "chokidar",
+        "fast-glob",
+        "micromatch",
+        "postcss-nested",
+        "postcss-selector-parser"
+      ],
+      "effects": [
+        "react-scripts"
+      ],
+      "range": "<=0.0.0-oxide-insiders.ff2c25f || 0.5.0 - 3.4.19",
+      "nodes": [
+        "node_modules/tailwindcss"
+      ],
+      "fixAvailable": {
+        "name": "tailwindcss",
+        "version": "4.3.3",
+        "isSemVerMajor": true
+      }
+    },
+    "tar": {
+      "name": "tar",
+      "severity": "critical",
+      "isDirect": false,
+      "via": [
+        {
+          "source": 1112659,
+          "name": "tar",
+          "dependency": "tar",
+          "title": "node-tar Vulnerable to Arbitrary File Creation/Overwrite via Hardlink Path Traversal",
+          "url": "https://github.com/advisories/GHSA-34x7-hfp2-rc4v",
+          "severity": "high",
+          "cwe": [
+            "CWE-22",
+            "CWE-59"
+          ],
+          "cvss": {
+            "score": 8.2,
+            "vectorString": "CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:C/C:H/I:L/A:N"
+          },
+          "range": "<7.5.7"
+        },
+        {
+          "source": 1113300,
+          "name": "tar",
+          "dependency": "tar",
+          "title": "node-tar is Vulnerable to Arbitrary File Overwrite and Symlink Poisoning via Insufficient Path Sanitization",
+          "url": "https://github.com/advisories/GHSA-8qq5-rm4j-mr97",
+          "severity": "high",
+          "cwe": [
+            "CWE-22"
+          ],
+          "cvss": {
+            "score": 0,
+            "vectorString": null
+          },
+          "range": "<=7.5.2"
+        },
+        {
+          "source": 1113375,
+          "name": "tar",
+          "dependency": "tar",
+          "title": "Arbitrary File Read/Write via Hardlink Target Escape Through Symlink Chain in node-tar Extraction",
+          "url": "https://github.com/advisories/GHSA-83g3-92jg-28cx",
+          "severity": "high",
+          "cwe": [
+            "CWE-22"
+          ],
+          "cvss": {
+            "score": 7.1,
+            "vectorString": "CVSS:3.1/AV:L/AC:L/PR:N/UI:R/S:U/C:H/I:H/A:N"
+          },
+          "range": "<7.5.8"
+        },
+        {
+          "source": 1114200,
+          "name": "tar",
+          "dependency": "tar",
+          "title": "tar has Hardlink Path Traversal via Drive-Relative Linkpath",
+          "url": "https://github.com/advisories/GHSA-qffp-2rhf-9h96",
+          "severity": "high",
+          "cwe": [
+            "CWE-22",
+            "CWE-59"
+          ],
+          "cvss": {
+            "score": 0,
+            "vectorString": null
+          },
+          "range": "<=7.5.9"
+        },
+        {
+          "source": 1114302,
+          "name": "tar",
+          "dependency": "tar",
+          "title": "node-tar Symlink Path Traversal via Drive-Relative Linkpath",
+          "url": "https://github.com/advisories/GHSA-9ppj-qmqm-q256",
+          "severity": "high",
+          "cwe": [
+            "CWE-22"
+          ],
+          "cvss": {
+            "score": 0,
+            "vectorString": null
+          },
+          "range": "<=7.5.10"
+        },
+        {
+          "source": 1114680,
+          "name": "tar",
+          "dependency": "tar",
+          "title": "Race Condition in node-tar Path Reservations via Unicode Ligature Collisions on macOS APFS",
+          "url": "https://github.com/advisories/GHSA-r6q2-hw4h-h46w",
+          "severity": "high",
+          "cwe": [
+            "CWE-176",
+            "CWE-367"
+          ],
+          "cvss": {
+            "score": 8.8,
+            "vectorString": "CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:C/C:L/I:H/A:L"
+          },
+          "range": "<=7.5.3"
+        },
+        {
+          "source": 1120782,
+          "name": "tar",
+          "dependency": "tar",
+          "title": "node-tar applies PAX size override to intermediary GNU long-name/long-link headers, causing tar parser interpretation differential (file smuggling)",
+          "url": "https://github.com/advisories/GHSA-vmf3-w455-68vh",
+          "severity": "moderate",
+          "cwe": [
+            "CWE-436"
+          ],
+          "cvss": {
+            "score": 0,
+            "vectorString": null
+          },
+          "range": "<=7.5.15"
+        },
+        {
+          "source": 1123939,
+          "name": "tar",
+          "dependency": "tar",
+          "title": "node-tar: Process crash via PAX numeric path type confusion",
+          "url": "https://github.com/advisories/GHSA-w8wr-v893-vjvp",
+          "severity": "moderate",
+          "cwe": [
+            "CWE-704"
+          ],
+          "cvss": {
+            "score": 5.3,
+            "vectorString": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:L"
+          },
+          "range": "<=7.5.17"
+        },
+        {
+          "source": 1123940,
+          "name": "tar",
+          "dependency": "tar",
+          "title": "node-tar: Decompression/parse DoS via unlimited input",
+          "url": "https://github.com/advisories/GHSA-23hp-3jrh-7fpw",
+          "severity": "critical",
+          "cwe": [
+            "CWE-770"
+          ],
+          "cvss": {
+            "score": 7.5,
+            "vectorString": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:H"
+          },
+          "range": "<=7.5.18"
+        },
+        {
+          "source": 1123941,
+          "name": "tar",
+          "dependency": "tar",
+          "title": "node-tar: Negative tar entry size causes infinite loop in archive replace",
+          "url": "https://github.com/advisories/GHSA-8x88-c5mf-7j5w",
+          "severity": "high",
+          "cwe": [
+            "CWE-835"
+          ],
+          "cvss": {
+            "score": 7.5,
+            "vectorString": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:H"
+          },
+          "range": "<=7.5.17"
+        },
+        {
+          "source": 1123942,
+          "name": "tar",
+          "dependency": "tar",
+          "title": "node-tar: Uncaught Exception DoS via NUL byte in PAX path/linkpath records",
+          "url": "https://github.com/advisories/GHSA-gvwx-54wh-qm9j",
+          "severity": "moderate",
+          "cwe": [
+            "CWE-248"
+          ],
+          "cvss": {
+            "score": 5.3,
+            "vectorString": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:L"
+          },
+          "range": "<=7.5.16"
+        },
+        {
+          "source": 1145647,
+          "name": "tar",
+          "dependency": "tar",
+          "title": "node-tar: Uncontrolled recursion in mapHas/filesFilter allows uncatchable stack-overflow DoS via crafted long-path tar with member selection",
+          "url": "https://github.com/advisories/GHSA-r292-9mhp-454m",
+          "severity": "high",
+          "cwe": [
+            "CWE-400",
+            "CWE-674"
+          ],
+          "cvss": {
+            "score": 7.5,
+            "vectorString": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:H"
+          },
+          "range": "<=7.5.20"
+        }
+      ],
+      "effects": [
+        "@capacitor/cli",
+        "@electron/rebuild",
+        "app-builder-lib",
+        "cacache",
+        "node-gyp"
+      ],
+      "range": "<=7.5.20",
+      "nodes": [
+        "node_modules/tar"
+      ],
+      "fixAvailable": {
+        "name": "electron-builder",
+        "version": "26.15.3",
+        "isSemVerMajor": true
+      }
+    },
+    "underscore": {
+      "name": "underscore",
+      "severity": "high",
+      "isDirect": false,
+      "via": [
+        {
+          "source": 1117689,
+          "name": "underscore",
+          "dependency": "underscore",
+          "title": "Underscore has unlimited recursion in _.flatten and _.isEqual, potential for DoS attack",
+          "url": "https://github.com/advisories/GHSA-qpx9-hpmf-5gmw",
+          "severity": "high",
+          "cwe": [
+            "CWE-674",
+            "CWE-770"
+          ],
+          "cvss": {
+            "score": 5.9,
+            "vectorString": "CVSS:3.1/AV:N/AC:H/PR:N/UI:N/S:U/C:N/I:N/A:H"
+          },
+          "range": "<=1.13.7"
+        }
+      ],
+      "effects": [
+        "jsonpath"
+      ],
+      "range": "<=1.13.7",
+      "nodes": [
+        "node_modules/underscore"
+      ],
+      "fixAvailable": true
+    },
+    "uuid": {
+      "name": "uuid",
+      "severity": "moderate",
+      "isDirect": false,
+      "via": [
+        {
+          "source": 1119441,
+          "name": "uuid",
+          "dependency": "uuid",
+          "title": "uuid: Missing buffer bounds check in v3/v5/v6 when buf is provided",
+          "url": "https://github.com/advisories/GHSA-w5hq-g745-h8pq",
+          "severity": "moderate",
+          "cwe": [
+            "CWE-787",
+            "CWE-1285"
+          ],
+          "cvss": {
+            "score": 7.5,
+            "vectorString": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:H/A:N"
+          },
+          "range": "<11.1.1"
+        }
+      ],
+      "effects": [
+        "sockjs"
+      ],
+      "range": "<11.1.1",
+      "nodes": [
+        "node_modules/uuid"
+      ],
+      "fixAvailable": {
+        "name": "react-scripts",
+        "version": "0.0.0",
+        "isSemVerMajor": true
+      }
+    },
+    "webpack-dev-middleware": {
+      "name": "webpack-dev-middleware",
+      "severity": "high",
+      "isDirect": false,
+      "via": [
+        {
+          "source": 1240027,
+          "name": "webpack-dev-middleware",
+          "dependency": "webpack-dev-middleware",
+          "title": "webpack-dev-middleware vulnerable to Path Traversal via non-slash-terminated publicPath",
+          "url": "https://github.com/advisories/GHSA-g84c-rxfj-3j2c",
+          "severity": "high",
+          "cwe": [
+            "CWE-22"
+          ],
+          "cvss": {
+            "score": 7.4,
+            "vectorString": "CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:C/C:H/I:N/A:N"
+          },
+          "range": "<7.4.5"
+        }
+      ],
+      "effects": [
+        "webpack-dev-server"
+      ],
+      "range": "<7.4.5",
+      "nodes": [
+        "node_modules/webpack-dev-middleware"
+      ],
+      "fixAvailable": {
+        "name": "react-scripts",
+        "version": "0.0.0",
+        "isSemVerMajor": true
+      }
+    },
+    "webpack-dev-server": {
+      "name": "webpack-dev-server",
+      "severity": "high",
+      "isDirect": false,
+      "via": [
+        {
+          "source": 1108429,
+          "name": "webpack-dev-server",
+          "dependency": "webpack-dev-server",
+          "title": "webpack-dev-server users' source code may be stolen when they access a malicious web site with non-Chromium based browser",
+          "url": "https://github.com/advisories/GHSA-9jgg-88mc-972h",
+          "severity": "moderate",
+          "cwe": [
+            "CWE-346"
+          ],
+          "cvss": {
+            "score": 6.5,
+            "vectorString": "CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:U/C:H/I:N/A:N"
+          },
+          "range": "<=5.2.0"
+        },
+        {
+          "source": 1108430,
+          "name": "webpack-dev-server",
+          "dependency": "webpack-dev-server",
+          "title": "webpack-dev-server users' source code may be stolen when they access a malicious web site",
+          "url": "https://github.com/advisories/GHSA-4v9v-hfq4-rm2v",
+          "severity": "moderate",
+          "cwe": [
+            "CWE-749"
+          ],
+          "cvss": {
+            "score": 5.3,
+            "vectorString": "CVSS:3.1/AV:N/AC:H/PR:N/UI:R/S:U/C:H/I:N/A:N"
+          },
+          "range": "<=5.2.0"
+        },
+        {
+          "source": 1119074,
+          "name": "webpack-dev-server",
+          "dependency": "webpack-dev-server",
+          "title": "webpack-dev-server vulnerable to cross-origin source code exposure on non-HTTPS origins",
+          "url": "https://github.com/advisories/GHSA-79cf-xcqc-c78w",
+          "severity": "moderate",
+          "cwe": [
+            "CWE-749"
+          ],
+          "cvss": {
+            "score": 5.3,
+            "vectorString": "CVSS:3.1/AV:N/AC:H/PR:N/UI:R/S:U/C:H/I:N/A:N"
+          },
+          "range": "<=5.2.3"
+        },
+        {
+          "source": 1121087,
+          "name": "webpack-dev-server",
+          "dependency": "webpack-dev-server",
+          "title": "webpack-dev-server vulnerable to HMR WebSocket interception via permissive user proxies",
+          "url": "https://github.com/advisories/GHSA-mx8g-39q3-5c79",
+          "severity": "moderate",
+          "cwe": [
+            "CWE-346",
+            "CWE-441"
+          ],
+          "cvss": {
+            "score": 5.3,
+            "vectorString": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:L"
+          },
+          "range": "<5.2.5"
+        },
+        {
+          "source": 1123965,
+          "name": "webpack-dev-server",
+          "dependency": "webpack-dev-server",
+          "title": "webpack-dev-server vulnerable to cross-site request forgery via internal developer endpoints",
+          "url": "https://github.com/advisories/GHSA-f5vj-f2hx-8m93",
+          "severity": "moderate",
+          "cwe": [
+            "CWE-352",
+            "CWE-749"
+          ],
+          "cvss": {
+            "score": 4.7,
+            "vectorString": "CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:C/C:N/I:N/A:L"
+          },
+          "range": "<=5.2.5"
+        },
+        {
+          "source": 1123966,
+          "name": "webpack-dev-server",
+          "dependency": "webpack-dev-server",
+          "title": "webpack-dev-server vulnerable to denial of service via a malformed Host or Origin header",
+          "url": "https://github.com/advisories/GHSA-m28w-2pqf-7qgj",
+          "severity": "moderate",
+          "cwe": [
+            "CWE-20",
+            "CWE-248"
+          ],
+          "cvss": {
+            "score": 5.3,
+            "vectorString": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:L"
+          },
+          "range": "<=5.2.5"
+        },
+        "chokidar",
+        "http-proxy-middleware",
+        "selfsigned",
+        "sockjs",
+        "webpack-dev-middleware"
+      ],
+      "effects": [
+        "react-scripts"
+      ],
+      "range": "*",
+      "nodes": [
+        "node_modules/webpack-dev-server"
+      ],
+      "fixAvailable": {
+        "name": "react-scripts",
+        "version": "0.0.0",
+        "isSemVerMajor": true
+      }
+    },
+    "workbox-build": {
+      "name": "workbox-build",
+      "severity": "high",
+      "isDirect": false,
+      "via": [
+        "rollup-plugin-terser"
+      ],
+      "effects": [
+        "workbox-webpack-plugin"
+      ],
+      "range": "5.0.0-alpha.0 - 7.0.0",
+      "nodes": [
+        "node_modules/workbox-build"
+      ],
+      "fixAvailable": true
+    },
+    "workbox-webpack-plugin": {
+      "name": "workbox-webpack-plugin",
+      "severity": "high",
+      "isDirect": false,
+      "via": [
+        "workbox-build"
+      ],
+      "effects": [],
+      "range": "5.0.0-alpha.0 - 7.0.0",
+      "nodes": [
+        "node_modules/workbox-webpack-plugin"
+      ],
+      "fixAvailable": true
+    }
+  },
+  "metadata": {
+    "vulnerabilities": {
+      "info": 0,
+      "low": 5,
+      "moderate": 39,
+      "high": 82,
+      "critical": 4,
+      "total": 130
+    },
+    "dependencies": {
+      "prod": 1429,
+      "dev": 318,
+      "optional": 27,
+      "peer": 0,
+      "peerOptional": 0,
+      "total": 1747
+    }
+  }
+}

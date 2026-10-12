@@ -186,24 +186,16 @@ async def create_transaction(transaction: TransactionCreate, user: dict = Depend
     min_redeem = int(loyalty_cfg.get("minRedeem", 10))
     redeem_rate = float(loyalty_cfg.get("redeemRate", 0.01))
 
+    # Pricing builds a redemption plan without changing balances. The sale,
+    # all debits and redemption ledger records commit atomically below.
+    redemptions = []
+
     async def _redeem(customer_id: str, points: int) -> float:
-        """Atomically check-and-decrement one customer's points balance.
-        Raises 400 on insufficient balance/below minimum. Returns the $
-        value to apply as a discount."""
         if points < min_redeem:
             raise HTTPException(status_code=400, detail=f"Minimum {min_redeem} points required to redeem")
-        redeemed_doc = await db.customers.find_one_and_update(
-            {**scope, "id": customer_id, "points": {"$gte": points}, "loyaltyLocked": {"$ne": True}},
-            {"$inc": {"points": -points}},
-        )
-        if not redeemed_doc:
-            locked = await db.customers.find_one({**scope, "id": customer_id, "loyaltyLocked": True}, {"_id": 0, "id": 1})
-            if locked:
-                raise HTTPException(status_code=403, detail="Loyalty account locked pending fraud review")
-        if not redeemed_doc:
-            balance = int((await db.customers.find_one({**scope, "id": customer_id}, {"_id": 0, "points": 1}) or {}).get("points", 0))
-            raise HTTPException(status_code=400, detail=f"Insufficient points: {balance} available, {points} requested")
-        return round(points * redeem_rate, 2)
+        value = round(points * redeem_rate, 2)
+        redemptions.append((customer_id, points, value))
+        return value
 
     points_redeemed = max(int(transaction.pointsRedeemed or 0), 0)
     points_discount = 0.0
@@ -306,37 +298,22 @@ async def create_transaction(transaction: TransactionCreate, user: dict = Depend
         "clientOpId": transaction.clientOpId,
     }
 
-    try:
-        await db.transactions.insert_one(txn_dict)
-    except DuplicateKeyError:
-        # A genuinely concurrent duplicate — another request with the same
-        # clientOpId won the race between our own find_one check above and
-        # this insert. Return that winner's transaction rather than raising;
-        # the caller (the offline queue) just wants "this sale exists now",
-        # not a 500 for having asked twice.
-        winner = await db.transactions.find_one({"clientOpId": transaction.clientOpId, **scope}, {"_id": 0})
-        if winner:
-            return Transaction(**winner)
-        raise
-    txn_dict.pop("_id", None)
-
-    # Record the redemption on the loyalty ledger for history/reporting — the
-    # balance itself was already decremented atomically above, before the
-    # transaction was inserted, so this is audit trail only.
-    if points_redeemed > 0:
+    if redemptions:
+        from services.pos_sale_store import insert_with_redemptions
+        txn_dict, inserted = await insert_with_redemptions(db, txn_dict, redemptions)
+        if not inserted:
+            return Transaction(**txn_dict)
+    else:
         try:
-            await db.loyalty_ledger.insert_one({
-                "id": f"LP-{str(uuid.uuid4())[:8].upper()}",
-                "customerId": transaction.customerId,
-                "transactionId": txn_dict["id"],
-                "type": "redeem",
-                "points": -points_redeemed,
-                "value": points_discount,
-                "businessId": business_id,
-                "createdAt": datetime.utcnow().isoformat(),
-            })
-        except Exception:
-            pass
+            await db.transactions.insert_one(txn_dict)
+        except DuplicateKeyError:
+            if transaction.clientOpId:
+                winner = await db.transactions.find_one(
+                    {"clientOpId": transaction.clientOpId, **scope}, {"_id": 0})
+                if winner:
+                    return Transaction(**winner)
+            raise
+        txn_dict.pop("_id", None)
 
     # Consume wallet vouchers used as discounts (no-op for v26 commerce
     # vouchers, which track their own redemption counts).
@@ -344,7 +321,7 @@ async def create_transaction(transaction: TransactionCreate, user: dict = Depend
         from services.wallet_service import redeem_wallet_voucher
         for d in applied_discounts:
             if d.get("voucherId"):
-                await redeem_wallet_voucher(d["voucherId"], txn_dict["id"], d["amount"])
+                await redeem_wallet_voucher(d["voucherId"], txn_dict["id"], d["amount"], business_id=business_id)
     except Exception:
         pass
     # Audit trail + GL auto-post + rules-engine emit — shared with any
