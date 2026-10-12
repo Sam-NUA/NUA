@@ -61,7 +61,7 @@ async def _clear_overnight_tickets(business_id: Optional[str] = None) -> int:
     stale_ids = [o["id"] for o in stale if (o.get("createdAt") or "")[:10] < today]
     if stale_ids:
         await db.kitchen_orders.update_many(
-            {"id": {"$in": stale_ids}},
+            {"id": {"$in": stale_ids}, **tenant_scope_filter(business_id)},
             {"$set": {"status": "cancelled", "cancelledAt": _now(),
                       "autoCleared": True, "notes": "Auto-cleared overnight — not served by close of previous day"}},
         )
@@ -213,12 +213,14 @@ async def create_kitchen_order(order: KitchenOrderCreate, request: Request, user
     if not order_dict.get("deviceId"):
         order_dict["deviceId"] = hdr_devid or (request.client.host if request.client else "?")
 
-    # Enrich from reservation if present
-    if order_dict.get("reservationId") and (not order_dict.get("covers") or not order_dict.get("guestName")):
-        res = await db.reservations.find_one({"id": order_dict["reservationId"]}, {"_id": 0})
-        if res:
-            order_dict["covers"] = order_dict.get("covers") or res.get("partySize") or res.get("guests")
-            order_dict["guestName"] = order_dict.get("guestName") or res.get("customerName") or res.get("guestName")
+    # Validate the relationship even when the caller supplies docket details.
+    if order_dict.get("reservationId"):
+        res = await db.reservations.find_one(
+            {"id": order_dict["reservationId"], **tenant_scope_filter(user.get("businessId"))}, {"_id": 0})
+        if not res:
+            raise HTTPException(status_code=404, detail="Reservation not found")
+        order_dict["covers"] = order_dict.get("covers") or res.get("partySize") or res.get("guests")
+        order_dict["guestName"] = res.get("customerName") or res.get("guestName")
 
     order_obj = KitchenOrder(**order_dict)
     await db.kitchen_orders.insert_one(order_obj.dict())

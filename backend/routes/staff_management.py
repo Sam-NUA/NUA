@@ -112,12 +112,25 @@ async def _has_roster_override_today(staff_id: str, business_id: Optional[str] =
 
 
 def _issue_staff_token(user: dict) -> str:
-    import jwt, os
-    return jwt.encode(
-        {"sub": user["id"], "email": user["email"], "role": user["role"], "businessId": user.get("businessId"),
-         "exp": datetime.now(timezone.utc) + timedelta(hours=8), "type": "access"},
-        os.environ["JWT_SECRET"], algorithm="HS256"
-    )
+    # Share issue-time/revocation semantics with password sign-in.
+    from routes.auth import create_access_token
+    return create_access_token(user["id"], user["email"], user["role"], user.get("businessId"))
+
+
+async def _require_pin_eligible(user: dict) -> None:
+    from services import two_factor
+    if not user.get("businessId"):
+        raise HTTPException(status_code=403, detail="Active business membership required")
+    if await two_factor.required_for(user):
+        raise HTTPException(status_code=403, detail="Two-factor authentication required. Use email sign-in and your authenticator.")
+
+
+async def _pin_login_result(user: dict) -> dict:
+    from routes.auth import public_user, effective_permissions
+    safe_user = public_user(user)
+    safe_user["permissions"] = await effective_permissions(user)
+    return {"user": safe_user, "token": _issue_staff_token(user)}
+
 
 
 async def _unique_pin_user(pin):
@@ -142,16 +155,14 @@ async def pin_login(data: dict):
     user = await _unique_pin_user(pin)
     if not user:
         raise HTTPException(status_code=401, detail="Invalid PIN")
-    user.pop("_id", None)
-    user.pop("password_hash", None)
+    await _require_pin_eligible(user)
 
     if user["role"] not in ("owner", "manager"):
         if (not await _is_rostered_now(user["id"], business_id=user.get("businessId"))
                 and not await _has_roster_override_today(user["id"], user.get("businessId"))):
             return {"needsApproval": True, "staffId": user["id"], "staffName": user["name"]}
 
-    token = _issue_staff_token(user)
-    return {"user": user, "token": token}
+    return await _pin_login_result(user)
 
 
 @router.post("/auth/pin-login/approve")
@@ -175,6 +186,9 @@ async def approve_pin_login(data: dict):
     if manager.get("businessId") != staff.get("businessId"):
         raise HTTPException(status_code=403, detail="Manager must belong to the same business")
 
+    await _require_pin_eligible(staff)
+    await _require_pin_eligible(manager)
+
     today_iso = datetime.now(timezone.utc).date().isoformat()
     await db.roster_overrides.update_one(
         {"staffId": staff["id"], "date": today_iso,
@@ -196,10 +210,7 @@ async def approve_pin_login(data: dict):
     except Exception:
         pass
 
-    staff.pop("_id", None)
-    staff.pop("password_hash", None)
-    token = _issue_staff_token(staff)
-    return {"user": staff, "token": token}
+    return await _pin_login_result(staff)
 
 @router.post("/auth/staff/{staff_id}/set-pin")
 async def set_staff_pin(staff_id: str, data: dict, user: dict = Depends(require_owner)):

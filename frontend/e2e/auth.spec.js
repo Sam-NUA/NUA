@@ -43,5 +43,15 @@ test('owner recovery saves a PIN and supports PIN sign-in', async ({ page }) => 
   await expect(page.getByTestId('owner-recovery-success')).toBeVisible();
   const response = await page.request.post('http://127.0.0.1:8123/api/auth/pin-login', { data: { pin: '8642' } });
   expect(response.ok()).toBeTruthy();
-  expect((await response.json()).user.role).toBe('owner');
+  const result = await response.json();
+  expect(result.user.role).toBe('owner');
+  const me = await page.request.get('http://127.0.0.1:8123/api/auth/me', {
+    headers: { Authorization: `Bearer ${result.token}` },
+  });
+  expect(me.ok()).toBeTruthy();
+  await page.goto('/login');
+  await page.getByTestId('mode-pin').click();
+  await page.getByTestId('login-pin').fill('8642');
+  await page.getByTestId('pin-submit').click();
+  await expect(page.getByTestId('login-page')).not.toBeVisible();
 });
