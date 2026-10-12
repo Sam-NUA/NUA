@@ -158,6 +158,20 @@ async def create_reservation(reservation: ReservationCreate, user: Optional[dict
     from services.booking_rules_engine import validate_and_enrich_booking, BookingRuleViolation, capacity_lock
     from services.cancellation_policy import snapshot_cutoff_hours
     business_id = (user or {}).get("businessId")
+    # A client-supplied customerId/tableId used to be accepted at face value
+    # and stored unchecked — a foreign or nonexistent reference silently
+    # produced a reservation pointing at nothing, or at another business's
+    # customer/table, instead of a clear rejection. Checked before any
+    # capacity lock or write, so an invalid reference never reaches storage.
+    if reservation.customerId:
+        owned_customer = await db.customers.find_one(
+            {"id": reservation.customerId, **tenant_scope_filter(business_id)}, {"_id": 0, "id": 1})
+        if not owned_customer:
+            raise HTTPException(status_code=404, detail="Customer not found")
+    if reservation.tableId:
+        owned_table = await floor_tables.get_table_by_id(reservation.tableId, business_id=business_id)
+        if not owned_table:
+            raise HTTPException(status_code=404, detail="Table not found")
     try:
         async with capacity_lock(business_id, reservation.date):
             enrichment = await validate_and_enrich_booking(
@@ -197,11 +211,10 @@ async def create_reservation(reservation: ReservationCreate, user: Optional[dict
         except Exception as e:
             from utils.errors import log_and_continue
             log_and_continue(logging.getLogger(__name__), f"Audit log failed for large booking {res_obj.id} (booking itself succeeded)", e)
-    if reservation.tableId:
-        found = await floor_tables.get_table_by_id(reservation.tableId)
-        if found:
-            _, plan_id = found
-            await floor_tables.set_table_status(reservation.tableId, plan_id, "reserved", reservation_id=res_obj.id)
+    if reservation.tableId and owned_table:
+        _, plan_id = owned_table
+        await floor_tables.set_table_status(reservation.tableId, plan_id, "reserved", reservation_id=res_obj.id,
+                                             business_id=business_id)
     if reservation.customerId:
         await db.customers.update_one(
             {**tenant_scope_filter(business_id), "id": reservation.customerId},
@@ -236,13 +249,24 @@ async def update_reservation(reservation_id: str, update: ReservationUpdate, use
         raise HTTPException(status_code=404, detail="Reservation not found")
     update_data = {k: v for k, v in update.dict().items() if v is not None}
     update_data["updatedAt"] = datetime.utcnow().isoformat()
-    # Newly linking (or re-linking) a CRM guest during an edit — same bookkeeping
-    # create_reservation does, so this reservation shows up on the guest's profile.
+    # A client-supplied customerId/tableId used to be accepted at face value
+    # here too — an update could silently attach a foreign or nonexistent
+    # reference (the customerId case no-opped the bookkeeping $push but
+    # still $set the raw id onto the reservation; tableId had no check at
+    # all). Rejected upfront, same as create_reservation.
     new_customer_id = update_data.get("customerId")
     if new_customer_id and new_customer_id != existing.get("customerId"):
+        owned_customer = await db.customers.find_one(
+            {"id": new_customer_id, **tenant_scope_filter(user.get("businessId"))}, {"_id": 0, "id": 1})
+        if not owned_customer:
+            raise HTTPException(status_code=404, detail="Customer not found")
         await db.customers.update_one(
             {**tenant_scope_filter(user.get("businessId")), "id": new_customer_id}, {"$push": {"reservationIds": reservation_id}}
         )
+    new_table_id = update_data.get("tableId")
+    if new_table_id and new_table_id != existing.get("tableId"):
+        if not await floor_tables.get_table_by_id(new_table_id, business_id=user.get("businessId")):
+            raise HTTPException(status_code=404, detail="Table not found")
 
     # Re-run the same booking-rules engine creation goes through whenever an
     # edit touches a field the rules actually depend on — previously this
@@ -995,6 +1019,10 @@ async def update_waitlist_entry(entry_id: str, update: WaitlistEntryUpdate, user
     if not guard or not tenant_owns_strict(guard.get("businessId"), user.get("businessId")):
         raise HTTPException(status_code=404, detail="Waitlist entry not found")
     update_data = {k: v for k, v in update.dict().items() if v is not None}
+    new_table_id = update_data.get("tableId")
+    if new_table_id and new_table_id != guard.get("tableId"):
+        if not await floor_tables.get_table_by_id(new_table_id, business_id=user.get("businessId")):
+            raise HTTPException(status_code=404, detail="Table not found")
     result = await db.waitlist.find_one_and_update(
         {"$and": [{"id": entry_id}, tenant_scope_filter(user.get("businessId"))]}, {"$set": update_data}, return_document=True
     )

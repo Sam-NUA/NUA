@@ -11,14 +11,40 @@ export function AuthProvider({ children }) {
   const checkAuth = useCallback(async () => {
     const token = localStorage.getItem('nua_token');
     if (!token) { setUser(false); setLoading(false); return; }
+    const attempt = () => axios.get(`${API}/api/auth/me`, {
+      headers: { Authorization: `Bearer ${token}` }
+    });
     try {
-      const res = await axios.get(`${API}/api/auth/me`, {
-        headers: { Authorization: `Bearer ${token}` }
-      });
+      const res = await attempt();
       setUser(res.data);
-    } catch {
-      localStorage.removeItem('nua_token');
-      setUser(false);
+    } catch (err) {
+      const status = err?.response?.status;
+      if (status === 401 || status === 403) {
+        // The backend actually rejected this token (expired, revoked by a
+        // password change, invalid) — it really is a signed-out session.
+        localStorage.removeItem('nua_token');
+        setUser(false);
+      } else {
+        // No response at all (network drop, timeout) or a 5xx — the
+        // backend didn't tell us the token is bad, so it probably isn't.
+        // One short retry absorbs a single blip (a flaky connection, a
+        // backend redeploying mid-request) without booting an active
+        // cashier; the token is never cleared for this case either way,
+        // so even a failed retry leaves a later manual retry/reload able
+        // to succeed instead of forcing a full re-login.
+        try {
+          const retryRes = await new Promise((resolve, reject) => {
+            setTimeout(() => attempt().then(resolve, reject), 1500);
+          });
+          setUser(retryRes.data);
+        } catch (retryErr) {
+          const retryStatus = retryErr?.response?.status;
+          if (retryStatus === 401 || retryStatus === 403) {
+            localStorage.removeItem('nua_token');
+          }
+          setUser(false);
+        }
+      }
     }
     setLoading(false);
   }, []);

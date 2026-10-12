@@ -113,3 +113,31 @@ def mock_reservation_transaction(monkeypatch):
     async def execute(operation):
         return await operation(None)
     monkeypatch.setattr(reservation_store, '_transaction', execute)
+
+
+@pytest.fixture(autouse=True)
+def mock_pos_sale_transaction(monkeypatch):
+    """Behavioral transaction double only; tests_real proves Mongo atomicity.
+
+    Serialize and restore the three participating collections on abort so
+    HTTP tests exercise rejection/rollback semantics instead of skipping them.
+    No production fallback is installed. The real replica suite uses sessions.
+    """
+    import asyncio
+    from database import db
+    from services import pos_sale_store
+    lock = asyncio.Lock()
+
+    async def execute(operation):
+        async with lock:
+            collections = (db.customers, db.transactions, db.loyalty_ledger)
+            snapshots = [await collection.find({}).to_list(None) for collection in collections]
+            try:
+                return await operation(None)
+            except BaseException:
+                for collection, rows in zip(collections, snapshots):
+                    await collection.delete_many({})
+                    if rows:
+                        await collection.insert_many(rows)
+                raise
+    monkeypatch.setattr(pos_sale_store, "_transaction", execute)

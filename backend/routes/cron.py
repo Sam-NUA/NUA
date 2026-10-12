@@ -36,55 +36,66 @@ def _require_cron_secret(authorization: Optional[str]) -> None:
         raise HTTPException(status_code=401, detail="Invalid cron credential")
 
 
+
+async def _execute(job_name, ttl, work, *, release=False):
+    from services import cron_jobs
+    owner_token = uuid.uuid4().hex
+    if not await cron_jobs.try_claim(job_name, ttl_seconds=ttl, owner_token=owner_token):
+        return {"ran": False, "reason": "already claimed by another invocation"}
+    try:
+        result = await work()
+        if result.get("failures", 0):
+            raise RuntimeError("Scheduled work reported partial failures")
+        if not await cron_jobs.finish(job_name, owner_token):
+            raise HTTPException(409, "Job lease replaced before completion")
+        return {"ran": True, **result}
+    except BaseException as exc:
+        try:
+            await cron_jobs.finish(job_name, owner_token, error_type=type(exc).__name__)
+        except Exception:
+            # No false success is recorded if the database is unavailable.
+            import logging
+            logging.getLogger(__name__).exception("Could not record cron failure")
+        raise
+    finally:
+        if release:
+            await cron_jobs.release(job_name, owner_token)
+
+
 @router.api_route("/ash-hourly", methods=["GET", "POST"])
 async def cron_ash_hourly(authorization: Optional[str] = Header(None)):
     _require_cron_secret(authorization)
-    from services import cron_jobs, nua_scheduler
-    # Throttle to roughly the real cadence even if the Vercel schedule
-    # polls more often than the job should actually run.
-    ttl = nua_scheduler._hourly_interval_seconds() - 5
-    if not await cron_jobs.try_claim("ash-hourly", ttl_seconds=max(ttl, 30)):
-        return {"ran": False, "reason": "already claimed by another invocation"}
-    result = await nua_scheduler.run_tick_once()
-    return {"ran": True, **result}
+    from services import nua_scheduler
+    return await _execute("ash-hourly", max(nua_scheduler._hourly_interval_seconds() - 5, 30),
+                          nua_scheduler.run_tick_once)
 
 
 @router.api_route("/coursing-tick", methods=["GET", "POST"])
 async def cron_coursing_tick(authorization: Optional[str] = Header(None)):
     _require_cron_secret(authorization)
-    from services import cron_jobs, coursing_scheduler
-    ttl = coursing_scheduler._interval_seconds() - 5
-    if not await cron_jobs.try_claim("coursing-tick", ttl_seconds=max(ttl, 15)):
-        return {"ran": False, "reason": "already claimed by another invocation"}
-    fired = await coursing_scheduler._tick_once()
-    return {"ran": True, "coursesFired": fired}
+    from services import coursing_scheduler
+    async def work():
+        return {"coursesFired": await coursing_scheduler._tick_once()}
+    return await _execute("coursing-tick", max(coursing_scheduler._interval_seconds() - 5, 15), work)
 
 
 @router.api_route("/backup-drill-check", methods=["GET", "POST"])
 async def cron_backup_drill_check(authorization: Optional[str] = Header(None)):
     _require_cron_secret(authorization)
-    from services import cron_jobs, backup_scheduler
-    # Idempotent per calendar day already (db.backup_drills) — this lock
-    # only prevents two invocations racing the same tick, not daily reruns.
-    if not await cron_jobs.try_claim("backup-drill-check", ttl_seconds=300):
-        return {"ran": False, "reason": "already claimed by another invocation"}
-    await backup_scheduler._maybe_run_drill()
-    status = await backup_scheduler.drill_status()
-    return {"ran": True, **status}
+    from services import backup_scheduler
+    async def work():
+        await backup_scheduler._maybe_run_drill()
+        status = await backup_scheduler.drill_status()
+        if (status.get("lastDrill") or {}).get("ok") is False:
+            raise RuntimeError("Backup restore drill failed")
+        return status
+    return await _execute("backup-drill-check", 300, work)
 
 
 @router.api_route("/booking-sync-drain", methods=["GET", "POST"])
 async def cron_booking_sync_drain(authorization: Optional[str] = Header(None)):
     _require_cron_secret(authorization)
-    from services import cron_jobs, booking_sync
-    # Short lock: this job's real cadence is "as often as possible" (it's
-    # draining a delivery queue), the claim only stops two invocations
-    # processing the queue at the exact same instant.
-    owner_token = uuid.uuid4().hex
-    if not await cron_jobs.try_claim("booking-sync-drain", ttl_seconds=300, owner_token=owner_token):
-        return {"ran": False, "reason": "already claimed by another invocation"}
-    try:
-        delivered = await booking_sync.drain(limit=50)
-    finally:
-        await cron_jobs.release("booking-sync-drain", owner_token)
-    return {"ran": True, "delivered": delivered}
+    from services import booking_sync
+    async def work():
+        return {"delivered": await booking_sync.drain(limit=50)}
+    return await _execute("booking-sync-drain", 300, work, release=True)

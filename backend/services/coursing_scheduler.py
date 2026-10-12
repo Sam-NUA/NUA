@@ -33,6 +33,7 @@ async def _tick_once() -> int:
     rows = await db.kitchen_orders.find(
         {"status": {"$nin": ["served", "cancelled"]}}, {"_id": 0}).to_list(200)
     fired = 0
+    failures = 0
     for order in rows:
         if not order.get("businessId") or order.get("_ownershipQuarantined"):
             continue
@@ -49,7 +50,10 @@ async def _tick_once() -> int:
                                             business_id=order.get("businessId"))
                 fired += 1
             except Exception as e:
+                failures += 1
                 logger.warning("[coursing] auto-fire failed for %s c%s: %s", order["id"], course, e)
+    if failures:
+        raise RuntimeError(f"{failures} scheduled course fires failed")
     return fired
 
 

@@ -50,8 +50,17 @@ def _parse_birthday(raw: str):
 
 async def ensure_birthday_voucher(customer: dict, amount: Optional[float] = None) -> Optional[dict]:
     """Issue this year's birthday-month voucher if the customer's birthday
-    falls in the current month and they don't have one yet. Idempotent."""
-    cfg = await get_offer_settings()
+    falls in the current month and they don't have one yet. Idempotent.
+
+    Ownership comes from the customer record's own `businessId`, never from
+    the bare customerId — every caller here already resolved `customer` from
+    a tenant-scoped query, so this is the verified business, not a guess.
+    A customer with no businessId (unowned/legacy) gets no voucher rather
+    than one stamped to nobody or to a guessed tenant."""
+    business_id = customer.get("businessId")
+    if not business_id:
+        return None
+    cfg = await get_offer_settings(business_id)
     if not cfg.get("birthdayEnabled", True):
         return None
     bd = _parse_birthday(customer.get("birthday"))
@@ -62,6 +71,7 @@ async def ensure_birthday_voucher(customer: dict, amount: Optional[float] = None
         return None
     existing = await db.vouchers.find_one({
         "customerId": customer["id"], "reason": "birthday", "year": now.year,
+        **tenant_scope_filter(business_id),
     })
     if existing:
         return None
@@ -70,6 +80,7 @@ async def ensure_birthday_voucher(customer: dict, amount: Optional[float] = None
     voucher = {
         "id": f"VCH-{str(uuid.uuid4())[:8].upper()}",
         "customerId": customer["id"],
+        "businessId": business_id,
         "amount": float(amount if amount is not None else cfg.get("birthdayAmount", 10.0)),
         "reason": "birthday",
         "occasion": "Birthday Month 🎂",
@@ -83,24 +94,37 @@ async def ensure_birthday_voucher(customer: dict, amount: Optional[float] = None
     return voucher
 
 
-async def expire_stale_vouchers(customer_id: str):
-    """Flip active-but-expired vouchers to 'expired' so wallets stay honest."""
+async def expire_stale_vouchers(customer_id: str, business_id: Optional[str] = None):
+    """Flip active-but-expired vouchers to 'expired' so wallets stay honest.
+
+    Scoped to the caller's own business — a legacy voucher with no
+    businessId yet (pre-dating this fix) is left alone rather than expired
+    by a tenant that was never confirmed to own it; it becomes reachable
+    again once resolved through the reviewed ownership-migration workflow
+    (services/ownership_migration.py; "vouchers" is already in its
+    MIGRATABLE_COLLECTIONS)."""
     now_iso = datetime.now(timezone.utc).isoformat()
     await db.vouchers.update_many(
-        {"customerId": customer_id, "status": "active", "expiresAt": {"$lt": now_iso}},
+        {"customerId": customer_id, "status": "active", "expiresAt": {"$lt": now_iso},
+         **tenant_scope_filter(business_id)},
         {"$set": {"status": "expired"}},
     )
 
 
-async def get_wallet(customer_id: str) -> Optional[dict]:
-    customer = await db.customers.find_one({**tenant_scope_filter(), "id": customer_id}, {"_id": 0})
+async def get_wallet(customer_id: str, business_id: Optional[str] = None) -> Optional[dict]:
+    from middleware.actor_context import get_actor_context
+    biz = business_id or get_actor_context().get("businessId")
+    customer = await db.customers.find_one({**tenant_scope_filter(biz), "id": customer_id}, {"_id": 0})
     if not customer:
         return None
+    # The verified customer record is the ownership source of truth from
+    # here on — not the bare customer_id the caller passed in.
+    biz = customer.get("businessId") or biz
     # Lazy occasion issuance + cleanup, then read
     await ensure_birthday_voucher(customer)
-    await expire_stale_vouchers(customer_id)
+    await expire_stale_vouchers(customer_id, biz)
     vouchers = await db.vouchers.find(
-        {"customerId": customer_id, "status": "active"}, {"_id": 0}
+        {"customerId": customer_id, "status": "active", **tenant_scope_filter(biz)}, {"_id": 0}
     ).to_list(100)
     # Two kinds of voucher land in this collection: wallet ones written here
     # (amount/createdAt) and Universal Voucher Engine ones from campaigns,
@@ -127,7 +151,8 @@ async def get_wallet(customer_id: str) -> Optional[dict]:
     }
 
 
-async def redeem_wallet_voucher(voucher_id: str, txn_id: str, requested_amount: float = 0.0) -> float:
+async def redeem_wallet_voucher(voucher_id: str, txn_id: str, requested_amount: float = 0.0,
+                                 business_id: Optional[str] = None) -> float:
     """Atomically validate and consume a wallet voucher used as a POS
     discount. Returns the amount actually applied, capped to what the
     voucher is really worth — the caller's requested_amount is a display
@@ -138,7 +163,13 @@ async def redeem_wallet_voucher(voucher_id: str, txn_id: str, requested_amount: 
     commerce_v29.py's _validate_voucher_rules, which gates re-redemption —
     actually checks. A voucher left in status "used" was invisible to that
     check and could be redeemed a second time through /vouchers/redeem.
-    """
+
+    Tenant-scoped on both the read and the compare-and-swap write.
+    routes/transactions.py already re-prices a foreign voucherId's discount
+    to $0 before this is ever called, but that's the caller's defense, not
+    this function's — scoping here too means a foreign/unowned voucher_id
+    can never be redeemed through this entry point even if a future caller
+    forgets that re-pricing step."""
     # Compare-and-swap retry loop, same idiom as routes/commerce_v29.py's
     # redeem_voucher — this function is live (routes/transactions.py calls
     # it for every POS-checkout wallet-voucher discount), and the old
@@ -148,8 +179,11 @@ async def redeem_wallet_voucher(voucher_id: str, txn_id: str, requested_amount: 
     # residual from it, and both write — the exact lost-update/overdraw
     # race already fixed in commerce_v29.py, just reachable from this
     # sibling entry point too.
+    from middleware.actor_context import get_actor_context
+    biz = business_id or get_actor_context().get("businessId")
+    scope = tenant_scope_filter(biz)
     for _attempt in range(8):
-        v = await db.vouchers.find_one({"id": voucher_id}, {"_id": 0})
+        v = await db.vouchers.find_one({"id": voucher_id, **scope}, {"_id": 0})
         if not v or v.get("status") not in ("active", "partial"):
             return 0.0
 
@@ -174,6 +208,7 @@ async def redeem_wallet_voucher(voucher_id: str, txn_id: str, requested_amount: 
             "id": voucher_id, "status": v["status"],
             "residualValue": v.get("residualValue"),
             "redemptionCount": v.get("redemptionCount", 0),
+            **scope,
         }
         res = await db.vouchers.find_one_and_update(
             cas_filter, {"$set": update, "$inc": {"redemptionCount": 1}},
