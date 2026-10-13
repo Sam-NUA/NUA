@@ -2,10 +2,14 @@
 
 Date: 2026-10-12 through 2026-10-13 (multiple passes of the same session —
 Android/Phase 0-2/6, then iOS, then the Windows takeover from Codex's
-`feat/windows-foundation`, then directive Phases 5/7/11/12/13/14).
+`feat/windows-foundation`, then directive Phases 5/7/11/12/13/14, then a
+real GitHub-hosted Android CI build to a green `BUILD SUCCESSFUL`).
 Repository: `Sam-NUA/nua`. Base branch: `main` (verified live-deployed, not
 `codex/owner-access` — see `CURRENT_ARCHITECTURE_AUDIT.md`). Base SHA:
 `9963583`. Working branch: `feat/multiplatform-foundation` (PR #22).
+Final SHA at time of this report: `d7512d2` (last functional commit —
+the JDK-21 fix that got Android CI green; this document's own commit on
+top of it changes no code).
 
 ## Architecture chosen
 
@@ -183,7 +187,7 @@ MULTIPLATFORM_READINESS_REPORT}.md`.
 | Frontend Jest unit tests (`craco test` — capability detection, `detectPlatform`) | **15 passed, 0 failed** (new this pass — `craco test` existed, had zero test files before) |
 | Android native project generation (`npx cap add android` + `sync`) | **Success** — all 8 plugins recognized |
 | Android Gradle build (`./gradlew assembleDebug`), this sandbox | **BLOCKED** — sandbox network policy returns 403 for `dl.google.com` (Android Gradle Plugin fetch); Gradle itself downloads fine from the allowed `services.gradle.org`. Not a code defect — a sandbox network-egress limit. |
-| Android Gradle build, GitHub-hosted `ubuntu-latest` runner (`.github/workflows/android.yml`, new this pass) | See "Android status" below — this is the real attempt at getting past the sandbox's own blocker. |
+| Android Gradle build, GitHub-hosted `ubuntu-latest` runner (`.github/workflows/android.yml`, new this pass) | **BUILD SUCCESSFUL** — real `./gradlew assembleDebug` run, 334 actionable tasks executed in 1m 48s, a real ~8.3 MB debug APK uploaded as the `nua-pos-android-debug` CI artifact. See "Android status" below for the three distinct, real bugs this took to reach (none worked around or skipped). |
 | iOS native project generation (`npx cap add ios` + `sync`) | **Success** — SPM-based plugin resolution needs no Xcode |
 | iOS build/simulator/device run | **BLOCKED** — Xcode requires macOS, unavailable in this sandbox regardless of network policy |
 | On-device/emulator run of any kind (Android, iOS) | **NOT TESTED** — no toolchain available in this sandbox |
@@ -200,16 +204,54 @@ calls), not worked around.
 
 ## Android status
 
-**FOUNDATION.** Evidence: native project exists and is real (not a
-stub — correct `applicationId`, real Gradle files, 8 plugins correctly
+**FOUNDATION, with a real compiled artifact for the first time this
+session.** Evidence: native project exists and is real (not a stub —
+correct `applicationId`, real Gradle files, 8 plugins correctly
 registered); the shared app has zero Android-specific business logic
 leakage; device identity exists, is enforced server-side, and is tested;
 the offline-first foundation this milestone depends on already existed
 and is unmodified/verified-still-passing; platform abstraction exists for
 the highest-value browser-API gaps (not all of them — see backlog).
-**Not ALPHA**: nothing has been run on an actual Android emulator or
-device yet — that is the literal next step, blocked only by this
-sandbox's toolchain, not by anything in the code.
+
+**New this pass**: `.github/workflows/android.yml` now produces a real,
+installable debug APK on a GitHub-hosted `ubuntu-latest` runner — the
+network-unrestricted environment this sandbox's own `dl.google.com` block
+always prevented. Getting there took four real, sequential CI failures,
+each one a genuinely different bug one layer deeper than the last (not
+the same error recurring, and nothing skipped or faked to force a green
+result):
+1. `npx cap sync` hard-refused on Node 20 (`@capacitor/cli` requires
+   `>=22`) — fixed by bumping the workflow's Node version.
+2. The ubuntu-latest image's pre-installed SDK doesn't reliably expose
+   `sdkmanager` on `PATH`, and the `android-actions/setup-android@v3`
+   action meant to work around that unconditionally runs `sdkmanager
+   tools` as part of its own setup — a legacy package Google has since
+   removed from the SDK repository, so the action itself always failed.
+   Fixed by fetching Google's own cmdline-tools zip directly and driving
+   `sdkmanager` ourselves, asking only for the packages this build needs.
+3. `AndroidManifest.xml`'s cleartext-traffic comment used a literal
+   `" -- "` as an em-dash substitute twice — invalid under the XML spec
+   (`--` may only appear in a comment's closing `-->`), which Android's
+   strict manifest-merger parser rejected. This file had never actually
+   been parsed by a real XML parser before — every earlier attempt, in
+   this sandbox and in CI, died earlier (at Node/SDK setup) before
+   reaching manifest processing at all. Fixed by removing both sequences.
+4. `@capacitor/android`'s own `build.gradle` (a dependency, not this
+   repo's code) hardcodes `sourceCompatibility`/`targetCompatibility`
+   `JavaVersion.VERSION_21`, and the workflow's JDK was 17 — `javac`
+   refused with "invalid source release: 21". Fixed by installing JDK 21
+   (Gradle 8.14.3 and AGP 8.13.0, this project's pinned versions, both
+   run fine on it).
+
+**Still not ALPHA**: this debug APK has been built, not run — nothing
+has been installed on an actual Android emulator or device yet, and the
+critical acceptance milestone (order → offline → restart → reconnect →
+sync → exactly one order) has never been walked by hand on this APK.
+That remains the literal next step, and is now blocked only by this
+sandbox's own toolchain (no emulator, no device), not by anything in the
+code or CI — the artifact anyone would install to do that run now exists
+and downloads from `https://github.com/Sam-NUA/NUA/actions/runs/38390229531/artifacts/11808851859`
+(retained 7 days from this build).
 
 ## Windows readiness
 
@@ -334,9 +376,11 @@ spoofing-resistant pattern, not `request.url.path`.
 
 ## Known risks
 
-1. Android build/run is entirely unverified on-device — every "should
-   work, same code path as web" claim in this pass's docs is a reasoned
-   expectation from reading the code, not an observed result.
+1. Android now has a real, CI-built debug APK (see "Android status"),
+   but it has never been installed or run on-device — every "should
+   work, same code path as web" claim in this pass's docs is still a
+   reasoned expectation from reading the code, not an observed result on
+   an actual emulator or phone/tablet.
 2. The `localStorage` mirror for token compatibility means Android's
    storage hardening is partial, not complete, until ~20 call sites
    migrate (named explicitly, not hidden).
@@ -382,16 +426,16 @@ spoofing-resistant pattern, not `request.url.path`.
 
 ## Next recommended phase
 
-Get this Android build running outside this sandbox: either install the
-Android SDK in an environment with `dl.google.com` network access, or
-move `frontend/android/` + the platform layer to a machine/CI runner with
-a real Android toolchain, run `./gradlew assembleDebug`, install on a
-tablet/emulator, and actually walk the critical acceptance milestone
-(order → offline → restart → reconnect → sync → exactly one order) by
-hand. That single on-device run would convert this report's single
-biggest "reasoned expectation, not verified" claim into a verified one,
-and is more valuable right now than migrating the remaining
-confirm/download call sites or starting new hardware-provider
+The thing this report previously named as the next phase — getting a
+real Android build to compile outside this sandbox — is now done
+(`.github/workflows/android.yml` produces a real debug APK on every PR,
+see "Android status"). The next highest-value step is installing that
+exact APK on an actual Android tablet/emulator and walking the critical
+acceptance milestone by hand (order → offline → restart → reconnect →
+sync → exactly one order). That single on-device run would convert this
+report's biggest remaining "reasoned expectation, not verified" claim
+into a verified one, and is more valuable right now than migrating the
+remaining confirm/download call sites or starting new hardware-provider
 integrations. Once that milestone is verified, the next-highest-value
 work is wiring `BiometricService`/the PIN-reauth gate into void and
 sensitive-settings actions (currently unguarded) and building the
