@@ -2,7 +2,7 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
     <!-- usesCleartextTraffic: services/printer.js's primary ESC/POS path
-         fetches thermal printers over plain http://<lan-ip>:<port> --
+         fetches thermal printers over plain http://<lan-ip>:<port>,
          they're always local hardware, never an internet host, and have
          no TLS story at all. Android 9+ (API 28+) blocks ALL cleartext
          traffic app-wide by default, which would break that primary
@@ -10,7 +10,7 @@
          https://app.nuapos.com.au is unaffected either way since it's
          already HTTPS. See docs/platform/IOS_IPADOS_ARCHITECTURE.md for
          the equivalent iOS fix (NSAllowsLocalNetworking), which is
-         scoped to local/private hosts only -- Android's manifest-level
+         scoped to local/private hosts only; Android's manifest-level
          flag has no equivalent "local-only" granularity, so this is
          app-wide; narrowing it further would need a network security
          config keyed on a domain pattern, which doesn't fit a printer
