@@ -178,12 +178,16 @@ acceptance milestone first.
     readout a support call can still get from devtools. A real UI surface
     (likely inside Settings, or a dedicated small About section) is
     real, named work for whoever picks this up, not optional polish.
-25. `GET /api/version` and `VersionGateMiddleware` (426 on an
+25. **Done.** `GET /api/version` and `VersionGateMiddleware` (426 on an
     under-`MIN_SUPPORTED_APP_VERSION` `X-App-Version` header) exist and
-    are tested, but no native build actually SENDS a version below the
-    current one yet — the "update required" UX (a full-screen state
-    telling staff to update) has never been exercised against a real
-    426 response, only against the middleware's own unit tests.
+    are tested, and the "update required" UX now exists too:
+    `VersionGateLockScreen.jsx`, a full-screen overlay mounted globally
+    in `App.js`, trips on any 426 the `api.js` response interceptor sees
+    (`lib/versionGate.js`'s tiny external store). Still true: no native
+    build actually SENDS a version below the current one yet, so this
+    has never been exercised against a real request from a genuinely
+    out-of-date app in the field — only against a crafted 426 in Jest
+    tests and by reasoning through the middleware's own existing tests.
 26. `BiometricService` is a real interface across every platform but
     `isAvailable()` is hardcoded `false` everywhere — no Face ID/Touch
     ID (iOS), BiometricPrompt (Android), or Windows Hello integration
