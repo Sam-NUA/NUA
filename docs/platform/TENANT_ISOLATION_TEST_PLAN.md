@@ -21,6 +21,29 @@ document covers only what's new in this pass: the device-identity surface.
 | `platform: "ios"` device, full cycle | Register→login→revoke works identically to `"android"` — `ALLOWED_PLATFORMS` listed it before anything tested it | `test_ios_platform_device_registers_and_enforces_revocation_identically_to_android` |
 | `platform: "windows"` device, full cycle | Same, for `"windows"` | `test_windows_platform_device_registers_and_enforces_revocation_identically_to_android` |
 
+## Covered this pass (`backend/tests/inprocess/test_sensitive_action_reauth.py`, 6 tests) — directive Phase 5
+
+| Scenario | Expected | Test |
+|---|---|---|
+| Acting user's own PIN | Verified | `test_own_pin_verifies` |
+| Manager/owner PIN from the SAME business, approving on behalf of a cashier | Verified, `approvedBy` names the approver | `test_manager_pin_from_same_business_approves_on_behalf_of_a_cashier` |
+| Another cashier's PIN (not acting user, not a manager/owner) | 403 | `test_a_cashier_pin_cannot_approve_on_behalf_of_another_cashier` |
+| A manager/owner PIN from a DIFFERENT business | 403 — tenant isolation holds even for an otherwise-privileged PIN | `test_pin_from_a_different_business_is_rejected_even_if_manager_there` |
+| Unknown PIN | 401 | `test_unknown_pin_is_rejected` |
+| No session at all | 401 | `test_endpoint_requires_authentication` |
+
+## Covered this pass (`backend/tests/inprocess/test_observability.py` + `test_ops_tenant_isolation.py`) — directive Phase 12
+
+Client telemetry (`client_event_log`) follows the exact same tenant-
+scoping pattern as the pre-existing `client_error_log`: a cross-tenant
+read via `GET /api/ops/client-events` never returns another business's
+events (`test_error_logs_are_scoped_per_business`, extended this pass),
+an unrecognized `type` is silently dropped rather than stored
+(`test_unknown_event_type_is_silently_dropped_not_recorded`), and
+sensitive-looking keys in a `data` payload are redacted before being
+written, even though no current frontend caller would ever send one
+(`test_client_event_never_persists_sensitive_keys_even_if_sent`).
+
 ## Windows's own identity-scoped queue tests (`packages/platform-core/test/queue.test.cjs`)
 
 A second, frontend-side isolation surface, independent of the backend

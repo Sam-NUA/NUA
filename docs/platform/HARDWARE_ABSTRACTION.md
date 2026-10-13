@@ -46,25 +46,37 @@ no network interface — out of scope for this pass.
 ## Cash drawer
 
 No cash-drawer integration exists anywhere in this codebase today — not a
-browser API, not a backend service. This is new work, not porting work,
-for whichever platform needs it first (typically a printer kick-pulse
-command sent alongside a receipt print, or a direct USB/serial trigger).
-Not attempted this pass.
+browser API, not a backend service. `frontend/src/platform/*/
+CashDrawerService.js` now formalizes this as a real interface (directive
+Phase 7: "model cash drawer control independently" of any printer) —
+`getCapability()` reports `'unsupported'` on every platform and `open()`
+rejects rather than fabricating success, matching the payment-offline
+rule's "never a fake successful state" discipline. This is new work, not
+porting work, for whichever platform needs it first (typically a printer
+kick-pulse command sent alongside a receipt print, or a direct USB/serial
+trigger) — the interface exists so that work has a contract to implement
+against, nothing more was attempted.
 
 ## Barcode / QR scanner
 
 - **QR generation** (not scanning) exists client-side: `qrcode.react`,
   used for vouchers/payment links/gift cards — renders a code, doesn't
   read one.
-- **Camera-based scanning** exists via `components/pos/ScanVoucherButton.jsx`'s
-  raw `getUserMedia({ video: ... })` call — works in any WebView including
-  Capacitor's, but raw `getUserMedia` means the app handles camera
-  permission prompting itself rather than through Capacitor's native
-  permission flow, which is worse UX and less reliable permission state on
-  Android specifically. A proper fix (swap to a Capacitor barcode-scanning
-  community plugin) is backlog, not done this pass — the existing
-  `getUserMedia` path should still function as-is in the Capacitor WebView
-  without code changes, just with the permission-flow caveat above.
+- **Camera-based scanning**: `components/pos/ScanVoucherButton.jsx` now
+  delegates its support check to `platform/*/ScannerService.js`'s
+  `isCameraScanAvailable()` instead of checking `'BarcodeDetector' in
+  window` directly — the underlying `getUserMedia`/`BarcodeDetector`
+  logic is unchanged, only the capability check moved behind the
+  abstraction. This is more than cosmetic: web/Capacitor both still
+  feature-detect the same way (a real Chromium/WKWebView engine either
+  has `BarcodeDetector` or doesn't), but Electron's implementation
+  honestly hardcodes `false` — the Windows host's session denies every
+  camera permission request outright (`setPermissionCheckHandler(() =>
+  false)`), so the raw feature-detection the old code did would have
+  shown the scan button there and had it silently fail the moment
+  someone tapped it. Permission-flow hardening (a Capacitor barcode-
+  scanning plugin, for a native-feeling prompt on Android/iOS) is still
+  backlog, not done this pass.
 - No physical/dedicated barcode scanner (keyboard-emulation USB/Bluetooth
   scanner) integration exists; those typically just emit keystrokes and
   would work with any focused text input already, untested explicitly.
@@ -77,9 +89,25 @@ hosted-checkout/online (Stripe, Coinbase Commerce, Square via the Connect
 framework) plus a separate `services/eftpos_service.py` model for
 in-person terminals that doesn't appear to talk to a real terminal SDK
 (not independently verified in depth this pass — flagged for whoever picks
-up `PAYMENT_TERMINAL_ARCHITECTURE.md`'s actual implementation). Per the
-master directive: do not implement an unsupported provider merely to fill
-the interface — no terminal SDK work was done this pass.
+up `PAYMENT_TERMINAL_ARCHITECTURE.md`'s actual implementation).
+`frontend/src/platform/*/PaymentTerminalService.js` now exists as a real
+interface (`connect`/`chargeAmount`/`cancelCharge`/`disconnect`), reporting
+`'unsupported'` and rejecting on every platform — per the master
+directive: do not implement an unsupported provider merely to fill the
+interface, so no terminal SDK work was done, only the contract a real
+one would implement against.
+
+## Biometric reauthentication (directive Phase 5)
+
+Not a hardware capability in the printer/scanner/drawer sense, but the
+same "interface exists, honestly unsupported" pattern applies:
+`frontend/src/platform/*/BiometricService.js`'s `isAvailable()` is
+`false` on every platform (no Face ID/Touch ID/BiometricPrompt/Windows
+Hello plugin installed). What actually gates a sensitive action today —
+wired into `RefundDialog.jsx` — is `POST /api/auth/verify-sensitive-
+action`'s server-verified PIN re-entry. See `SECURITY_MODEL.md` for the
+full account, including why void/sensitive-settings aren't wired to the
+same gate yet.
 
 ## Summary — what's real vs. what's a documented gap
 
@@ -87,7 +115,8 @@ the interface — no terminal SDK work was done this pass.
 |---|---|
 | Network ESC/POS printing | **Works unchanged on every platform** — no abstraction needed, already platform-agnostic. |
 | Browser/popup print fallback | Abstracted this pass (PrintService); Capacitor uses Share-based export, not real native printing; Electron (Windows) has a real native print path via `webContents.print()`, not a fallback at all — the web popup path is actively denied inside that host. |
-| Cash drawer | Not implemented anywhere — new work. |
+| Cash drawer | Interface exists (`CashDrawerService`), reports `'unsupported'` everywhere — not implemented anywhere, new work. |
 | QR generation | Works unchanged (pure rendering). |
-| Camera QR/barcode scanning | Works via raw `getUserMedia` as-is; permission-flow hardening is backlog. |
-| Payment terminal SDKs | Not implemented — explicitly out of scope per directive (no unsupported-provider stubs). |
+| Camera QR/barcode scanning | Works via `getUserMedia`, now behind `ScannerService.isCameraScanAvailable()`; honestly `false` on Electron (host denies camera permission outright) where the old direct check would have lied. Permission-flow hardening is still backlog. |
+| Payment terminal SDKs | Interface exists (`PaymentTerminalService`), reports `'unsupported'` everywhere — not implemented, explicitly out of scope per directive (no unsupported-provider stubs). |
+| Biometric reauthentication | Interface exists (`BiometricService`), reports unavailable everywhere; PIN-based server-verified reauth is the real gate, wired into refunds only so far. |

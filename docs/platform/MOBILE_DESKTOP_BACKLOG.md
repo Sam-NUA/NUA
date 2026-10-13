@@ -165,3 +165,67 @@ acceptance milestone first.
     behavior verified on an actual device, only in CI's `windows-latest`
     runner (which proves the app launches and the bridge/sandbox/crypto
     behave correctly, not that physical hardware behaves correctly).
+
+## Directive Phase 11 (versioning) and Phase 5 (biometric) — what's not done
+
+24. No on-screen version/device readout — `App.js` logs
+    `App: ${APP_VERSION} · Platform: ...` to the console on launch
+    instead of rendering it anywhere visible. A persistent on-screen
+    badge was built, then deliberately not shipped: this pass never
+    audited every POS screen (toasts, an Ash FAB, modal chains) for a
+    fixed-position collision, and a regression on a live, heavily-used
+    till screen is a worse outcome than a missing "what version is this"
+    readout a support call can still get from devtools. A real UI surface
+    (likely inside Settings, or a dedicated small About section) is
+    real, named work for whoever picks this up, not optional polish.
+25. `GET /api/version` and `VersionGateMiddleware` (426 on an
+    under-`MIN_SUPPORTED_APP_VERSION` `X-App-Version` header) exist and
+    are tested, but no native build actually SENDS a version below the
+    current one yet — the "update required" UX (a full-screen state
+    telling staff to update) has never been exercised against a real
+    426 response, only against the middleware's own unit tests.
+26. `BiometricService` is a real interface across every platform but
+    `isAvailable()` is hardcoded `false` everywhere — no Face ID/Touch
+    ID (iOS), BiometricPrompt (Android), or Windows Hello integration
+    exists. `POST /api/auth/verify-sensitive-action`'s PIN-based fallback
+    is what actually gates `RefundDialog.jsx` today. Wiring a real
+    biometric plugin in later should need no call-site changes beyond
+    `BiometricService.isAvailable()` starting to return `true` — that's
+    the point of building the interface now rather than skipping it.
+27. Only `RefundDialog.jsx` is gated behind
+    `SensitiveActionReauthDialog` — void and "sensitive settings" (the
+    other two cases the directive names in Phase 5) have no reauth step
+    yet. The reusable piece (the dialog, the backend endpoint) exists;
+    finding and wiring every void/sensitive-settings call site is
+    real, unstarted work, not assumed covered by this one call site.
+
+## Directive Phase 7 (remaining hardware) and Phase 12 (telemetry) — what's not done
+
+28. `CashDrawerService`/`PaymentTerminalService` exist on every platform
+    and honestly report `'unsupported'` — no real provider (a cash-drawer
+    kick-pulse command, a Stripe Terminal/Square/Tyro/Zeller SDK) is
+    integrated anywhere. Per directive, this is deliberate: don't build
+    against hardware/an SDK nobody has confirmed the business needs.
+    Whoever picks a real provider implements it against these interfaces
+    rather than inventing a new contract.
+29. `ScannerService`'s Electron answer (`isCameraScanAvailable() =>
+    false`) is honest but not improved — the underlying blocker (the
+    Windows host's `setPermissionCheckHandler(() => false)` denying every
+    camera permission request) was not relaxed, since loosening it is a
+    security-relevant host-policy change outside this pass's scope, not
+    a platform-layer fix. A native Capacitor barcode-scanning plugin (for
+    a better permission UX on Android/iOS, where the raw `getUserMedia`
+    prompt is functional but not native-feeling) is still backlog too.
+30. Client telemetry (`client_event_log`, `lib/telemetry.js`) has no
+    consumer yet beyond the raw `GET /api/ops/client-events` read — no
+    dashboard, alerting, or paging is wired to it. It's a queryable
+    record of app launches/sync failures/printer failures/device
+    registrations, not yet a signal anyone is watching in real time.
+31. The known-event-type allowlist (`KNOWN_TYPES` in `lib/telemetry.js`,
+    `CLIENT_EVENT_TYPES` in `services/observability.py`) only covers the
+    five event kinds this pass actually wired up (`app_launch`,
+    `sync_failure`, `printer_failure`, `hardware_error`,
+    `device_registered`) — `hardware_error` itself has no caller yet; it
+    was added to the allowlist for the cash-drawer/payment-terminal/
+    scanner interfaces' future real implementations to use without a
+    backend change, not because anything emits it today.

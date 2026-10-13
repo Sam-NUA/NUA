@@ -58,10 +58,22 @@ Verified true of everything added this pass:
    installed. Tracked honestly in `MOBILE_DESKTOP_BACKLOG.md` as not
    done, not as "v2 hardening" of something already secure.
 3. **Biometric reauthentication for sensitive actions** (refunds, voids,
-   sensitive settings — directive Phase 5) — **not implemented this
-   pass**. No `BiometricService` exists yet; this is a real gap against
-   the master directive's own Phase 5 ask, named here rather than silently
-   dropped.
+   sensitive settings — directive Phase 5) — **the interface exists, no
+   biometric hardware/API is wired into it, and only one of the three
+   named call sites is actually gated.** `BiometricService` reports
+   `isAvailable() === false` on every platform (no Face ID/Touch ID/
+   BiometricPrompt/Windows Hello plugin is installed — same "don't fake
+   an unsupported provider" discipline as `PaymentTerminalService`). What
+   actually gates a sensitive action today is real and server-verified:
+   `POST /api/auth/verify-sensitive-action` accepts either the acting
+   user's own PIN or a manager/owner's PIN from the SAME business
+   (tenant-checked independently of the role check — a PIN from another
+   business is rejected regardless of how privileged its owner is in
+   their own business), mirroring the existing off-roster-login approval
+   pattern. `RefundDialog.jsx` is wired to require it before a refund's
+   actual API call fires; void and sensitive-settings are not yet wired
+   to the same gate — see `MOBILE_DESKTOP_BACKLOG.md` items 26-27 for
+   what that leaves open.
 4. **Windows (Electron) host isolation** — built and tested independently
    (originally by Codex on `feat/windows-foundation`, folded in here):
    `apps/windows/src/main.cjs` runs the renderer sandboxed
@@ -84,6 +96,23 @@ Verified true of everything added this pass:
    `persist:` prefix) stays in-memory by design, so nothing Chromium
    manages on its own survives a restart — only what's explicitly routed
    through the encrypted store does.
+
+5. **Minimum-client-version gate** (directive Phase 11) — `GET /api/version`
+   is public; `VersionGateMiddleware` rejects a request carrying an
+   `X-App-Version` header below `version.MIN_SUPPORTED_APP_VERSION` with
+   426, checked before auth/rate-limit/license do any work. Fails open
+   on a missing header — no client in production sends one yet, so this
+   changes nothing for anything already deployed; it's a real gate for
+   whenever a native build starts reporting its version, not a
+   retroactive enforcement switched on for everyone.
+6. **Client telemetry never persists sensitive fields, even if sent** —
+   `record_client_event` (`services/observability.py`) redacts any key
+   that looks like a password/token/PIN/card field in its `data` payload
+   before writing `client_event_log`, independent of whether any current
+   frontend call site would ever send one (none do). Event `type` is
+   checked against a fixed, known set — an unrecognized type is silently
+   dropped, not stored — so a client bug (or something worse) can't
+   smuggle an arbitrary label into a collection an owner reads back.
 
 ## Threat model notes specific to a POS terminal
 
