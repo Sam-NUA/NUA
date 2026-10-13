@@ -11,14 +11,20 @@ Final SHA at time of this report: `8f47b42`.
   configured in the repo before this pass; confirmed the right call
   against the Phase 0 dependency/browser-API audit (no React
   Native-forcing code, no code that WebView can't run).
-- **Windows**: Electron — already partially scaffolded before this pass;
-  kept over Tauri because the existing packaging model
-  (PyInstaller-bundled backend + bundled MongoDB) needs real OS
-  process-lifecycle management Electron's Node main process gives for
-  free and Tauri would require rebuilding in Rust from nothing. One
-  tradeoff left open on purpose: finish that local-bundle model, or switch
-  to a thin client sharing Android's offline queue — ChatGPT's call, not
-  pre-decided here.
+- **Windows**: Electron — chosen independently twice, by two separate
+  audits that reached the same conclusion for related but distinct
+  reasons. This pass's own earlier audit (before Windows work existed)
+  reasoned from the stalled `frontend/electron/` scaffold's packaging
+  model (PyInstaller-bundled backend + bundled MongoDB needing real OS
+  process-lifecycle management). Codex's independent Windows-specific
+  audit reasoned from printer/driver/SDK access and existing JS
+  maintenance, isolated that choice into a clean `apps/windows/` package
+  rather than reusing the stalled scaffold (whose entry path never loaded
+  its own preload — a real, separately-documented blocker), and actually
+  built it. The original local-bundle-vs-thin-client tradeoff is now
+  effectively decided in the thin-client direction by what got built:
+  `apps/windows` has no bundled backend/Mongo at all, just the shared
+  React build against a configured HTTPS API origin.
 - **Offline database**: the existing `frontend/src/lib/offlineQueue.js`
   (IndexedDB, pre-existing, not written this pass) — extended, not
   replaced. Already wired into the real checkout flow with `clientOpId`
@@ -79,6 +85,22 @@ files), `src/hooks/useDeviceRegistration.js`; modified
 **Android**: `frontend/android/` (53 files — native project, gitignored
 build artifacts excluded).
 
+**iOS**: `frontend/ios/` (native project via `npx cap add ios`); modified
+`frontend/ios/App/App/Info.plist`,
+`frontend/android/app/src/main/AndroidManifest.xml` (a parallel
+cleartext-traffic gap found during the iOS pass), `capacitor.config.json`.
+
+**Windows** (originally Codex, on `feat/windows-foundation`; extended in
+this pass): `apps/windows/` (Electron host — `main.cjs`, `preload.cjs`,
+`policy.cjs`, `receipt.cjs`, `encrypted-store.cjs`, `windows-crypto.cjs`,
+`desktop.js`/`.css`, scripts, tests), `packages/platform-core/`
+(`queue.cjs` + tests), `.github/workflows/windows-foundation.yml`. Added
+this pass: `nua:token-*`/`nua:device-id-*`/`nua:print-html`/`nua:save-
+file` IPC in `main.cjs`/`preload.cjs`, `safeFilename`/`safeHtmlDocument`
+in `policy.cjs`, `frontend/src/platform/electron/` (7 adapter files),
+`backend/tests/inprocess/test_device_identity.py`'s windows-platform
+test, `services/printer.js`'s structured-receipt path.
+
 **Docs**: `docs/platform/{README,CURRENT_ARCHITECTURE_AUDIT,ADR-001-
 multiplatform-architecture,COLLABORATION,ANDROID_ARCHITECTURE,
 WINDOWS_ARCHITECTURE,IOS_IPADOS_ARCHITECTURE,OFFLINE_SYNC_ARCHITECTURE,
@@ -91,15 +113,20 @@ MULTIPLATFORM_READINESS_REPORT}.md`.
 
 | Check | Result |
 |---|---|
-| Full backend suite (`backend/tests/inprocess`) | **925 passed, 0 failed** (916 before this pass's own 9 new tests) |
-| New device-identity tests | **9 passed, 0 failed** (tenant isolation, revocation-on-next-request, revocation-survives-refresh, fail-closed on unknown/revoked device at login) |
+| Full backend suite (`backend/tests/inprocess`) | **927 passed, 0 failed** (916 before this pass's own device-identity tests: 9 original + ios + windows) |
+| New device-identity tests | **11 passed, 0 failed** (tenant isolation, revocation-on-next-request, revocation-survives-refresh, fail-closed on unknown/revoked device at login, full cycle for `"ios"` and `"windows"`) |
 | Bookings service | **35 passed, 0 failed**, unaffected by this pass |
 | Backend flake8 | **Pass**, no findings |
 | Frontend production build (web target) | **Success**, zero compiler errors |
 | Frontend production build (Android target, `REACT_APP_BACKEND_URL=https://app.nuapos.com.au`) | **Success**, zero compiler errors |
 | Android native project generation (`npx cap add android` + `sync`) | **Success** — all 8 plugins recognized |
 | Android Gradle build (`./gradlew assembleDebug`) | **BLOCKED** — sandbox network policy returns 403 for `dl.google.com` (Android Gradle Plugin fetch); Gradle itself downloads fine from the allowed `services.gradle.org`. Not a code defect — a sandbox network-egress limit. |
-| On-device/emulator run of any kind | **NOT TESTED** — no Android SDK/emulator available in this sandbox |
+| iOS native project generation (`npx cap add ios` + `sync`) | **Success** — SPM-based plugin resolution needs no Xcode |
+| iOS build/simulator/device run | **BLOCKED** — Xcode requires macOS, unavailable in this sandbox regardless of network policy |
+| On-device/emulator run of any kind (Android, iOS) | **NOT TESTED** — no toolchain available in this sandbox |
+| `apps/windows` + `packages/platform-core` unit tests (`node --test`) | **19 passed, 0 failed** |
+| Windows Electron app launch in this sandbox | **BLOCKED (by design)** — `main.cjs` refuses to start on anything but `win32`, confirmed by running it here; the real equivalent is CI's `windows-latest` job |
+| Full Playwright e2e suite | **13 passed, 0 failed** |
 
 No test was skipped or disabled to get a green result. The one failure
 this pass actually hit (`test_fresh_bootstrap_with_admin_pin_enables_pin_login`,
@@ -123,14 +150,34 @@ sandbox's toolchain, not by anything in the code.
 
 ## Windows readiness
 
-Explicitly ChatGPT's lane this pass (per user direction). What Claude's
-work leaves available to it: the backend device-identity contract already
-accepts `platform: "windows"`; `platform/index.js` already detects
-`'electron'` and falls back correctly to web-equivalent behavior for
-every service not yet given an Electron-specific implementation.
-**Percentage: not assessed by this pass** — assessing someone else's
-in-progress parallel work isn't this pass's job; see
-`WINDOWS_ARCHITECTURE.md` for what's handed off and why.
+**~35%.** Started independently by Codex on `feat/windows-foundation`
+(real Electron host, Phase 0 audit, OS-encrypted storage/queue
+primitives, Windows CI), then taken over and integrated into the shared
+platform abstraction layer in a later pass of this same session — see
+`WINDOWS_ARCHITECTURE.md` for the full account, and `CURRENT_ARCHITECTURE
+_AUDIT.md`'s Windows section for the original W01–W10 findings.
+
+What's real: the native Electron host (`apps/windows/`) is sandboxed,
+sender-validated, strict-CSP, and runs on a real `windows-latest` CI
+runner building an unsigned NSIS installer and launching the packaged app
+for end-to-end smoke checks — the one platform in this effort with that
+kind of automated real-platform validation. `platform/electron/*`
+adapters now exist for all 7 shared services; three of them
+(SecureStorage, DeviceIdentity, Print) are real native implementations,
+not web fallbacks, and two close functional gaps the web fallback would
+have hit silently inside this specific host (print's `window.open` is
+denied outright; file export's `window.download` is too). Device
+identity registers real devices and is covered by the same kind of
+backend test iOS got. Token storage is genuinely OS-encrypted (Windows
+DPAPI via `safeStorage`) — stronger than Android/iOS's unhardened
+Preferences-based storage, not just parity with it.
+
+What's not: nothing has run against a real packaged Windows build or
+physical hardware — only CI's `windows-latest` runner and local Node unit
+tests. The independently-built `CashOrderQueue` offline primitive is
+real and tested but not wired into the live checkout flow. No terminal
+payment SDK, no code signing, no device-pairing credential beyond the
+identity registry itself, no physical printer/scanner/touchscreen QA.
 
 ## iOS/iPadOS readiness
 
@@ -160,9 +207,11 @@ See `HARDWARE_COMPATIBILITY_MATRIX.md` for the full table. Summary:
 **SUPPORTED** — network ESC/POS printing (platform-agnostic by
 construction), QR generation, IndexedDB offline storage (code-level).
 **PARTIAL** — browser-print fallback (Share-sheet-based on Capacitor, not
-real silent print), camera QR scanning (works, permission UX not native),
-secure token storage (mirrored to localStorage for compatibility), device
-identity (Android done, Windows contract-ready-not-implemented).
+real silent print; Windows has a real native print path instead, see
+above), camera QR scanning (works on web/Android/iPad, permission UX not
+native; blocked outright inside the Windows host's deny-all permission
+policy), secure token storage (mirrored to localStorage for compatibility
+on Android/iOS; genuinely OS-encrypted on Windows).
 **BLOCKED/not started** — cash drawer, USB/Bluetooth printers, payment
 terminal SDKs (none implemented for any platform, per directive: don't
 build against an unconfirmed provider).
@@ -193,10 +242,12 @@ implemented.
    call browser APIs directly — likely still functional in a Capacitor
    WebView (it's still a real browser engine) but not yet using the
    native-feeling abstraction.
-4. The Windows local-backend-bundle vs. thin-client decision is
-   unresolved — whoever builds it needs to actually choose, not
-   accidentally default into whichever half the current stalled scaffold
-   leans toward.
+4. The Windows local-backend-bundle vs. thin-client decision is now
+   effectively thin-client by construction (`apps/windows` bundles no
+   backend/Mongo), but was never explicitly re-confirmed as a decision
+   rather than a byproduct of how the foundation happened to get built —
+   worth a deliberate sign-off before relying on it, not just inferring
+   it from the code.
 5. No payment-terminal, cash-drawer, or USB/Bluetooth-printer hardware
    integration exists for any platform — real product-scoping work, not
    a quick follow-up.

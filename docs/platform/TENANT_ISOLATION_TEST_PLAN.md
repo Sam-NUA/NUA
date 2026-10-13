@@ -18,6 +18,23 @@ document covers only what's new in this pass: the device-identity surface.
 | Login with an unknown device id | 403 — fail-closed, not "treat as unregistered" | `test_login_with_an_unknown_device_id_header_is_rejected_failclosed` |
 | Already-issued token, device revoked mid-session | Next request 401, not "works until expiry" | `test_revoked_device_is_rejected_on_its_very_next_request_not_just_next_login` |
 | Token refresh after device binding | New access token still carries the binding; revocation still works post-refresh | `test_refresh_preserves_device_binding_so_revocation_survives_token_refresh` |
+| `platform: "ios"` device, full cycle | Register→login→revoke works identically to `"android"` — `ALLOWED_PLATFORMS` listed it before anything tested it | `test_ios_platform_device_registers_and_enforces_revocation_identically_to_android` |
+| `platform: "windows"` device, full cycle | Same, for `"windows"` | `test_windows_platform_device_registers_and_enforces_revocation_identically_to_android` |
+
+## Windows's own identity-scoped queue tests (`packages/platform-core/test/queue.test.cjs`)
+
+A second, frontend-side isolation surface, independent of the backend
+suite above: `CashOrderQueue`'s scope key is `{businessId, userId,
+deviceId}`, and its tests assert the same shape of guarantee the backend
+tests assert server-side — "business A's queue never appears in
+business B's reads, and switching identity mid-replay stops it" — at the
+local-storage layer. Covered: cross-identity read isolation during an
+in-flight flush, a foreign-tenant server response never marked synced, a
+forbidden (403) response retained for recovery rather than silently
+dropped, and `lock()` (logout) rejecting reads outright. Not yet
+covered, because the queue isn't wired into the real app (see
+`OFFLINE_SYNC_ARCHITECTURE.md`): an actual cross-account replay attempt
+through the real POS UI, not just the queue's own unit-test harness.
 
 ## Pattern used (matching existing repo convention)
 

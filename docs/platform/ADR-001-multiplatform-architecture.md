@@ -56,14 +56,21 @@ Keep the existing choice. Reasoning:
   real native capability a installable PWA can't reliably provide — notably
   background execution and secure storage guarantees).
 
-### Windows: Electron (not Tauri) — confirming the existing choice, with a caveat
+### Windows: Electron (not Tauri) — confirmed independently twice, now implemented
 
-The directive's preferred default is Tauri-unless-blocked. This audit found
-a blocker specific to this codebase, and also found Electron tooling
-**already chosen and partially built** (electron-builder NSIS config,
-`electron/main.js`/`preload.js`, `build_backend.py`'s PyInstaller bundling).
+The directive's preferred default is Tauri-unless-blocked. This ADR's
+original reasoning (below, preserved) found a blocker specific to the
+*stalled* `frontend/electron/` scaffold that existed before any Windows
+work in this effort. Codex's separate, independent Windows audit
+(`feat/windows-foundation`, now folded into `CURRENT_ARCHITECTURE_AUDIT.md`)
+reached the same Electron-over-Tauri conclusion for an overlapping but
+distinct reason — printer/driver/SDK access and an existing JavaScript
+maintenance path — and then actually built it, in a clean new `apps/
+windows/` package rather than reviving the stalled scaffold (whose entry
+path never loaded its own preload at all — a real, separately-documented
+blocker, see `CURRENT_ARCHITECTURE_AUDIT.md`'s W01).
 
-Reasoning to keep Electron rather than migrate to Tauri now:
+Original reasoning for keeping Electron rather than migrating to Tauri:
 - The existing packaging model bundles a full local backend (PyInstaller)
   and local MongoDB binary as installer resources, aimed at a fully
   offline-capable desktop POS. That model needs real OS process lifecycle
@@ -77,19 +84,19 @@ Reasoning to keep Electron rather than migrate to Tauri now:
   existing code in this repo, for a benefit (smaller binary, lower memory)
   that matters less for a POS terminal — a dedicated till machine, not a
   battery-constrained laptop — than reusing an 80%-solved problem does.
-- **Caveat, and this is a real open decision, not resolved by this ADR**:
-  the existing Electron scaffold's `main.js` doesn't actually spawn the
-  bundled backend/Mongo today (see the audit's "concrete gaps" section) — so
-  right now neither the "fully local offline POS" model nor a "thin client
-  against the hosted API" model is actually implemented. ChatGPT is
-  assigned the Windows-specific Phase 3/4 work per the user's direction;
-  **this ADR does not pick between finishing the local-bundle model or
-  switching to a thin-client model reusing the same offline queue Android
-  will use** — that choice belongs to whoever does the Windows
-  implementation work, informed by this tradeoff, not pre-decided here.
 - Rejected: Tauri (blocker above), plain PWA (same gaps as mobile, plus no
   path to the local-backend-bundle model at all if that's kept), native
   Windows wrapper (two codebases).
+
+**What was actually built resolves the open caveat this ADR used to
+carry here**: `apps/windows/` bundles no backend or MongoDB at all — it's
+a thin client against a configured HTTPS API origin, same shape as
+Android/iOS. The local-backend-bundle model from the original stalled
+scaffold is not what shipped; see `WINDOWS_ARCHITECTURE.md` for the full,
+current account (native bridge, sandboxing, OS-encrypted storage, the
+real `windows-latest` CI runner) and `MOBILE_DESKTOP_BACKLOG.md` for what
+that choice still leaves open (the local-bundle option is simply not
+pursued, not proven worse).
 
 ### Offline database: extend the existing IndexedDB offline queue, not a new one
 
@@ -102,11 +109,14 @@ Reasoning to keep Electron rather than migrate to Tauri now:
   unless a concrete limitation of IndexedDB-in-Capacitor is actually hit
   (e.g. a storage-quota wall under heavy offline use) — that's a
   Phase-3-implementation decision to make with evidence, not up front.
-- Windows/Electron can use the same IndexedDB-based queue (Electron's
-  renderer is Chromium, same as the web app) if the thin-client model is
-  chosen, or needs its own durable store (SQLite via better-sqlite3, or the
-  bundled Mongo itself) if the local-backend-bundle model is chosen instead
-  — this is the Phase-3/4 Windows decision flagged above, left to ChatGPT.
+- Windows/Electron ended up with neither of this ADR's two predicted
+  options: not the same IndexedDB queue as web, and not a bundled-Mongo
+  local store. `packages/platform-core/queue.cjs`'s `CashOrderQueue` is a
+  third thing — a main-process, OS-encrypted, identity-scoped primitive
+  specifically for cash orders, independent of IndexedDB entirely. It's
+  real and tested but not wired into the live checkout flow yet; see
+  `OFFLINE_SYNC_ARCHITECTURE.md`'s Windows section for why that's a
+  deliberate, not-yet-closed gap rather than an oversight.
 
 ### Secure storage / device identity
 
@@ -183,7 +193,15 @@ frontend/src/platform/
     NetworkService.js
     DeviceIdentityService.js
     SecureStorageService.js
-  electron/                 # stub only — ChatGPT's lane, not implemented here
+  electron/                 # Windows (apps/windows/src/main.cjs's nuaDesktop
+                             # bridge) implementations — Dialog/Clipboard/
+                             # Network re-export the web versions (a real
+                             # Chromium renderer needs no IPC for those);
+                             # Print/SecureStorage/DeviceIdentity/File are
+                             # real native implementations, not fallbacks —
+                             # see HARDWARE_ABSTRACTION.md and SECURITY_MODEL.md
+                             # for why the web fallback would silently fail
+                             # for Print and File inside this specific host.
 ```
 
 This sits inside the existing `frontend/src` tree (no new top-level
@@ -208,11 +226,11 @@ the service implementations themselves, per the audit's ~30
   service adapters, swap the highest-value call sites (print, file
   download, confirm/prompt central hook), prove the offline→restart→sync
   flow using the existing `offlineQueue.js`.
-- The Windows local-backend-bundle vs. thin-client decision is explicitly
-  deferred to whoever does that implementation work (ChatGPT, per current
-  assignment) — this ADR documents the tradeoff so that decision is made
-  knowingly, not accidentally by whichever code happens to get written
-  first.
+- The Windows local-backend-bundle vs. thin-client decision landed on
+  thin-client by construction (`apps/windows` bundles no backend/Mongo) —
+  this ADR's original tradeoff writeup is kept so that outcome reads as
+  informed, not accidental, even though it wasn't a separate explicit
+  sign-off step at the time.
 - Device-identity revocation enforcement is a small, easy-to-forget
   addition to existing middleware — tracked explicitly here so it isn't
   dropped between "the registry exists" and "revocation actually works."

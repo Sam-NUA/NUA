@@ -319,11 +319,63 @@ By category, with portability risk:
   possible from this environment, consistent with the directive's own
   Phase 10 guidance ("no Apple-specific implementation is required until
   the architecture has been validated").
-- Windows build/compile-check (Electron NSIS, or a future Tauri build)
-  likewise isn't possible from this Linux container.
+- Windows build/compile-check (Electron NSIS) isn't possible *from this
+  Linux container itself* — `apps/windows/src/main.cjs` refuses to start
+  on anything but `win32`, confirmed by actually running it here, not
+  assumed. Unlike iOS, though, a real Windows runner *is* reachable: CI
+  (`.github/workflows/windows-foundation.yml`) runs on GitHub's
+  `windows-latest`, builds the actual unsigned NSIS installer, and
+  launches the real packaged app for an end-to-end smoke test — see
+  `WINDOWS_ARCHITECTURE.md`. This sandbox's own Node unit tests
+  (`node --test` across `apps/windows`/`packages/platform-core`) still
+  ran fine here, since pure JS logic needs no Windows API.
 
 This means: this pass can scaffold the Capacitor Android project, write
 and unit-test the shared platform-abstraction/offline/sync code, and prove
 it in the existing Playwright/pytest suites — but **cannot** itself produce
 a signed/running APK, launch an emulator, or validate on physical hardware.
 Those require a toolchain this sandbox doesn't have.
+
+---
+
+## Windows Phase 0 audit (Codex, `feat/windows-foundation` — PR #21)
+
+Run independently of the Android/iOS audit above, before any Windows
+source changes, then folded into this canonical document when that work
+was taken over and integrated. Preserved close to verbatim; only the
+framing above this line is new.
+
+Audit date: 2026-10-12. Scope: Windows touchscreen POS (target 3) and
+Windows desktop (target 4). Base: `origin/main`,
+`99635835b841b1516b9eeb4e394faf29f3a90d2d` — same baseline as the
+Android/iOS audit above, independently re-verified rather than assumed
+(`codex/owner-access` exists but lacks the later merged launch
+corrections; main contains PRs 17–20).
+
+**Findings and root causes:**
+
+| ID | Severity | Evidence / root cause | Disposition |
+|---|---|---|---|
+| W01 | Blocker | `frontend/electron/main.js` never loads its preload; advertised IPC methods have no handlers. | Replaced the Windows entry path with the isolated, tested `apps/windows/` shell — the old scaffold is not used to release this. |
+| W02 | Blocker | Electron 33 and an alternate Electron 28 manifest competed; the alternate packaged backend/Mongo paths. | New Windows-only locked manifest (`apps/windows/package.json`, Electron 44.7.0); old launch commands must not be treated as supported. |
+| W03 | Blocker | `BrowserRouter` used paths while the shell loaded `file://`; API env was baked at build, not read from a bridge. | Bundled custom secure origin (`nua://app`) with SPA fallback and an explicit build-time API origin (`NUA_WINDOWS_API_ORIGIN`). |
+| W04 | Critical | The active IndexedDB `nua-offline` queue is global; records/cache lack account/business partition. Replay uses the current account's token. | Built a reusable scoped queue foundation (`packages/platform-core`) as a shared integration blocker to coordinate before release — does not silently migrate or declare the existing queue safe. |
+| W05 | Critical | `offlineQueue.js` drops server-rejected records; KDS actions lack stable initial mutation IDs; offline card returns synthetic success. | `CashOrderQueue`'s durable failure/unknown states and idempotent, cash-only contract — current POS caller migration is still required, not done. |
+| W06 | High | Auth access/trusted-device tokens reside in `localStorage`; multiple direct consumers. | OS-encrypted storage foundation (`EncryptedStore` + `windowsCrypto`) — now actually wired to the shared `SecureStorageService` contract in the integration pass; was a foundation primitive only at audit time. |
+| W07 | High | `printer.js` POSTs HTTP to a raw TCP port; receipt HTML interpolated business/item data unescaped. | Native spooler path + escaped, structured receipt builder (`receipt.cjs`) — now actually called from `services/printer.js` for the Windows platform in the integration pass; the kitchen docket (`services/docket.js`) still prints unescaped HTML, mitigated by the print preview window's `javascript: false` sandboxing rather than field-level escaping (see `MOBILE_DESKTOP_BACKLOG.md`). |
+| W08 | High | The active service worker excludes `/api/` but not `/bookings-api/`; generic GET caching and forced activation can retain data/reload mid-sale. | Windows has bundled assets and runs no service worker at all — not applicable to this host; the shared PWA correction remains outstanding for web/Android/iOS. |
+| W09 | Blocker | No device-pairing credential bound to every native request; license revocation (`routes/licensing.py`) doesn't itself revoke a staff token. | Documented as a real server-side extension still needed; device identity (this effort's shared `backend/routes/devices.py`) closes part of this — revoking a *device* works in real time — but a device's own request isn't additionally cryptographically attested beyond the staff member's bearer token. Not fabricated here. |
+| W10 | Blocker | No signing identity, controlled updater, minimum-client-version endpoint, or physical hardware matrix evidence. | CI produces an unsigned artifact only; release gates remain closed — see `APP_RELEASE_STRATEGY.md`. |
+
+(M01/I01 from the original table — Capacitor version drift and no Apple
+project — are the Android/iOS audit's own findings above, cross-
+referenced rather than duplicated.)
+
+**Compatibility note**: DOM, keyboard/touch, and IndexedDB all work
+inside Electron; availability alone doesn't establish security or
+offline correctness — camera, microphone, USB/serial/Bluetooth,
+notifications, and geolocation all require explicit grants or adapters
+that this host's own policy (see `WINDOWS_ARCHITECTURE.md`) denies by
+default. WebSockets must use the configured backend origin rather than
+`window.location.host`, since there's no meaningful browser-nav host on
+a custom `nua://` origin.

@@ -2,7 +2,7 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const path = require('node:path');
-const { isAppUrl, apiOrigin, assetPath, assertSender, contentSecurityPolicy } = require('../src/policy.cjs');
+const { isAppUrl, apiOrigin, assetPath, safeFilename, safeHtmlDocument, assertSender, contentSecurityPolicy } = require('../src/policy.cjs');
 const { renderReceipt } = require('../src/receipt.cjs');
 const { windowsCrypto } = require('../src/windows-crypto.cjs');
 test('origin validation rejects URL tricks and insecure API origins', () => {
@@ -35,6 +35,16 @@ test('receipt escapes active HTML and rejects invalid amounts and item counts', 
   assert.throws(() => renderReceipt({...r,totalCents:NaN}));
   assert.throws(() => renderReceipt({...r,items:Array(201).fill(r.items[0])}));
   assert.throws(() => renderReceipt({...r,items:[{...r.items[0],quantity:0}]}));
+});
+test('save-file name rejects path traversal and device-file tricks', () => {
+  for (const name of ['../secret.csv','a/b.csv','a\\b.csv','.', '..', '', 'x\0.csv', 'a'.repeat(201)]) assert.throws(() => safeFilename(name), name);
+  assert.equal(safeFilename('payroll-2026-10.csv'), 'payroll-2026-10.csv');
+});
+test('print-html bounds document type and size, unlike the structured receipt path', () => {
+  assert.throws(() => safeHtmlDocument(null));
+  assert.throws(() => safeHtmlDocument(''));
+  assert.throws(() => safeHtmlDocument('<html></html>'.padEnd(2 * 1024 * 1024 + 1, ' ')));
+  assert.equal(safeHtmlDocument('<html></html>'), '<html></html>');
 });
 test('Windows crypto never falls back to plaintext', () => {
   const provider = { isEncryptionAvailable: () => false };

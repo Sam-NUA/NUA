@@ -1,9 +1,12 @@
 'use strict';
-const { app, BrowserWindow, Menu, protocol, ipcMain, session, dialog } = require('electron');
+const { app, BrowserWindow, Menu, protocol, ipcMain, session, dialog, safeStorage } = require('electron');
 const fs = require('node:fs/promises');
+const os = require('node:os');
 const path = require('node:path');
-const { APP_ORIGIN, isAppUrl, apiOrigin, assetPath, assertSender, contentSecurityPolicy } = require('./policy.cjs');
+const { APP_ORIGIN, isAppUrl, apiOrigin, assetPath, safeFilename, safeHtmlDocument, assertSender, contentSecurityPolicy } = require('./policy.cjs');
 const { renderReceipt } = require('./receipt.cjs');
+const { EncryptedStore } = require('./encrypted-store.cjs');
+const { windowsCrypto } = require('./windows-crypto.cjs');
 protocol.registerSchemesAsPrivileged([{ scheme: 'nua', privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true } }]);
 let mainWindow;
 let printing = false;
@@ -19,10 +22,13 @@ function restrict(contents) {
   contents.on('will-redirect', (event, target) => { if (!isAppUrl(target)) event.preventDefault(); });
   contents.on('will-attach-webview', event => event.preventDefault());
 }
-async function printReceipt(receipt) {
-  const html = renderReceipt(receipt); // validation before opening any OS dialog
+async function printDocument(html) {
   if (printing) throw new Error('A print job is already awaiting an outcome');
   printing = true;
+  // javascript: false means a malformed or hostile document can distort the
+  // print preview, never execute — this is the control that makes printHtml
+  // safe for callers (e.g. the kitchen docket) whose HTML isn't run through
+  // receipt.cjs's own field-level escaping.
   const win = new BrowserWindow({ show: false, parent: mainWindow, webPreferences: { nodeIntegration: false, contextIsolation: true, sandbox: true, javascript: false } });
   restrict(win.webContents);
   try {
@@ -31,12 +37,32 @@ async function printReceipt(receipt) {
     return await new Promise(resolve => win.webContents.print({ silent: false, printBackground: false }, success => resolve({ status: success ? 'submitted' : 'cancelled-or-failed' })));
   } finally { win.destroy(); printing = false; }
 }
+async function printReceipt(receipt) {
+  return printDocument(renderReceipt(receipt)); // validation before opening any OS dialog
+}
+async function printHtml(html) {
+  return printDocument(safeHtmlDocument(html));
+}
+async function saveFile(filename, data) {
+  safeFilename(filename);
+  if (!(data instanceof Uint8Array)) throw new Error('Invalid file data');
+  if (data.byteLength > 50 * 1024 * 1024) throw new Error('File too large');
+  const result = await dialog.showSaveDialog(mainWindow, { defaultPath: filename });
+  if (result.canceled || !result.filePath) return { status: 'cancelled' };
+  await fs.writeFile(result.filePath, Buffer.from(data));
+  return { status: 'saved' };
+}
 async function start() {
   if (process.platform !== 'win32') throw new Error('This host is supported on Windows only');
   const config = JSON.parse(await fs.readFile(path.join(renderer, 'host-config.json'), 'utf8'));
   const origin = apiOrigin(config.apiOrigin);
+  // The Chromium session itself stays in-memory (below) so nothing Chromium
+  // manages on its own survives a restart; the auth token and device id are
+  // instead persisted explicitly here, through the same OS-encrypted,
+  // atomic store already built and tested for the cash queue, so they
+  // *do* survive a restart without ever touching plain disk.
+  const secureStore = new EncryptedStore(path.join(app.getPath('userData'), 'secure'), windowsCrypto(safeStorage));
   // In-memory web session prevents credentials being persisted by Chromium.
-  // Native secure-store integration is a separate shared-auth release gate.
   const hostSession = session.fromPartition('nua-windows-foundation');
   hostSession.setPermissionRequestHandler((_wc, _permission, callback) => callback(false));
   hostSession.setPermissionCheckHandler(() => false);
@@ -64,7 +90,7 @@ async function start() {
   mainWindow = new BrowserWindow({ width: 1400, height: 950, minWidth: 1024, minHeight: 768, title: 'NUA POS Foundation', autoHideMenuBar: true, webPreferences: { preload: path.join(__dirname, 'preload.cjs'), session: hostSession, sandbox: true, contextIsolation: true, nodeIntegration: false, webSecurity: true, devTools: !app.isPackaged } });
   restrict(mainWindow.webContents);
   Menu.setApplicationMenu(null);
-  guarded('nua:info', () => ({ version: app.getVersion(), bridgeVersion: 1, platform: 'windows', inputMode, releaseChannel: 'foundation', updates: 'manual-review-only', secureAuthIntegrated: false, offlineSyncIntegrated: false }));
+  guarded('nua:info', () => ({ version: app.getVersion(), bridgeVersion: 1, platform: 'windows', inputMode, releaseChannel: 'foundation', updates: 'manual-review-only', secureAuthIntegrated: true, offlineSyncIntegrated: false, hostname: os.hostname() }));
   guarded('nua:fullscreen', value => {
     if (typeof value !== 'boolean') throw new Error('Invalid fullscreen value');
     mainWindow.setFullScreen(value);
@@ -72,6 +98,24 @@ async function start() {
   });
   guarded('nua:printers', async () => (await mainWindow.webContents.getPrintersAsync()).map(p => ({ name: p.name, displayName: p.displayName, isDefault: p.isDefault })));
   guarded('nua:print-receipt', printReceipt);
+  guarded('nua:print-html', printHtml);
+  guarded('nua:save-file', saveFile);
+  // Scope keys are fixed, app-level values, not business/account-scoped —
+  // the same shape SecureStorageService already uses on Android/iOS
+  // (a single 'nua_token' key); per-tenant scoping happens at the backend
+  // JWT level, not in client storage. See CashOrderQueue in
+  // packages/platform-core for the one store that IS identity-scoped.
+  guarded('nua:token-get', () => secureStore.read('auth-token'));
+  guarded('nua:token-set', value => {
+    if (typeof value !== 'string' || !value || value.length > 8192) throw new Error('Invalid token value');
+    return secureStore.write('auth-token', value);
+  });
+  guarded('nua:token-clear', () => secureStore.write('auth-token', null));
+  guarded('nua:device-id-get', () => secureStore.read('device-id'));
+  guarded('nua:device-id-set', value => {
+    if (typeof value !== 'string' || !value || value.length > 200) throw new Error('Invalid device id');
+    return secureStore.write('device-id', value);
+  });
   mainWindow.on('closed', () => { mainWindow = null; });
   await mainWindow.loadURL(APP_ORIGIN + '/');
 }

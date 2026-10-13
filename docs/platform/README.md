@@ -7,28 +7,42 @@ Read in this order:
 
 1. `CURRENT_ARCHITECTURE_AUDIT.md` — Phase 0 factual inventory: what exists
    today, including a partial, stalled Capacitor/Electron scaffold found
-   already in the repo.
+   already in the repo, plus a second, independent Windows-specific
+   Phase 0 audit folded in at the end. `BROWSER_API_INVENTORY.md` is the
+   concrete source-hit backing for it — a repo-wide survey, not
+   platform-specific.
 2. `ADR-001-multiplatform-architecture.md` — the architecture decision:
    Capacitor for Android/iOS, Electron for Windows, extend the existing
    IndexedDB offline queue rather than build a new one, shared backend
    device-identity model.
-3. `COLLABORATION.md` — which agent (Claude/ChatGPT) owns which files, so
-   the two don't collide while working in parallel.
+3. `COLLABORATION.md` — history of which agent (Claude/ChatGPT) owned which
+   files while working in parallel, and how that was reconciled once
+   Windows work was taken over into this same branch (see below).
 4. `DEVICE_IDENTITY_MODEL.md`, `OFFLINE_SYNC_ARCHITECTURE.md`,
    `HARDWARE_ABSTRACTION.md`, `SECURITY_MODEL.md` — the shared contracts.
-5. `ANDROID_ARCHITECTURE.md` — what was actually built and verified this
-   pass, and what wasn't (honestly: no APK, no emulator run — see why).
+5. `ANDROID_ARCHITECTURE.md`, `IOS_IPADOS_ARCHITECTURE.md`,
+   `WINDOWS_ARCHITECTURE.md` — what was actually built and verified for
+   each platform, and what wasn't, honestly (no on-device run for any of
+   the three — see each document for why, and why the reason differs per
+   platform).
 6. `TENANT_ISOLATION_TEST_PLAN.md`, `HARDWARE_COMPATIBILITY_MATRIX.md`,
    `MOBILE_DESKTOP_BACKLOG.md`, `MULTIPLATFORM_READINESS_REPORT.md` —
    test coverage, what's supported vs. simulated vs. untested, what's left,
    and the overall readiness verdict.
 
-`WINDOWS_ARCHITECTURE.md` is a short pointer file only — Windows
-implementation is explicitly ChatGPT's lane this pass (see
-`COLLABORATION.md`). `IOS_IPADOS_ARCHITECTURE.md` was later given full
-treatment in this same session, overriding the directive's own default
-Phase 10 deferral on explicit instruction: the native iOS project now
-exists and scaffolds correctly, with the real permission/ATS gaps found
-and fixed, but no build/device run was possible (no macOS environment in
-this sandbox) — read that document for the honest breakdown of what's
-real versus still blocked.
+## Windows: how this doc set absorbed a second author's work
+
+Windows foundation work (the `apps/windows/` Electron host and
+`packages/platform-core`'s cash queue) was started independently by
+Codex/ChatGPT on a separate branch (`feat/windows-foundation`, PR #21),
+under its own `docs/platform/windows/` doc set, specifically to avoid
+overwriting this doc set while both were worked on in parallel — see the
+original `docs/platform/windows/CLAUDE_HANDOFF.md`, preserved in git
+history. On explicit instruction, that work was then merged into this
+branch, extended (the shared `platform/electron/*` adapters, the
+device-identity backend test, token/device-id/print/file IPC), and its
+real findings folded into this single canonical doc set rather than left
+forked — `docs/platform/windows/` no longer exists as a separate tree.
+Where a section below describes Windows-specific work, it says so and
+credits which pass did what; nothing from that audit was silently
+absorbed as if it had always been part of this one.

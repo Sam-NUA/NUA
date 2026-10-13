@@ -21,11 +21,21 @@ recovery codes): `frontend/src/platform/*/PrintService.js`.
   save/print it via any app that accepts shared text. A dedicated print
   plugin (e.g. `@capacitor-community/printer` or similar) is backlog, not
   faked here.
-- Electron: not implemented — falls back to the web adapter (correct,
-  since an Electron renderer is a real Chromium context where
-  `window.print()` opens the OS print dialog), but a silent/direct print
-  via Electron's own `webContents.print()` IPC would be better and is
-  ChatGPT's lane to build if wanted.
+- Electron: **correction** — the web adapter does NOT work as a fallback
+  here: `apps/windows/src/main.cjs`'s `restrict()` denies every
+  `window.open` call unconditionally (not just cross-origin ones), so the
+  web `PrintService.printHtml`'s popup would silently fail to even open.
+  `platform/electron/PrintService.js` instead calls `window.nuaDesktop
+  .printHtml()`/`.printReceipt()`, which print via `webContents.print()`
+  in a disposable, `javascript:false` preview window — a real native
+  path, not a fallback. `printReceipt` additionally builds and escapes
+  the receipt natively from structured fields
+  (`apps/windows/src/receipt.cjs`) rather than interpolating transaction
+  data into an HTML string, closing the Windows audit's W07 finding for
+  the one call site (`services/printer.js`) that has fully structured
+  data to give it; the kitchen docket (`services/docket.js`) still uses
+  arbitrary HTML via `printHtml`, mitigated by that same `javascript:
+  false` sandboxing rather than field-level escaping.
 
 No USB, Bluetooth, or Serial printer code exists anywhere in this
 codebase (confirmed by the Phase 0 browser-API audit — zero
@@ -76,7 +86,7 @@ the interface — no terminal SDK work was done this pass.
 | Capability | Status |
 |---|---|
 | Network ESC/POS printing | **Works unchanged on every platform** — no abstraction needed, already platform-agnostic. |
-| Browser/popup print fallback | Abstracted this pass (PrintService); Capacitor uses Share-based export, not real native printing. |
+| Browser/popup print fallback | Abstracted this pass (PrintService); Capacitor uses Share-based export, not real native printing; Electron (Windows) has a real native print path via `webContents.print()`, not a fallback at all — the web popup path is actively denied inside that host. |
 | Cash drawer | Not implemented anywhere — new work. |
 | QR generation | Works unchanged (pure rendering). |
 | Camera QR/barcode scanning | Works via raw `getUserMedia` as-is; permission-flow hardening is backlog. |

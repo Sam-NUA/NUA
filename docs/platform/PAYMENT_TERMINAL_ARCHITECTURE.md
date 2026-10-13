@@ -15,6 +15,14 @@ Payments today are either:
   hardware-communication layer. Flagged for whoever picks this up next;
   not resolved here.
 
+Windows's own foundation pass (`feat/windows-foundation`) reached the
+same conclusion independently: no terminal adapter is implemented or
+certified there either, and its cash-order queue (`packages/platform-
+core/queue.cjs`) explicitly refuses anything but `paymentMethod: 'cash'`
+— card, gift-card/customer-balance and loyalty redemption are rejected
+outright by its own field validation, not merely undocumented. See
+`OFFLINE_SYNC_ARCHITECTURE.md`'s Windows section.
+
 ## Why nothing was built this pass
 
 Per the master directive: "Do NOT implement unsupported providers merely

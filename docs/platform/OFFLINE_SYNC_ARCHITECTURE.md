@@ -78,6 +78,57 @@ same IndexedDB API), so there is no *code* reason to expect different
 behavior, but "no code reason to expect a difference" is not the same
 claim as "verified on-device," and this document does not pretend it is.
 
+## Windows: a separate, scoped primitive — real, tested, not wired in
+
+`packages/platform-core/queue.cjs`'s `CashOrderQueue` (built on
+`feat/windows-foundation`, folded in here) is a *different* offline
+primitive from `lib/offlineQueue.js` above, not a second implementation
+of the same thing: it's deliberately narrower in scope, and was designed
+before the shared `platform/electron/*` adapters existed to connect it to
+anything.
+
+- **Identity-scoped, not just stored**: every operation requires an
+  `activate({businessId, userId, deviceId})` call first — there's no
+  "current queue," only "the queue for this exact verified identity."
+  Switching identity (`activate` again) or logging out (`lock()`)
+  immediately invalidates any in-flight read/write for the old identity
+  (`context()`/`current()`), including mid-flush — a `flush()` already
+  running for business A stops replaying as soon as the app activates
+  business B, even without waiting for the current attempt to finish.
+- **Cash-only by contract, not by convention**: `enqueue()` throws for
+  anything but a plain `paymentMethod: 'cash'` order with no
+  `customerId`/`pointsRedeemed`/`pointsDiscount`/`giftCards`, and
+  (tightened in a follow-up commit during this same session) an explicit
+  field/shape allowlist on both the order and its items — no locally
+  invented payment authorization, loyalty, or arbitrary extra fields can
+  ever reach the queue, let alone replay from it.
+- **Exactly-once replay, verified by test, not by inspection**: `clientOpId`
+  is generated once and persisted *before* the first network attempt
+  (`packages/platform-core/test/queue.test.cjs`'s "lost response then
+  restart replays same ID and exactly one server order" test); a
+  foreign-tenant or wrong-business response is never marked synced
+  (`result.businessId !== JSON.parse(c.scope)[0]` → treated as a 409
+  conflict, not success); parallel `flush()` calls serialize through one
+  `exclusive()` queue rather than racing.
+- **Durable, atomic, encrypted storage**: backed by the same
+  `EncryptedStore` (temp-file-then-rename, real AES-GCM in its tests) used
+  for the auth token — a failed write never silently drops a queued order,
+  and a failed *encryption* (OS lock, DPAPI unavailable) leaves the
+  previous value readable rather than corrupting it
+  (`apps/windows/test/store.test.cjs`'s "failed encryption preserves
+  previous value" test).
+
+**What this is not, yet**: nothing in the real checkout flow calls
+`CashOrderQueue` — `POSTerminal.jsx` still goes through
+`lib/offlineQueue.js` on every platform, Windows included. Wiring it in
+for real would mean deciding how it coexists with (or replaces) the
+existing queue for cash orders specifically, migrating/quarantining
+whatever's already sitting in a Windows install's `lib/offlineQueue.js`
+IndexedDB store, and proving the exact same restart/reconnect/exactly-
+one/foreign-tenant acceptance milestone above against it — explicitly
+flagged in `SECURITY_MODEL.md` as deliberately not rushed this pass, not
+forgotten.
+
 ## Backlog (see MOBILE_DESKTOP_BACKLOG.md for the full list)
 
 - Capacitor's `Network` plugin (more reliable than `navigator.onLine` on

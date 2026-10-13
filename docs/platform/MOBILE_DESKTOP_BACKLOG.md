@@ -106,10 +106,62 @@ acceptance milestone first.
 16. Release channels (internal/staging/production tracks, Play Store
     listing, signing/keystore setup) — explicitly out of scope: "Do not
     publish anything during this assignment."
-17. Windows implementation — ChatGPT's lane this pass, not assessed here;
-    see `COLLABORATION.md`. (iOS scaffolding — `@capacitor/ios`, the
-    native `frontend/ios/` project, Info.plist permission/ATS fixes — was
-    done in a later pass of this same session; see
-    `IOS_IPADOS_ARCHITECTURE.md` for what's real and what's still only
-    "ready to attempt," since no macOS build environment exists in this
-    sandbox to actually compile or run it.)
+17. Windows implementation — started independently by Codex on
+    `feat/windows-foundation` (real `apps/windows` Electron host,
+    `packages/platform-core`'s cash queue), then taken over and wired into
+    the shared `platform/electron/*` adapters in a later pass of this
+    session — see `WINDOWS_ARCHITECTURE.md` for the full account. (iOS
+    scaffolding — `@capacitor/ios`, the native `frontend/ios/` project,
+    Info.plist permission/ATS fixes — was done in a separate later pass;
+    see `IOS_IPADOS_ARCHITECTURE.md` for what's real there and what's
+    still only "ready to attempt," since no macOS build environment
+    exists in this sandbox to actually compile or run it.)
+
+## Windows-specific (see WINDOWS_ARCHITECTURE.md and
+## OFFLINE_SYNC_ARCHITECTURE.md's Windows section for the full detail)
+
+18. `CashOrderQueue` (`packages/platform-core/queue.cjs`) is built and
+    independently tested but not wired into the real checkout flow —
+    `POSTerminal.jsx` still goes through `lib/offlineQueue.js` on every
+    platform, Windows included. Needs a coordinated integration: decide
+    how/whether it replaces the shared queue for cash orders specifically,
+    quarantine whatever's already in a Windows install's existing
+    IndexedDB store, and prove the full restart/reconnect/exactly-one/
+    foreign-tenant milestone against it for real.
+19. Kitchen docket printing on Windows (`services/docket.js` via
+    `nua:print-html`) relies on the preview window's `javascript: false`
+    sandboxing rather than field-level HTML escaping the way the
+    structured receipt path (`nua:print-receipt`) does — safe against
+    script execution, not against a malformed docket visually distorting
+    the print preview. A structured, escaped docket schema (mirroring
+    `receipt.cjs` but for kitchen tickets — course/station/allergen
+    fields, no totals) would close this properly; not attempted this pass
+    since it would mean redesigning `generateDocketHTML`'s actual
+    structure, not just its print transport.
+20. No real device-pairing credential exists for Windows (or any
+    platform) beyond the device-identity registry itself — per
+    `CURRENT_ARCHITECTURE_AUDIT.md`'s W09 finding (carried over from the
+    Windows Phase 0 audit), a revoked device's *registry entry* is
+    rejected, but there's no cryptographic per-request terminal
+    attestation distinct from the staff member's own bearer token.
+    Tracked as a real gap, not resolved by device identity existing.
+21. No code-signing certificate, controlled auto-update mechanism, or
+    minimum-supported-version gate for the Windows installer — CI
+    produces an unsigned NSIS artifact for review only; see
+    `APP_RELEASE_STRATEGY.md`.
+22. `apps/windows`'s `npm audit` reports 8 moderate findings (0 high/
+    critical), all tracing to one advisory (GHSA-hp3w-g68c-fv3c,
+    sprintf-js, via `electron-builder`'s build toolchain — no patched
+    sprintf-js version exists upstream) in a build-only dependency path,
+    not a packaged runtime one (`npm audit --omit=dev` reports 0). Not
+    ignored or suppressed; reassess when an upstream fix exists. The
+    pre-existing, much larger frontend dependency debt (129 findings —
+    Capacitor CLI, old Electron/electron-builder, CRA, serve, Tailwind,
+    ESLint toolchain paths) is unrelated and already tracked as its own
+    gap, not expanded or shrunk by this item.
+23. No physical Windows hardware QA — touchscreen (44px targets, touch
+    mode), a real thermal printer via the Windows spooler, keyboard-wedge
+    barcode scanners, and 100–200% display scaling have none of their
+    behavior verified on an actual device, only in CI's `windows-latest`
+    runner (which proves the app launches and the bridge/sandbox/crypto
+    behave correctly, not that physical hardware behaves correctly).

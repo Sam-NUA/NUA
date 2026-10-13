@@ -85,12 +85,22 @@ revocation system, it's a list.
 ## Frontend wiring
 
 `frontend/src/hooks/useDeviceRegistration.js`, wired into `App.js`'s
-`ProtectedRoutes`: on native platforms only (`isNative()`), once a session
-exists, registers the device if it hasn't already (via
-`DeviceIdentityService.register()`, using real OS-reported info —
-`@capacitor/device`'s `Device.getInfo()`, not anything the UI has to ask
-the user to type in) and sends a heartbeat every 5 minutes. A no-op on
-web — exactly pre-existing behavior there.
+`ProtectedRoutes`: on native platforms only (`isNative()` — Android, iOS,
+or the Windows desktop shell), once a session exists, registers the
+device if it hasn't already and sends a heartbeat every 5 minutes. A
+no-op on web — exactly pre-existing behavior there.
+
+- Android/iOS (`platform/capacitor/DeviceIdentityService.js`): real
+  OS-reported info via `@capacitor/device`'s `Device.getInfo()`, not
+  anything the UI has to ask the user to type in.
+- Windows (`platform/electron/DeviceIdentityService.js`): the id itself
+  is assigned by the backend exactly as for every other platform; there's
+  no OS-device-info API exposed by `apps/windows`'s bridge to pull a real
+  model/manufacturer string from, so `deviceName` falls back to the
+  machine's real hostname (`os.hostname()`, returned by `nua:info`) rather
+  than anything fabricated. The returned id persists via `nua:device-id-*`
+  — the same OS-encrypted store as the auth token (see
+  `SECURITY_MODEL.md`), not the host's in-memory Chromium session.
 
 ## What's NOT done this pass (see MOBILE_DESKTOP_BACKLOG.md)
 
@@ -99,6 +109,7 @@ web — exactly pre-existing behavior there.
 - No `locationId` assignment flow — the field exists on the model, nothing
   sets it yet (multi-location businesses would need this before revocation
   is meaningful per-venue rather than per-business).
-- Windows/Electron device registration is ChatGPT's lane — the backend
-  contract above is shared and already supports `platform: "windows"`;
-  the Electron-side `register()` call isn't implemented here.
+- Windows device registration has never run against a real packaged
+  build — verified only by local Node unit tests and the frontend/backend
+  test suites, plus CI's `windows-latest` runner exercising the host
+  shell itself (not a full login→register flow end to end yet).

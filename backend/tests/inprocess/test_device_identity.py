@@ -176,6 +176,31 @@ def test_ios_platform_device_registers_and_enforces_revocation_identically_to_an
     assert rejected.status_code == 401, rejected.text
 
 
+def test_windows_platform_device_registers_and_enforces_revocation_identically_to_android(client, owner_headers):
+    """Same gap as the "ios" test above, for "windows": the Windows
+    Electron foundation (apps/windows/, packages/platform-core/) now
+    registers real devices through this same endpoint — see
+    frontend/src/platform/electron/DeviceIdentityService.js — so the
+    value it actually sends needs its own proof, not just ALLOWED_
+    PLATFORMS already listing it."""
+    reg = req(client, "POST", "/api/devices/register", headers=owner_headers,
+             json={"platform": "windows", "deviceName": "Front Counter PC", "deviceModel": "Windows PC"})
+    assert reg.status_code == 200, reg.text
+    assert reg.json()["platform"] == "windows"
+    device_id = reg.json()["id"]
+
+    login = req(client, "POST", "/api/auth/login",
+               json={"email": "owner@nua.com", "password": "NuaOwner2026!"},
+               headers={"X-Device-Id": device_id})
+    assert login.status_code == 200, login.text
+    device_bound_headers = {"Authorization": f"Bearer {login.json()['token']}"}
+
+    req(client, "POST", f"/api/devices/{device_id}/revoke", headers=owner_headers)
+
+    rejected = req(client, "GET", "/api/devices", headers=device_bound_headers)
+    assert rejected.status_code == 401, rejected.text
+
+
 def test_login_with_a_revoked_device_id_header_is_rejected_outright(client, owner_headers):
     reg = req(client, "POST", "/api/devices/register", headers=owner_headers,
              json={"platform": "android", "deviceName": "Pre-Revoked Tablet"})

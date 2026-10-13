@@ -1,3 +1,0 @@
-# Android ownership and integration
-
-Claude owns Android tablets and phones. Existing Capacitor configuration identifies `com.nua.pos`, but root version 8 vs frontend version 6 must be reconciled. This branch does not alter either Android dependency tree or claim an APK exists. Shared React remains the core; platform commands should conform to `packages/platform-core/contracts.d.ts` rather than reimplement sale/tenant/payment rules. Review CLAUDE_HANDOFF.md before merging shared changes. Status in this branch: NOT STARTED by Codex; existing configuration alone is not an operational foundation.

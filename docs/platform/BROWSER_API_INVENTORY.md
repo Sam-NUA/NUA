@@ -1,5 +1,13 @@
 # Browser API inventory
 
+
+Written by Codex during the Windows Phase 0 audit on `feat/windows-foundation`
+(PR #21); promoted here, unmodified below this note, when that work was taken
+over and folded into this canonical doc set — see `COLLABORATION.md`. A
+repo-wide survey, not Windows-specific, so it belongs alongside
+`CURRENT_ARCHITECTURE_AUDIT.md` rather than staying forked under
+`docs/platform/windows/`.
+
 Generated from frontend source and public files at the baseline. Hits are review locations, not proof all branches execute.
 
 

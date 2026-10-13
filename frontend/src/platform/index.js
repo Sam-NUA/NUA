@@ -24,6 +24,14 @@ import * as capacitorNetwork from './capacitor/NetworkService';
 import * as capacitorSecureStorage from './capacitor/SecureStorageService';
 import * as capacitorDeviceIdentity from './capacitor/DeviceIdentityService';
 
+import * as electronDialog from './electron/DialogService';
+import * as electronPrint from './electron/PrintService';
+import * as electronFile from './electron/FileService';
+import * as electronClipboard from './electron/ClipboardService';
+import * as electronNetwork from './electron/NetworkService';
+import * as electronSecureStorage from './electron/SecureStorageService';
+import * as electronDeviceIdentity from './electron/DeviceIdentityService';
+
 /** 'web' | 'android' | 'ios' | 'electron' */
 export function detectPlatform() {
   if (typeof window === 'undefined') return 'web';
@@ -32,27 +40,38 @@ export function detectPlatform() {
     // 'android' | 'ios' — Capacitor's own platform name, not a guess.
     return cap.getPlatform();
   }
-  if (window.electronAPI?.isElectron) return 'electron';
+  // window.nuaDesktop is the real bridge apps/windows/src/preload.cjs
+  // exposes (see docs/platform/WINDOWS_ARCHITECTURE.md) — not a generic
+  // "isElectron" flag, so this can't be set by anything other than that
+  // specific, sender-validated preload script.
+  if (window.nuaDesktop) return 'electron';
   return 'web';
 }
 
+/** True for a dedicated terminal/device, not a browser tab — a tablet,
+ * phone or Windows PC running the native/desktop shell. Device identity
+ * registration (useDeviceRegistration) and the native-backed storage/
+ * print/file adapters below all key off this, not off `isCapacitor`
+ * alone, since Electron is native in the same sense Capacitor is. */
 export function isNative() {
   const p = detectPlatform();
-  return p === 'android' || p === 'ios';
+  return p === 'android' || p === 'ios' || p === 'electron';
 }
 
 const platform = detectPlatform();
 const isCapacitor = platform === 'android' || platform === 'ios';
+const isElectron = platform === 'electron';
 
-// Electron support for these services is ChatGPT's lane (see
-// docs/platform/COLLABORATION.md) — falls back to the web implementation
-// for now, which is exactly correct for an Electron renderer (it's a real
-// Chromium browser context, same APIs as web) until/unless Electron-
-// specific IPC implementations land.
-export const DialogService = isCapacitor ? capacitorDialog : webDialog;
-export const PrintService = isCapacitor ? capacitorPrint : webPrint;
-export const FileService = isCapacitor ? capacitorFile : webFile;
-export const ClipboardService = isCapacitor ? capacitorClipboard : webClipboard;
-export const NetworkService = isCapacitor ? capacitorNetwork : webNetwork;
-export const SecureStorageService = isCapacitor ? capacitorSecureStorage : webSecureStorage;
-export const DeviceIdentityService = isCapacitor ? capacitorDeviceIdentity : webDeviceIdentity;
+function pick(web, capacitor, electron) {
+  if (isCapacitor) return capacitor;
+  if (isElectron) return electron;
+  return web;
+}
+
+export const DialogService = pick(webDialog, capacitorDialog, electronDialog);
+export const PrintService = pick(webPrint, capacitorPrint, electronPrint);
+export const FileService = pick(webFile, capacitorFile, electronFile);
+export const ClipboardService = pick(webClipboard, capacitorClipboard, electronClipboard);
+export const NetworkService = pick(webNetwork, capacitorNetwork, electronNetwork);
+export const SecureStorageService = pick(webSecureStorage, capacitorSecureStorage, electronSecureStorage);
+export const DeviceIdentityService = pick(webDeviceIdentity, capacitorDeviceIdentity, electronDeviceIdentity);
