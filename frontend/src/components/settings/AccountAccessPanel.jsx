@@ -3,6 +3,7 @@ import { useAuth } from '../../contexts/AuthContext';
 import { authAPI } from '../../services/api';
 import { Button } from '../ui/button';
 import { Input } from '../ui/input';
+import { SecureStorageService } from '../../platform';
 
 export default function AccountAccessPanel() {
   const { user, logout } = useAuth();
@@ -27,7 +28,7 @@ export default function AccountAccessPanel() {
     try {
       await authAPI.changePassword(current, password);
       setCurrent(''); setPassword(''); setConfirm(''); setDone(true);
-      localStorage.removeItem('nua_token');
+      await SecureStorageService.clearToken();
       localStorage.setItem('nua_login_mode', 'email');
     } catch (err) {
       setError(err.response?.data?.detail || 'Could not update your password. Check your connection and try again.');

@@ -4,6 +4,7 @@ import { Button } from '../../components/ui/button';
 import { useToast } from '../../hooks/use-toast';
 import { useTheme } from '../../contexts/ThemeContext';
 import { v26API } from '../../services/api';
+import { SecureStorageService } from '../../platform';
 import { Users2, Plus, Save } from 'lucide-react';
 
 const DOW = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
@@ -15,10 +16,13 @@ export default function StaffAvailability() {
   const [data, setData] = useState({ weeklyAvailable: [], blackoutDates: [] });
 
   useEffect(() => {
-    fetch(`${process.env.REACT_APP_BACKEND_URL}/api/auth/staff`, { headers: { Authorization: `Bearer ${localStorage.getItem('nua_token')}` } })
-      .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
-      .then(d => setStaff(Array.isArray(d) ? d : []))
-      .catch(() => { setStaff([]); toast({ title: 'Failed to load staff list', variant: 'destructive' }); });
+    (async () => {
+      const token = await SecureStorageService.getToken();
+      fetch(`${process.env.REACT_APP_BACKEND_URL}/api/auth/staff`, { headers: { Authorization: `Bearer ${token}` } })
+        .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
+        .then(d => setStaff(Array.isArray(d) ? d : []))
+        .catch(() => { setStaff([]); toast({ title: 'Failed to load staff list', variant: 'destructive' }); });
+    })();
   }, [toast]);
 
   const load = async (s) => {

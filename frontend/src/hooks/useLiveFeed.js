@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 
 import api from '../services/api';
+import { SecureStorageService } from '../platform';
 
 // A shared, bounded invalidation feed works across function instances and
 // reconnects. Consumers retain their normal data refresh as a safety net.
@@ -16,7 +17,7 @@ export default function useLiveFeed(onEvent) {
     let delay = 5000;
     const controller = new AbortController();
     const poll = async () => {
-      const token = localStorage.getItem('nua_token');
+      const token = await SecureStorageService.getToken();
       if (!token || stopped) { setConnected(false); return; }
       try {
         const query = cursor ? `?cursor=${encodeURIComponent(cursor)}` : '';

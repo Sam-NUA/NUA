@@ -9,7 +9,7 @@ import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from '.
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '../components/ui/tabs';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '../components/ui/dialog';
 import { toast } from 'sonner';
-import { DialogService } from '../platform';
+import { DialogService, SecureStorageService } from '../platform';
 import {
   Award, RefreshCw, Sparkles, Coffee, Heart, Trophy, DollarSign, Crown, Sunrise,
   Wine, Users, Gift, Search, Plus, Trash2, Lock, CheckCircle2, Target, UserPlus,
@@ -17,7 +17,7 @@ import {
 } from 'lucide-react';
 
 const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
-const H = () => ({ Authorization: `Bearer ${localStorage.getItem('nua_token')}` });
+const H = async () => ({ Authorization: `Bearer ${await SecureStorageService.getToken()}` });
 
 
 function LeaderboardPanel() {
@@ -27,7 +27,7 @@ function LeaderboardPanel() {
   const load = React.useCallback(async () => {
     setLoading(true);
     try {
-      const r = await axios.get(`${API}/loyalty/v2/leaderboard?metric=${metric}&limit=25`, { headers: H() });
+      const r = await axios.get(`${API}/loyalty/v2/leaderboard?metric=${metric}&limit=25`, { headers: await H() });
       setData(r.data);
     } catch { toast.error('Failed to load leaderboard'); }
     finally { setLoading(false); }
@@ -92,10 +92,10 @@ function ReportsPanel() {
     setLoading(true);
     try {
       const [l, r, f, lk] = await Promise.all([
-        axios.get(`${API}/loyalty/reports/liability`, { headers: H() }),
-        axios.get(`${API}/loyalty/reports/roi`, { headers: H() }),
-        axios.get(`${API}/loyalty/reports/fraud-flags`, { headers: H() }),
-        axios.get(`${API}/loyalty/reports/locked-accounts`, { headers: H() }),
+        axios.get(`${API}/loyalty/reports/liability`, { headers: await H() }),
+        axios.get(`${API}/loyalty/reports/roi`, { headers: await H() }),
+        axios.get(`${API}/loyalty/reports/fraud-flags`, { headers: await H() }),
+        axios.get(`${API}/loyalty/reports/locked-accounts`, { headers: await H() }),
       ]);
       setLiability(l.data);
       setRoi(r.data);
@@ -110,7 +110,7 @@ function ReportsPanel() {
   const resolveFlag = async (flagId, status) => {
     setResolving(flagId);
     try {
-      const r = await axios.put(`${API}/loyalty/reports/fraud-flags/${flagId}`, { status }, { headers: H() });
+      const r = await axios.put(`${API}/loyalty/reports/fraud-flags/${flagId}`, { status }, { headers: await H() });
       toast.success(status === 'confirmed_abuse' ? (r.data.actionTaken || 'Confirmed') : 'Marked reviewed');
       load();
     } catch (e) { toast.error(e.response?.data?.detail || 'Failed to resolve flag'); }
@@ -121,7 +121,7 @@ function ReportsPanel() {
   const unlockAccount = async (customerId) => {
     setUnlocking(customerId);
     try {
-      await axios.post(`${API}/loyalty/customers/${customerId}/unlock`, {}, { headers: H() });
+      await axios.post(`${API}/loyalty/customers/${customerId}/unlock`, {}, { headers: await H() });
       toast.success('Loyalty account unlocked');
       load();
     } catch (e) { toast.error(e.response?.data?.detail || 'Failed to unlock account'); }
@@ -282,7 +282,7 @@ function ReferralsPanel({ customers }) {
   const load = React.useCallback(async () => {
     setLoading(true);
     try {
-      const r = await axios.get(`${API}/loyalty/v2/referrals`, { headers: H() });
+      const r = await axios.get(`${API}/loyalty/v2/referrals`, { headers: await H() });
       setRefs(r.data);
     } catch { toast.error('Failed to load referrals'); }
     finally { setLoading(false); }
@@ -295,7 +295,7 @@ function ReferralsPanel({ customers }) {
       return;
     }
     try {
-      await axios.post(`${API}/loyalty/v2/referrals`, newRef, { headers: H() });
+      await axios.post(`${API}/loyalty/v2/referrals`, newRef, { headers: await H() });
       toast.success('Referral created');
       setNewRef({ referrerId: '', refereeEmail: '', refereeId: '' });
       load();
@@ -304,7 +304,7 @@ function ReferralsPanel({ customers }) {
 
   const complete = async (id, refereeId) => {
     try {
-      await axios.post(`${API}/loyalty/v2/referrals/${id}/complete`, { refereeId }, { headers: H() });
+      await axios.post(`${API}/loyalty/v2/referrals/${id}/complete`, { refereeId }, { headers: await H() });
       toast.success('Referral completed — vouchers issued');
       load();
     } catch { toast.error('Failed to complete'); }
@@ -400,14 +400,14 @@ export default function LoyaltyProgress() {
 
   const loadCustomers = useCallback(async () => {
     try {
-      const r = await axios.get(`${API}/customers`, { headers: H() });
+      const r = await axios.get(`${API}/customers`, { headers: await H() });
       setCustomers(r.data || []);
     } catch { /* ignore */ }
   }, []);
 
   const loadChallenges = useCallback(async () => {
     try {
-      const r = await axios.get(`${API}/loyalty/v2/challenges?active_only=false`, { headers: H() });
+      const r = await axios.get(`${API}/loyalty/v2/challenges?active_only=false`, { headers: await H() });
       setChallenges(r.data || []);
     } catch { /* ignore */ }
   }, []);
@@ -417,8 +417,8 @@ export default function LoyaltyProgress() {
     setRefreshing(true);
     try {
       // Evaluate first (idempotent) so any newly-earned items show
-      await axios.post(`${API}/loyalty/v2/evaluate/${id}`, {}, { headers: H() });
-      const r = await axios.get(`${API}/loyalty/v2/progress/${id}`, { headers: H() });
+      await axios.post(`${API}/loyalty/v2/evaluate/${id}`, {}, { headers: await H() });
+      const r = await axios.get(`${API}/loyalty/v2/progress/${id}`, { headers: await H() });
       setProgress(r.data);
     } catch { toast.error('Failed to load progress'); }
     finally { setRefreshing(false); }
@@ -439,7 +439,7 @@ export default function LoyaltyProgress() {
         ...challengeForm,
         startDate: new Date(challengeForm.startDate).toISOString(),
         endDate: new Date(challengeForm.endDate + 'T23:59:59').toISOString(),
-      }, { headers: H() });
+      }, { headers: await H() });
       toast.success('Challenge created');
       setAddChallengeOpen(false);
       loadChallenges();
@@ -449,7 +449,7 @@ export default function LoyaltyProgress() {
   const deleteChallenge = async (id) => {
     if (!await DialogService.confirm('Delete this challenge?')) return;
     try {
-      await axios.delete(`${API}/loyalty/v2/challenges/${id}`, { headers: H() });
+      await axios.delete(`${API}/loyalty/v2/challenges/${id}`, { headers: await H() });
       loadChallenges();
     } catch { toast.error('Failed'); }
   };

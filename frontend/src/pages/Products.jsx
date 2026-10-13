@@ -18,7 +18,7 @@ import { ProductVariants } from '../components/products/ProductVariants';
 import { PromotionDialog } from '../components/products/PromotionDialog';
 import { ItemsKpiStrip } from '../components/products/ItemsKpiStrip';
 import { toast } from 'sonner';
-import { DialogService } from '../platform';
+import { DialogService, SecureStorageService } from '../platform';
 
 const makeEmptyProduct = () => ({
   name: '', category: '', categoryId: '', price: '', cost: '', stock: '', sku: '', barcode: '',
@@ -495,7 +495,7 @@ const Products = () => {
     try {
       const r = await fetch(`${process.env.REACT_APP_BACKEND_URL}/api/items/bulk-import`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${localStorage.getItem('nua_token')}` },
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${await SecureStorageService.getToken()}` },
         body: JSON.stringify({ rows }),
       });
       if (!r.ok) {

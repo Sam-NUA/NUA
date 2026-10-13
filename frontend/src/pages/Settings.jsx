@@ -20,10 +20,10 @@ import POSLayoutSettings from '../components/settings/POSLayoutSettings';
 import { toast } from 'sonner';
 import axios from 'axios';
 import { salaryTypeSuffix } from '../lib/staffPay';
-import { DialogService } from '../platform';
+import { DialogService, SecureStorageService } from '../platform';
 
 const API = process.env.REACT_APP_BACKEND_URL;
-const authHeader = () => ({ Authorization: `Bearer ${localStorage.getItem('nua_token')}` });
+const authHeader = async () => ({ Authorization: `Bearer ${await SecureStorageService.getToken()}` });
 
 const Settings = () => {
   const { theme, updateTheme, resetTheme, saveThemeToServer, themeSaving, themeSavedAt } = useTheme();
@@ -95,11 +95,11 @@ const Settings = () => {
       cfg.routes = Array.isArray(cfg.routes) ? cfg.routes : [];
       setPrintRouting(cfg);
     }).catch(() => setPrintRouting({ enabled: true, routes: [], defaultPrinter: '', defaultPriority: 2 }));
-    axios.get(`${API}/api/auth/roles`, { headers: authHeader() }).then(r => setCustomRoles(r.data)).catch(() => {});
+    authHeader().then(h => axios.get(`${API}/api/auth/roles`, { headers: h }).then(r => setCustomRoles(r.data)).catch(() => {}));
     // Load business hours from business settings
-    axios.get(`${API}/api/business/settings`, { headers: authHeader() }).then(r => {
+    authHeader().then(h => axios.get(`${API}/api/business/settings`, { headers: h }).then(r => {
       if (r.data?.hours) setBizHours(prev => ({ ...prev, ...r.data.hours }));
-    }).catch(() => {});
+    }).catch(() => {}));
     analyticsAPI.getTodayTargets().then(r => { if (r.data) setTodayTargets(r.data); }).catch(() => {});
     customersAPI.getWalletOffers().then(r => { if (r.data) setWalletOffers(r.data); }).catch(() => {});
     staffMgmtAPI.getPosSessionSettings().then(r => { if (r.data) setPosSession(r.data); }).catch(() => {});
@@ -109,11 +109,11 @@ const Settings = () => {
     try { const r = await locationsAPI.getAll(); setLocations(r.data); } catch {}
   };
   const fetchStaff = async () => {
-    try { const r = await axios.get(`${API}/api/auth/staff`, { headers: authHeader() }); setStaff(r.data); } catch {}
+    try { const r = await axios.get(`${API}/api/auth/staff`, { headers: await authHeader() }); setStaff(r.data); } catch {}
   };
   const fetchBusiness = async () => {
     try {
-      const r = await axios.get(`${API}/api/business/settings`, { headers: authHeader() });
+      const r = await axios.get(`${API}/api/business/settings`, { headers: await authHeader() });
       if (r.data) setBizForm(prev => ({ ...prev, ...r.data }));
     } catch {}
   };
@@ -141,14 +141,14 @@ const Settings = () => {
     try {
       if (editingStaff) {
         const data = { name: staffForm.name, role: staffForm.role, payRate: parseFloat(staffForm.payRate) || 0, salaryType: staffForm.salaryType, pin: staffForm.pin };
-        await axios.put(`${API}/api/auth/staff/${editingStaff.id}`, data, { headers: authHeader() });
+        await axios.put(`${API}/api/auth/staff/${editingStaff.id}`, data, { headers: await authHeader() });
         toast.success('Staff updated');
       } else {
         await axios.post(`${API}/api/auth/staff/add`, {
           name: staffForm.name, email: staffForm.email || '', password: staffForm.password || '',
           role: staffForm.role, payRate: parseFloat(staffForm.payRate) || 0,
           salaryType: staffForm.salaryType, pin: staffForm.pin,
-        }, { headers: authHeader() });
+        }, { headers: await authHeader() });
         toast.success('Staff member added');
       }
       setShowStaffDialog(false); fetchStaff();
@@ -156,13 +156,13 @@ const Settings = () => {
   };
   const deleteStaff = async (id) => {
     if (!await DialogService.confirm('Delete this staff member?')) return;
-    try { await axios.delete(`${API}/api/auth/staff/${id}`, { headers: authHeader() }); toast.success('Staff deleted'); fetchStaff(); } catch (e) { toast.error(e.response?.data?.detail || 'Failed'); }
+    try { await axios.delete(`${API}/api/auth/staff/${id}`, { headers: await authHeader() }); toast.success('Staff deleted'); fetchStaff(); } catch (e) { toast.error(e.response?.data?.detail || 'Failed'); }
   };
 
   // Business save
   const saveBusiness = async () => {
     try {
-      await axios.post(`${API}/api/business/settings`, bizForm, { headers: authHeader() });
+      await axios.post(`${API}/api/business/settings`, bizForm, { headers: await authHeader() });
       toast.success('Business settings saved');
     } catch { toast.error('Failed to save'); }
   };
@@ -631,19 +631,19 @@ const Settings = () => {
                 {customRoles.map(r => (
                   <span key={r} className="inline-flex items-center gap-1 px-2.5 py-1 bg-gray-100 rounded-full text-xs font-medium capitalize">
                     {r}
-                    <button onClick={() => { const updated = customRoles.filter(x => x !== r); setCustomRoles(updated); axios.post(`${API}/api/auth/roles`, { roles: updated }, { headers: authHeader() }).then(() => toast.success('Role removed')); }} className="text-gray-400 hover:text-red-500 ml-0.5">&times;</button>
+                    <button onClick={async () => { const updated = customRoles.filter(x => x !== r); setCustomRoles(updated); axios.post(`${API}/api/auth/roles`, { roles: updated }, { headers: await authHeader() }).then(() => toast.success('Role removed')); }} className="text-gray-400 hover:text-red-500 ml-0.5">&times;</button>
                   </span>
                 ))}
               </div>
               <div className="flex gap-2">
                 <Input placeholder="New role name" className="h-8 text-sm" value={newRole} onChange={e => setNewRole(e.target.value)} data-testid="new-role-input" />
-                <Button size="sm" variant="outline" className="h-8" onClick={() => {
+                <Button size="sm" variant="outline" className="h-8" onClick={async () => {
                   if (!newRole.trim()) return;
                   const role = newRole.trim().toLowerCase();
                   if (customRoles.includes(role)) { toast.error('Role exists'); return; }
                   const updated = [...customRoles, role];
                   setCustomRoles(updated); setNewRole('');
-                  axios.post(`${API}/api/auth/roles`, { roles: updated }, { headers: authHeader() }).then(() => toast.success('Role added'));
+                  axios.post(`${API}/api/auth/roles`, { roles: updated }, { headers: await authHeader() }).then(() => toast.success('Role added'));
                 }} data-testid="add-role-btn"><Plus size={14} /></Button>
               </div>
             </CardContent></Card>
@@ -738,7 +738,7 @@ const Settings = () => {
             <div><label className="text-sm font-medium mb-1 block">Google Business Profile URL</label><Input placeholder="https://business.google.com/..." value={bizHours.googleBusinessUrl} onChange={e => setBizHours({ ...bizHours, googleBusinessUrl: e.target.value })} data-testid="google-biz-url" /></div>
             <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={bizHours.googleSync} onChange={e => setBizHours({ ...bizHours, googleSync: e.target.checked })} data-testid="google-sync" /> Sync hours with Google Business</label>
             <Button style={{ backgroundColor: theme.primary }} onClick={async () => {
-              try { await axios.post(`${API}/api/business/settings`, { ...bizForm, hours: bizHours }, { headers: authHeader() }); toast.success('Business hours & Google sync saved'); } catch { toast.error('Failed'); }
+              try { await axios.post(`${API}/api/business/settings`, { ...bizForm, hours: bizHours }, { headers: await authHeader() }); toast.success('Business hours & Google sync saved'); } catch { toast.error('Failed'); }
             }} data-testid="save-hours-btn"><Save size={16} className="mr-1" /> Save Hours & Sync</Button>
           </CardContent></Card>
         </div>

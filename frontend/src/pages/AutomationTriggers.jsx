@@ -11,27 +11,27 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '.
 import { toast } from 'sonner';
 import { Zap, Plus, Trash2, Sparkles, Play, Pause, Brain, History, GitBranch, ChevronRight, Cpu, Activity, ArrowRight, TrendingDown, RefreshCw, AlertTriangle, ShieldCheck } from 'lucide-react';
 import axios from 'axios';
-import { DialogService } from '../platform';
+import { DialogService, SecureStorageService } from '../platform';
 
 /* Tiny API wrapper — kept local to avoid polluting services/api.js */
 const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
-const headers = () => ({ Authorization: `Bearer ${localStorage.getItem('nua_token')}` });
+const headers = async () => ({ Authorization: `Bearer ${await SecureStorageService.getToken()}` });
 const rulesAPI = {
-  list: () => axios.get(`${API}/rules`, { headers: headers() }),
-  create: (b) => axios.post(`${API}/rules`, b, { headers: headers() }),
-  update: (id, b) => axios.patch(`${API}/rules/${id}`, b, { headers: headers() }),
-  toggle: (id) => axios.post(`${API}/rules/${id}/toggle`, {}, { headers: headers() }),
-  remove: (id) => axios.delete(`${API}/rules/${id}`, { headers: headers() }),
-  catalog: () => axios.get(`${API}/rules/catalog`, { headers: headers() }),
-  stats: () => axios.get(`${API}/rules/stats`, { headers: headers() }),
-  ai: (prompt) => axios.post(`${API}/rules/ai-build`, { prompt }, { headers: headers() }),
-  simulate: (b) => axios.post(`${API}/rules/simulate`, b, { headers: headers() }),
-  emit: (b) => axios.post(`${API}/rules/emit`, b, { headers: headers() }),
-  executions: (params) => axios.get(`${API}/rules/history/executions`, { headers: headers(), params }),
-  predictiveStockouts: () => axios.get(`${API}/rules/predictive/stockouts`, { headers: headers() }),
-  predictiveScan: () => axios.post(`${API}/rules/predictive/scan`, {}, { headers: headers() }),
-  opsErrorStatus: () => axios.get(`${API}/rules/ops/error-status`, { headers: headers() }),
-  opsScan: () => axios.post(`${API}/rules/ops/scan`, {}, { headers: headers() }),
+  list: async () => axios.get(`${API}/rules`, { headers: await headers() }),
+  create: async (b) => axios.post(`${API}/rules`, b, { headers: await headers() }),
+  update: async (id, b) => axios.patch(`${API}/rules/${id}`, b, { headers: await headers() }),
+  toggle: async (id) => axios.post(`${API}/rules/${id}/toggle`, {}, { headers: await headers() }),
+  remove: async (id) => axios.delete(`${API}/rules/${id}`, { headers: await headers() }),
+  catalog: async () => axios.get(`${API}/rules/catalog`, { headers: await headers() }),
+  stats: async () => axios.get(`${API}/rules/stats`, { headers: await headers() }),
+  ai: async (prompt) => axios.post(`${API}/rules/ai-build`, { prompt }, { headers: await headers() }),
+  simulate: async (b) => axios.post(`${API}/rules/simulate`, b, { headers: await headers() }),
+  emit: async (b) => axios.post(`${API}/rules/emit`, b, { headers: await headers() }),
+  executions: async (params) => axios.get(`${API}/rules/history/executions`, { headers: await headers(), params }),
+  predictiveStockouts: async () => axios.get(`${API}/rules/predictive/stockouts`, { headers: await headers() }),
+  predictiveScan: async () => axios.post(`${API}/rules/predictive/scan`, {}, { headers: await headers() }),
+  opsErrorStatus: async () => axios.get(`${API}/rules/ops/error-status`, { headers: await headers() }),
+  opsScan: async () => axios.post(`${API}/rules/ops/scan`, {}, { headers: await headers() }),
 };
 
 const emptyRule = {

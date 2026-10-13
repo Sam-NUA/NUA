@@ -10,9 +10,10 @@ import { useAuth } from '../contexts/AuthContext';
 import { v15API, staffMgmtAPI } from '../services/api';
 import axios from 'axios';
 import { toast } from 'sonner';
+import { SecureStorageService } from '../platform';
 
 const API = process.env.REACT_APP_BACKEND_URL;
-const authHeader = () => ({ Authorization: `Bearer ${localStorage.getItem('nua_token')}` });
+const authHeader = async () => ({ Authorization: `Bearer ${await SecureStorageService.getToken()}` });
 
 export default function ShiftSwaps() {
   const { theme } = useTheme();
@@ -27,7 +28,7 @@ export default function ShiftSwaps() {
   const refresh = async () => {
     try { const r = await v15API.getSwaps(); setSwaps(r.data || []); } catch { toast.error('Failed to load shift swaps'); }
     try { const r = await staffMgmtAPI.getRoster(); setShifts(r.data || []); } catch { toast.error('Failed to load roster shifts'); }
-    try { const r = await axios.get(`${API}/api/auth/staff`, { headers: authHeader() }); setStaff(r.data || []); } catch { toast.error('Failed to load staff list'); }
+    try { const r = await axios.get(`${API}/api/auth/staff`, { headers: await authHeader() }); setStaff(r.data || []); } catch { toast.error('Failed to load staff list'); }
   };
   useEffect(() => { refresh(); }, []);
 

@@ -380,6 +380,9 @@ export const coursingAPI = {
   analytics: (days = 7) => api.get('/coursing/analytics', { params: { days } }),
   streamUrl: (tableNumber) =>
     `${API_BASE_URL}/coursing/stream?tableNumber=${encodeURIComponent(tableNumber || '')}`
+    // EventSource can't do async/header-based auth, so this reads the mirror
+    // SecureStorageService keeps in localStorage for exactly this case — see
+    // SecureStorageService.js's own comment.
     + `&token=${encodeURIComponent(localStorage.getItem('nua_token') || '')}`,
   endOfService: () => api.get('/coursing/end-of-service'),
   closeService: (reason) => api.post('/coursing/end-of-service/close', { reason }),

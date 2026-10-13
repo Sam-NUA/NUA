@@ -6,6 +6,7 @@ import { Input } from '../components/ui/input';
 import { Card, CardContent } from '../components/ui/card';
 import { KeyRound, Lock, Mail, AlertCircle, CheckCircle2 } from 'lucide-react';
 import Logo from '../components/brand/Logo';
+import { SecureStorageService } from '../platform';
 
 // Operator-only last-resort recovery — not linked from the sign-in screen on
 // purpose. Reachable only by someone who already holds OWNER_RECOVERY_KEY
@@ -51,7 +52,7 @@ export default function OwnerRecovery() {
       await authAPI.ownerRecoveryComplete(token, password, pin);
       setPin(''); setConfirmPin('');
       setPassword(''); setConfirm(''); setToken('');
-      localStorage.removeItem('nua_token');
+      await SecureStorageService.clearToken();
       localStorage.setItem('nua_login_mode', 'email');
       setDone(true);
     } catch (err) {

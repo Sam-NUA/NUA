@@ -13,6 +13,7 @@ import { useAuth } from '../contexts/AuthContext';
 import { transactionsAPI, customersAPI, enterpriseAPI, refundsAPI } from '../services/api';
 import { toast } from 'sonner';
 import { buildReceiptHtml } from '../lib/receiptHtml';
+import { SecureStorageService } from '../platform';
 
 const Dashboard = () => {
   const { theme } = useTheme();
@@ -62,7 +63,7 @@ const Dashboard = () => {
 
       // Active tables
       try {
-        const kitchenRes = await fetch(`${process.env.REACT_APP_BACKEND_URL}/api/kitchen/orders`, { headers: { Authorization: `Bearer ${localStorage.getItem('nua_token')}` } });
+        const kitchenRes = await fetch(`${process.env.REACT_APP_BACKEND_URL}/api/kitchen/orders`, { headers: { Authorization: `Bearer ${await SecureStorageService.getToken()}` } });
         const ko = await kitchenRes.json();
         const tables = new Set((ko || []).filter(o => o.tableNumber).map(o => o.tableNumber));
         setActiveTables(tables.size);

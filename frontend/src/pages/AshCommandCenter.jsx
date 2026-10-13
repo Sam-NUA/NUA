@@ -7,9 +7,10 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from '../components/ui/tabs'
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from '../components/ui/select';
 import { toast } from 'sonner';
 import { Activity, AlertTriangle, TrendingUp, ShieldCheck, RefreshCw, Sparkles, Brain, Sunrise, Wrench } from 'lucide-react';
+import { SecureStorageService } from '../platform';
 
 const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
-const H = () => ({ Authorization: `Bearer ${localStorage.getItem('nua_token')}` });
+const H = async () => ({ Authorization: `Bearer ${await SecureStorageService.getToken()}` });
 
 const TIER_COLOR = {
   excellent: '#10b981', healthy: '#22c55e', watch: '#f59e0b',
@@ -31,11 +32,11 @@ export default function AshCommandCenter() {
     setRefreshing(true);
     try {
       const [h, i, b, a, t] = await Promise.all([
-        axios.get(`${API}/nua/health-score`, { headers: H() }),
-        axios.get(`${API}/nua/insights?limit=100`, { headers: H() }),
-        axios.get(`${API}/nua/briefing`, { headers: H() }),
-        axios.get(`${API}/approvals?status=pending`, { headers: H() }),
-        axios.get(`${API}/nua/tools`, { headers: H() }),
+        axios.get(`${API}/nua/health-score`, { headers: await H() }),
+        axios.get(`${API}/nua/insights?limit=100`, { headers: await H() }),
+        axios.get(`${API}/nua/briefing`, { headers: await H() }),
+        axios.get(`${API}/approvals?status=pending`, { headers: await H() }),
+        axios.get(`${API}/nua/tools`, { headers: await H() }),
       ]);
       setHealth(h.data); setInsights(i.data); setBriefing(b.data);
       setApprovals(a.data); setTools(t.data);
@@ -46,7 +47,7 @@ export default function AshCommandCenter() {
 
   const regenerateBriefing = async () => {
     try {
-      const r = await axios.post(`${API}/nua/briefing/regenerate`, {}, { headers: H() });
+      const r = await axios.post(`${API}/nua/briefing/regenerate`, {}, { headers: await H() });
       setBriefing(r.data);
       toast.success('Briefing regenerated');
     } catch { toast.error('Failed'); }
@@ -54,7 +55,7 @@ export default function AshCommandCenter() {
 
   const setPermission = async (toolName, permission) => {
     try {
-      await axios.put(`${API}/nua/tools/${toolName}/permission`, { permission }, { headers: H() });
+      await axios.put(`${API}/nua/tools/${toolName}/permission`, { permission }, { headers: await H() });
       toast.success(`${toolName} → ${permission}`);
       load();
     } catch { toast.error('Failed'); }

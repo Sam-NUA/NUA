@@ -8,10 +8,10 @@ import { Button } from '../components/ui/button';
 import { History, Search, User, Shield, Clock, RotateCcw, Download, FileCheck } from 'lucide-react';
 import { toast } from 'sonner';
 import { useAuth } from '../contexts/AuthContext';
-import { DialogService, FileService } from '../platform';
+import { DialogService, FileService, SecureStorageService } from '../platform';
 
 const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
-const H = () => ({ Authorization: `Bearer ${localStorage.getItem('nua_token')}` });
+const H = async () => ({ Authorization: `Bearer ${await SecureStorageService.getToken()}` });
 
 const ACTION_COLORS = { created: 'bg-emerald-100 text-emerald-700', updated: 'bg-blue-100 text-blue-700', deleted: 'bg-rose-100 text-rose-700', restored: 'bg-purple-100 text-purple-700' };
 
@@ -65,8 +65,8 @@ export default function AuditLog() {
       if (actor) params.actor = actor;
       params.limit = 200;
       const [e, s] = await Promise.all([
-        axios.get(`${API}/audit/events`, { headers: H(), params }),
-        axios.get(`${API}/audit/summary`, { headers: H() }),
+        axios.get(`${API}/audit/events`, { headers: await H(), params }),
+        axios.get(`${API}/audit/summary`, { headers: await H() }),
       ]);
       setEvents(e.data); setSummary(s.data);
     } catch { toast.error('Failed to load audit log'); }
@@ -79,7 +79,7 @@ export default function AuditLog() {
     if (!await DialogService.confirm(`Restore ${e.entityType} ${(e.entityId || '').slice(0, 8)} to its state before this change (version ${version})?`)) return;
     setRestoring(e.id);
     try {
-      await axios.post(`${API}/audit/restore/${e.entityType}/${e.entityId}/${version}`, {}, { headers: H() });
+      await axios.post(`${API}/audit/restore/${e.entityType}/${e.entityId}/${version}`, {}, { headers: await H() });
       toast.success('Restored');
       load();
     } catch (err) { toast.error(err.response?.data?.detail || 'Restore failed'); }
@@ -92,7 +92,7 @@ export default function AuditLog() {
       const params = {};
       if (complianceStart) params.start = complianceStart;
       if (complianceEnd) params.end = complianceEnd;
-      const r = await axios.get(`${API}/audit/compliance-export.csv`, { headers: H(), params, responseType: 'blob' });
+      const r = await axios.get(`${API}/audit/compliance-export.csv`, { headers: await H(), params, responseType: 'blob' });
       const label = `${complianceStart || 'all-time'}_to_${complianceEnd || 'now'}`;
       await FileService.downloadFile(r.data, `compliance-${label}.csv`);
       toast.success('Compliance export downloaded');

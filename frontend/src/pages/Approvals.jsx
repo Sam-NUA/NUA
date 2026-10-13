@@ -7,9 +7,10 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from '../components/
 import { Textarea } from '../components/ui/textarea';
 import { toast } from 'sonner';
 import { ShieldCheck, ShieldAlert, ShieldX, Clock } from 'lucide-react';
+import { SecureStorageService } from '../platform';
 
 const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
-const H = () => ({ Authorization: `Bearer ${localStorage.getItem('nua_token')}` });
+const H = async () => ({ Authorization: `Bearer ${await SecureStorageService.getToken()}` });
 
 export default function Approvals() {
   const [items, setItems] = useState([]);
@@ -21,8 +22,8 @@ export default function Approvals() {
   const load = useCallback(async () => {
     try {
       const [i, p] = await Promise.all([
-        axios.get(`${API}/approvals?status=${filter === 'all' ? '' : filter}`, { headers: H() }),
-        axios.get(`${API}/approvals/config/policy`, { headers: H() }),
+        axios.get(`${API}/approvals?status=${filter === 'all' ? '' : filter}`, { headers: await H() }),
+        axios.get(`${API}/approvals/config/policy`, { headers: await H() }),
       ]);
       setItems(i.data); setPolicy(p.data);
     } catch { toast.error('Failed to load approvals'); }
@@ -30,12 +31,12 @@ export default function Approvals() {
   useEffect(() => { load(); }, [load]);
 
   const approve = async (id) => {
-    try { await axios.post(`${API}/approvals/${id}/approve`, {}, { headers: H() }); toast.success('Approved & executed'); load(); }
+    try { await axios.post(`${API}/approvals/${id}/approve`, {}, { headers: await H() }); toast.success('Approved & executed'); load(); }
     catch (e) { toast.error(e.response?.data?.detail || 'Failed'); }
   };
   const reject = async () => {
     try {
-      await axios.post(`${API}/approvals/${rejecting.id}/reject`, { reason }, { headers: H() });
+      await axios.post(`${API}/approvals/${rejecting.id}/reject`, { reason }, { headers: await H() });
       toast.success('Rejected');
       setRejecting(null); setReason(''); load();
     } catch (e) { toast.error(e.response?.data?.detail || 'Failed'); }
