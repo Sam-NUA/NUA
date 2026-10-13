@@ -44,3 +44,8 @@ test('durable write failure prevents any send', async () => {
   let calls=0; const q=new CashOrderQueue({store:{read:async()=>null,write:async()=>{throw new Error('disk full');}},send:async()=>{calls++;}});q.activate(A);
   await assert.rejects(q.enqueue(cash)); assert.equal(calls,0);
 });
+
+test('queue rejects arbitrary financial fields, local price overrides and empty orders', () => {
+  const q=new CashOrderQueue({store:memory(),send:async()=>{}}); q.activate(A);
+  for(const p of [{...cash,cardNumber:'not-a-real-card'},{...cash,businessId:'B'},{...cash,items:[]},{...cash,items:[{productId:'p',quantity:1,price:0}]}]) assert.throws(()=>q.enqueue(p));
+});

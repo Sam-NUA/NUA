@@ -8,10 +8,11 @@ const { _electron } = require('../../../frontend/node_modules/playwright-core');
   try {
     const page = await host.firstWindow();
     await page.locator('#nua-desktop-bar').waitFor();
+    await page.getByTestId('login-page').waitFor();
     const info = await page.evaluate(() => window.nuaDesktop.getInfo());
     assert.equal(info.inputMode,'touch'); assert.equal(info.bridgeVersion,1);
     assert.equal(await page.evaluate(() => typeof window.require),'undefined');
-    assert.equal(await page.evaluate(() => window.nuaDesktop.invoke),'undefined');
+    assert.equal(await page.evaluate(() => typeof window.nuaDesktop.invoke),'undefined');
     assert.equal(await page.locator('html').getAttribute('data-nua-input'),'touch');
     await page.evaluate(() => { window.open('https://example.com'); });
     assert.equal(host.windows().length,1);
