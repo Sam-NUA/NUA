@@ -284,6 +284,28 @@ async function setNetwork(enabled) {
     } catch (error) {
       log(`adb reverse --list failed: ${error.message}`);
     }
+    // adb's own bookkeeping says the mapping is gone, yet a prior run's
+    // fetch() probes (both a cache-busted GET and a raw unauthenticated
+    // POST, which got a real 401 back — not a cache hit, a live
+    // round-trip) still reached something at localhost:8001. adb reverse
+    // isn't the only way a guest's "localhost" can resolve to the host: a
+    // device-wide HTTP proxy setting, or Capacitor's own CapacitorHttp
+    // bridge (which replaces window.fetch/XHR with native Android
+    // networking, bypassing the WebView's network stack and adb reverse's
+    // WebView-level tunnel entirely) could each explain it. Check both
+    // directly instead of guessing a third time.
+    try {
+      const proxySetting = adbShell('settings get global http_proxy');
+      log(`device-wide HTTP proxy setting: ${JSON.stringify(proxySetting.trim())}`);
+    } catch (error) {
+      log(`checking the device HTTP proxy setting failed: ${error.message}`);
+    }
+    try {
+      const sockets = adbShell("cat /proc/net/tcp | awk 'NR==1 || $2 ~ /:1F41$/'");
+      log(`device-side sockets bound to port 8001 (hex 1F41) after removal: ${JSON.stringify(sockets.trim())}`);
+    } catch (error) {
+      log(`checking device-side port 8001 sockets failed: ${error.message}`);
+    }
   }
   await wait(3000); // propagation isn't instant
 }
