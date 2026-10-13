@@ -51,7 +51,15 @@ async function fetchJson(path, opts = {}) {
 }
 
 async function seedBackend(runId) {
-  const email = `ci-milestone-${runId}@example.invalid`;
+  // The backend's RegisterRequest validates with pydantic's EmailStr (the
+  // email-validator package), which does real deliverability checks AND
+  // hard-rejects RFC 2606's reserved special-use names (.invalid/.test/
+  // .example/.local) outright, even though those are exactly what you'd
+  // reach for in a throwaway script — confirmed by a real CI failure, not
+  // assumed. example.com is the one RFC 2606 domain that's a real,
+  // resolvable, ICANN-operated placeholder (not on email-validator's
+  // reserved-name denylist), so it's both safe and passes validation.
+  const email = `ci-milestone-${runId}@example.com`;
   const password = 'Ci-Milestone-Password-1!';
   const name = `CI Milestone ${runId}`;
   log(`registering throwaway owner ${email}`);
