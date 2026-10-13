@@ -9,6 +9,7 @@ import { useTheme } from '../../contexts/ThemeContext';
 import { v26API } from '../../services/api';
 import Barcode128 from '../../components/Barcode128';
 import { Ticket, Plus, Edit2, Trash2, Barcode, Save } from 'lucide-react';
+import { DialogService } from '../../platform';
 
 export default function VoucherManager() {
   const { theme } = useTheme(); const { toast } = useToast();
@@ -48,7 +49,7 @@ export default function VoucherManager() {
   };
 
   const remove = async (id) => {
-    if (!window.confirm('Delete this voucher?')) return;
+    if (!await DialogService.confirm('Delete this voucher?')) return;
     try { await v26API.deleteVoucher(id); toast({ title: 'Deleted' }); load(); }
     catch (e) { toast({ title: 'Failed', variant: 'destructive' }); }
   };

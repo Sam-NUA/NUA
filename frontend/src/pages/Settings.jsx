@@ -20,6 +20,7 @@ import POSLayoutSettings from '../components/settings/POSLayoutSettings';
 import { toast } from 'sonner';
 import axios from 'axios';
 import { salaryTypeSuffix } from '../lib/staffPay';
+import { DialogService } from '../platform';
 
 const API = process.env.REACT_APP_BACKEND_URL;
 const authHeader = () => ({ Authorization: `Bearer ${localStorage.getItem('nua_token')}` });
@@ -128,7 +129,7 @@ const Settings = () => {
     } catch (e) { toast.error('Failed to save location'); }
   };
   const deleteLoc = async (id) => {
-    if (!window.confirm('Delete this location?')) return;
+    if (!await DialogService.confirm('Delete this location?')) return;
     try { await locationsAPI.delete(id); toast.success('Location deleted'); fetchLocations(); } catch { toast.error('Failed to delete'); }
   };
 
@@ -154,7 +155,7 @@ const Settings = () => {
     } catch (e) { toast.error(e.response?.data?.detail || 'Failed to save staff'); }
   };
   const deleteStaff = async (id) => {
-    if (!window.confirm('Delete this staff member?')) return;
+    if (!await DialogService.confirm('Delete this staff member?')) return;
     try { await axios.delete(`${API}/api/auth/staff/${id}`, { headers: authHeader() }); toast.success('Staff deleted'); fetchStaff(); } catch (e) { toast.error(e.response?.data?.detail || 'Failed'); }
   };
 

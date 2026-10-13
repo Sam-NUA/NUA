@@ -11,6 +11,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '.
 import { toast } from 'sonner';
 import { Zap, Plus, Trash2, Sparkles, Play, Pause, Brain, History, GitBranch, ChevronRight, Cpu, Activity, ArrowRight, TrendingDown, RefreshCw, AlertTriangle, ShieldCheck } from 'lucide-react';
 import axios from 'axios';
+import { DialogService } from '../platform';
 
 /* Tiny API wrapper — kept local to avoid polluting services/api.js */
 const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
@@ -149,7 +150,7 @@ export default function AutomationTriggers() {
   };
 
   const remove = async (r) => {
-    if (!window.confirm(`Delete "${r.name}"?`)) return;
+    if (!await DialogService.confirm(`Delete "${r.name}"?`)) return;
     try { await rulesAPI.remove(r.id); toast.success('Deleted'); loadAll(); }
     catch (e) { toast.error(e.response?.data?.detail || 'Failed'); }
   };

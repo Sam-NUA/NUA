@@ -8,6 +8,7 @@ import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from '.
 import { toast } from 'sonner';
 import { useAuth } from '../contexts/AuthContext';
 import { ShieldCheck, RefreshCw, Search, Lock, Zap, Eye, Sparkles, TrendingUp, Flag, Undo2, History } from 'lucide-react';
+import { DialogService } from '../platform';
 
 const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
 const H = () => ({ Authorization: `Bearer ${localStorage.getItem('nua_token')}` });
@@ -123,7 +124,7 @@ export default function AshPermissions() {
   const batchSet = async (moduleName, permission) => {
     const targets = tools.filter(t => t.module === moduleName);
     if (!targets.length) return;
-    if (!window.confirm(`Set all ${targets.length} ${moduleName} tools to "${permission}"?`)) return;
+    if (!await DialogService.confirm(`Set all ${targets.length} ${moduleName} tools to "${permission}"?`)) return;
     for (const t of targets) {
       try {
         await axios.put(`${API}/nua/tools/${t.name}/permission`, { permission }, { headers: H() });

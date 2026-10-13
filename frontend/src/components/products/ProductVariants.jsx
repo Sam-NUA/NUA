@@ -4,6 +4,7 @@ import { Button } from '../ui/button';
 import { Input } from '../ui/input';
 import { productsAPI } from '../../services/api';
 import { toast } from 'sonner';
+import { DialogService } from '../../platform';
 
 const BLANK_VARIANT = { label: '', sku: '', barcode: '', price: '', stock: '' };
 
@@ -52,7 +53,7 @@ export function ProductVariants({ product, onChanged }) {
   };
 
   const deleteVariant = async (id) => {
-    if (!window.confirm('Delete this variant?')) return;
+    if (!await DialogService.confirm('Delete this variant?')) return;
     try {
       await productsAPI.delete(id);
       load();

@@ -8,6 +8,7 @@ import { Badge } from '../components/ui/badge';
 import { useTheme } from '../contexts/ThemeContext';
 import { inventoryAPI, productsAPI, aiPantryAPI, awardsAPI, staffMgmtAPI } from '../services/api';
 import { useToast } from '../hooks/use-toast';
+import { DialogService } from '../platform';
 
 const BASE_UNITS = ['g', 'mL', 'ea'];
 const ALL_UNITS = { g: ['g', 'kg', 'mg'], mL: ['mL', 'L', 'cl'], ea: ['ea', 'box', 'case', 'pack'] };
@@ -69,7 +70,7 @@ function IngredientsPanel() {
     } catch (e) { toast({ title: 'Failed', description: e?.response?.data?.detail, variant: 'destructive' }); }
   };
   const del = async (id) => {
-    if (!window.confirm('Delete ingredient?')) return;
+    if (!await DialogService.confirm('Delete ingredient?')) return;
     try { await inventoryAPI.deleteIngredient(id); load(); }
     catch (e) { toast({ title: 'Cannot delete', description: e?.response?.data?.detail, variant: 'destructive' }); }
   };
@@ -535,7 +536,7 @@ function SuperAwardsPanel() {
     catch (e) { toast({ title: 'Failed', description: e?.response?.data?.detail, variant: 'destructive' }); }
   };
   const uninstall = async (code) => {
-    if (!window.confirm('Uninstall this award? Any payruns referencing it will fall back to 11.5%.')) return;
+    if (!await DialogService.confirm('Uninstall this award? Any payruns referencing it will fall back to 11.5%.')) return;
     try { await awardsAPI.uninstall(code); toast({ title: 'Uninstalled' }); refresh(); }
     catch { toast({ title: 'Failed', variant: 'destructive' }); }
   };

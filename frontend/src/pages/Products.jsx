@@ -17,6 +17,7 @@ import { ProductVariants } from '../components/products/ProductVariants';
 import { PromotionDialog } from '../components/products/PromotionDialog';
 import { ItemsKpiStrip } from '../components/products/ItemsKpiStrip';
 import { toast } from 'sonner';
+import { DialogService } from '../platform';
 
 const makeEmptyProduct = () => ({
   name: '', category: '', categoryId: '', price: '', cost: '', stock: '', sku: '', barcode: '',
@@ -149,7 +150,7 @@ const Products = () => {
     } catch (e) { toast.error(e.response?.data?.detail || 'Failed to save product'); }
   };
   const deleteProduct = async (id) => {
-    if (!window.confirm('Delete this product?')) return;
+    if (!await DialogService.confirm('Delete this product?')) return;
     try { await productsAPI.delete(id); toast.success('Product deleted'); fetchData(); } catch { toast.error('Failed to delete'); }
   };
 
@@ -251,7 +252,7 @@ const Products = () => {
     } catch (e) { toast.error(e.response?.data?.detail || 'Failed to save promotion'); }
   };
   const deletePromo = async (id) => {
-    if (!window.confirm('Delete this promotion?')) return;
+    if (!await DialogService.confirm('Delete this promotion?')) return;
     try { await promotionsAPI.delete(id); toast.success('Promotion deleted'); fetchData(); } catch { toast.error('Failed to delete'); }
   };
 
@@ -396,7 +397,7 @@ const Products = () => {
 
   const bulkDelete = async () => {
     if (selected.size === 0) return;
-    if (!window.confirm(`Delete ${selected.size} products? This cannot be undone.`)) return;
+    if (!await DialogService.confirm(`Delete ${selected.size} products? This cannot be undone.`)) return;
     let ok = 0, fail = 0;
     for (const id of selected) {
       try { await productsAPI.delete(id); ok++; } catch { fail++; }

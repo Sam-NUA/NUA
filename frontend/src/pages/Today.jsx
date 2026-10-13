@@ -8,6 +8,7 @@ import { useAuth } from '../contexts/AuthContext';
 import { analyticsAPI, preShiftAPI, finalizeAPI, reservationsAPI } from '../services/api';
 import { toast } from 'sonner';
 import SyncHistoryCard from '../components/today/SyncHistoryCard';
+import { DialogService } from '../platform';
 import {
   AlertTriangle, AlertOctagon, Info, RefreshCw, ShoppingCart, ChefHat,
   Utensils, CalendarClock, Users2, TrendingUp, CheckCircle2, ArrowRight,
@@ -87,7 +88,7 @@ const Today = () => {
     catch (e) { toast.error(e?.response?.data?.detail || 'Could not approve'); }
   };
   const rejectBooking = async (id) => {
-    const reason = window.prompt('Reason for rejecting this large booking (guest will need to be re-booked):');
+    const reason = await DialogService.prompt('Reason for rejecting this large booking (guest will need to be re-booked):');
     if (reason === null) return;
     try { await reservationsAPI.reject(id, reason); toast.success('Booking rejected and cancelled'); load(); }
     catch (e) { toast.error(e?.response?.data?.detail || 'Could not reject'); }

@@ -8,6 +8,7 @@ import { Badge } from '../../components/ui/badge';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '../../components/ui/dialog';
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from '../../components/ui/select';
 import { PlusCircle, Trash2 } from 'lucide-react';
+import { DialogService } from '../../platform';
 
 const ChartOfAccounts = () => {
   const [accounts, setAccounts] = useState([]);
@@ -32,7 +33,7 @@ const ChartOfAccounts = () => {
   };
 
   const remove = async (code) => {
-    if (!window.confirm(`Delete account ${code}?`)) return;
+    if (!await DialogService.confirm(`Delete account ${code}?`)) return;
     try { await financeAPI.deleteAccount(code); toast.success('Deleted'); load(); }
     catch (e) { toast.error(e.response?.data?.detail || 'Failed'); }
   };

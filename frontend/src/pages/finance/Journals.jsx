@@ -8,6 +8,7 @@ import { Badge } from '../../components/ui/badge';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '../../components/ui/dialog';
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from '../../components/ui/select';
 import { PlusCircle, ArrowLeftRight } from 'lucide-react';
+import { DialogService } from '../../platform';
 import { FMT, today } from './helpers';
 
 const Journals = () => {
@@ -54,7 +55,7 @@ const Journals = () => {
   };
 
   const reverse = async (id) => {
-    if (!window.confirm('Reverse this journal? A new balancing entry will be posted.')) return;
+    if (!await DialogService.confirm('Reverse this journal? A new balancing entry will be posted.')) return;
     try { await financeAPI.reverseJournal(id, {}); toast.success('Reversed'); load(); }
     catch (e) { toast.error(e.response?.data?.detail || 'Failed'); }
   };

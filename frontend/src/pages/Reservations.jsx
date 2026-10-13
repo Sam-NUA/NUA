@@ -25,6 +25,7 @@ import BookingSourceStrip from '../components/reservations/BookingSourceStrip';
 import BookingMonthCalendar from '../components/reservations/BookingMonthCalendar';
 import WalkInAISeatDialog from '../components/reservations/WalkInAISeatDialog';
 import LiveCallBanner from '../components/bookings/LiveCallBanner';
+import { DialogService } from '../platform';
 
 const TIME_SLOTS = [];
 for (let h = 9; h <= 22; h++) {
@@ -204,7 +205,7 @@ export default function Reservations() {
         try {
           const chk = await aiWave2API.overbookingCheck(form.date, form.time, form.partySize || 2);
           if (chk.data && chk.data.allow === false) {
-            const proceed = window.confirm(`⚠️ ${chk.data.reason}\n\nProceed anyway?`);
+            const proceed = await DialogService.confirm(`⚠️ ${chk.data.reason}\n\nProceed anyway?`);
             if (!proceed) return;
           }
         } catch { /* fail-open: don't block legitimate bookings */ }
@@ -236,7 +237,7 @@ export default function Reservations() {
   };
 
   const handleDelete = async (id) => {
-    if (!window.confirm('Permanently delete this reservation? This cannot be undone — use Cancel instead if you just want to mark it cancelled and keep the record.')) return;
+    if (!await DialogService.confirm('Permanently delete this reservation? This cannot be undone — use Cancel instead if you just want to mark it cancelled and keep the record.')) return;
     try { await reservationsAPI.delete(id); toast.success('Deleted'); fetchData(); }
     catch (e) { toast.error('Failed to delete'); }
   };
@@ -275,7 +276,7 @@ export default function Reservations() {
   };
 
   const handleCancel = async (id) => {
-    const reason = window.prompt('Reason for cancelling? (optional)') || undefined;
+    const reason = await DialogService.prompt('Reason for cancelling? (optional)') || undefined;
     try { await reservationsAPI.cancel(id, reason); toast.success('Booking cancelled — it can be restored later'); fetchData(); }
     catch (e) { toast.error(e?.response?.data?.detail || 'Failed to cancel'); }
   };

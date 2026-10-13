@@ -8,6 +8,7 @@ import { Button } from '../components/ui/button';
 import { History, Search, User, Shield, Clock, RotateCcw, Download, FileCheck } from 'lucide-react';
 import { toast } from 'sonner';
 import { useAuth } from '../contexts/AuthContext';
+import { DialogService } from '../platform';
 
 const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
 const H = () => ({ Authorization: `Bearer ${localStorage.getItem('nua_token')}` });
@@ -75,7 +76,7 @@ export default function AuditLog() {
   const restoreTo = async (e) => {
     const version = e.before?.version;
     if (!version) return;
-    if (!window.confirm(`Restore ${e.entityType} ${(e.entityId || '').slice(0, 8)} to its state before this change (version ${version})?`)) return;
+    if (!await DialogService.confirm(`Restore ${e.entityType} ${(e.entityId || '').slice(0, 8)} to its state before this change (version ${version})?`)) return;
     setRestoring(e.id);
     try {
       await axios.post(`${API}/audit/restore/${e.entityType}/${e.entityId}/${version}`, {}, { headers: H() });

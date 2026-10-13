@@ -9,6 +9,7 @@ import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from '.
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '../components/ui/dialog';
 import { toast } from 'sonner';
 import { BookMarked, RefreshCw, Plus, Trash2, Search } from 'lucide-react';
+import { DialogService } from '../platform';
 
 const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
 const H = () => ({ Authorization: `Bearer ${localStorage.getItem('nua_token')}` });
@@ -55,7 +56,7 @@ export default function AshMemory() {
   };
 
   const deleteMemory = async (id) => {
-    if (!window.confirm('Ask NUA to forget this? This cannot be undone.')) return;
+    if (!await DialogService.confirm('Ask NUA to forget this? This cannot be undone.')) return;
     try {
       await axios.delete(`${API}/nua/memory/${id}`, { headers: H() });
       setMemories(ms => ms.filter(m => m.id !== id));

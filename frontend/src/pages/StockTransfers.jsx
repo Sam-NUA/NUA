@@ -9,6 +9,7 @@ import { Badge } from '../components/ui/badge';
 import { useTheme } from '../contexts/ThemeContext';
 import { productsAPI, locationsAPI, stockTransfersAPI } from '../services/api';
 import { toast } from 'sonner';
+import { DialogService } from '../platform';
 
 const BLANK_FORM = { productId: '', fromLocation: '', toLocation: '', quantity: '', notes: '' };
 
@@ -84,7 +85,7 @@ export default function StockTransfers() {
   };
 
   const cancelTransfer = async (t) => {
-    if (!window.confirm(`Cancel this transfer and return stock to ${t.fromLocation}?`)) return;
+    if (!await DialogService.confirm(`Cancel this transfer and return stock to ${t.fromLocation}?`)) return;
     setBusyId(t.id);
     try {
       await stockTransfersAPI.cancel(t.id);

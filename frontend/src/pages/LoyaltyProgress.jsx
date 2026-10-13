@@ -9,6 +9,7 @@ import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from '.
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '../components/ui/tabs';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '../components/ui/dialog';
 import { toast } from 'sonner';
+import { DialogService } from '../platform';
 import {
   Award, RefreshCw, Sparkles, Coffee, Heart, Trophy, DollarSign, Crown, Sunrise,
   Wine, Users, Gift, Search, Plus, Trash2, Lock, CheckCircle2, Target, UserPlus,
@@ -446,7 +447,7 @@ export default function LoyaltyProgress() {
   };
 
   const deleteChallenge = async (id) => {
-    if (!window.confirm('Delete this challenge?')) return;
+    if (!await DialogService.confirm('Delete this challenge?')) return;
     try {
       await axios.delete(`${API}/loyalty/v2/challenges/${id}`, { headers: H() });
       loadChallenges();

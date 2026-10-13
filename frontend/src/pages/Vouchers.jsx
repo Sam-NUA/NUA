@@ -15,6 +15,7 @@ import {
   Gift, Plus, Copy, Search, ShieldCheck, ShieldAlert, Sparkles,
   BarChart3, Users, TrendingUp, X, RotateCcw, Layers,
 } from 'lucide-react';
+import { DialogService } from '../platform';
 
 const emptyForm = {
   label: '', description: '',
@@ -107,7 +108,7 @@ export default function Vouchers() {
   };
 
   const revoke = async (v) => {
-    const reason = window.prompt('Reason for revoking?', 'Owner revoked');
+    const reason = await DialogService.prompt('Reason for revoking?', 'Owner revoked');
     if (!reason) return;
     try {
       await finalizeAPI.revokeVoucher(v.id, reason);

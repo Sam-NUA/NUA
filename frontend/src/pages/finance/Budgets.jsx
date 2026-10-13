@@ -8,6 +8,7 @@ import { Badge } from '../../components/ui/badge';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '../../components/ui/dialog';
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from '../../components/ui/select';
 import { PlusCircle, X, Pencil, Trash2 } from 'lucide-react';
+import { DialogService } from '../../platform';
 import { FMT, fyStart } from './helpers';
 
 const fyEnd = (start) => `${parseInt(start.slice(0, 4), 10) + 1}-06-30`;
@@ -78,7 +79,7 @@ const Budgets = () => {
   const remove = async () => {
     const b = budgets.find(x => x.id === selectedBudget);
     if (!b) return;
-    if (!window.confirm(`Delete budget "${b.name}"? This cannot be undone.`)) return;
+    if (!await DialogService.confirm(`Delete budget "${b.name}"? This cannot be undone.`)) return;
     try {
       await financeAPI.deleteBudget(b.id);
       toast.success('Budget deleted');

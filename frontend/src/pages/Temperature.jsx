@@ -11,6 +11,7 @@ import {
   Thermometer, Snowflake, Plus, RefreshCcw, Bell, Bluetooth, Wifi, Wrench, Trash2,
   AlertTriangle, CheckCircle2, Calendar, FileDown, Copy, Zap,
 } from 'lucide-react';
+import { DialogService } from '../platform';
 
 /**
  * Temperature Monitoring — HACCP compliant, hardware-agnostic.
@@ -117,7 +118,7 @@ export default function Temperature() {
   };
 
   const deleteDevice = async (dev) => {
-    if (!window.confirm(`Remove ${dev.name}? Historical readings stay for audit.`)) return;
+    if (!await DialogService.confirm(`Remove ${dev.name}? Historical readings stay for audit.`)) return;
     setBusy(true);
     try {
       await temperatureAPI.deleteDevice(dev.id);
@@ -129,7 +130,7 @@ export default function Temperature() {
   };
 
   const rotateSecret = async (dev) => {
-    if (!window.confirm(`Rotate ingest secret for ${dev.name}? The old secret stops working immediately.`)) return;
+    if (!await DialogService.confirm(`Rotate ingest secret for ${dev.name}? The old secret stops working immediately.`)) return;
     setBusy(true);
     try {
       const r = await temperatureAPI.rotateSecret(dev.id);

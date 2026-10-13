@@ -12,6 +12,7 @@ import { useTheme } from '../contexts/ThemeContext';
 import { useLicense } from '../contexts/LicenseContext';
 import { licenseAPI } from '../services/api';
 import Icon from '../components/brand/Icon';
+import { DialogService } from '../platform';
 import {
   Shield, ShieldAlert, ShieldCheck, CreditCard, Building, Smartphone,
   CheckCircle, XCircle, Clock, RefreshCw, ExternalLink, Lock, Key
@@ -186,7 +187,7 @@ export default function LicensePage() {
   };
 
   const revoke = async (deviceId) => {
-    if (!window.confirm('Revoke this device?')) return;
+    if (!await DialogService.confirm('Revoke this device?')) return;
     try { await licenseAPI.revokeDevice(deviceId); toast({ title: 'Revoked' }); load(); }
     catch (e) { toast({ title: 'Failed', description: e?.response?.data?.detail, variant: 'destructive' }); }
   };

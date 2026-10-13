@@ -6,6 +6,7 @@ import { Card, CardContent } from '../ui/card';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '../ui/dialog';
 import { toast } from 'sonner';
 import { socialAPI } from '../../services/api';
+import { DialogService } from '../../platform';
 import {
   DndContext, PointerSensor, TouchSensor, useSensor, useSensors,
   useDraggable, useDroppable, DragOverlay,
@@ -198,7 +199,7 @@ export const SocialCalendar = ({ theme, posts, accounts, onReload }) => {
     if (!accounts || accounts.length === 0) {
       return toast.error('Connect at least one social account first');
     }
-    if (!window.confirm('Generate a 7-day plan? Existing auto-plan posts in the window will be replaced.')) return;
+    if (!await DialogService.confirm('Generate a 7-day plan? Existing auto-plan posts in the window will be replaced.')) return;
     setPlanning(true);
     try {
       const r = await socialAPI.aiWeeklyPlan({ daysAhead: 7, save: true, tone: 'warm', postTime: '12:00', useBestTimes });
@@ -261,7 +262,7 @@ export const SocialCalendar = ({ theme, posts, accounts, onReload }) => {
     catch { toast.error('Publish failed'); }
   };
   const handleDelete = async (id) => {
-    if (!window.confirm('Delete this post?')) return;
+    if (!await DialogService.confirm('Delete this post?')) return;
     try { await socialAPI.deletePost(id); toast.success('Deleted'); onReload && onReload(); }
     catch { toast.error('Failed'); }
   };
@@ -300,7 +301,7 @@ export const SocialCalendar = ({ theme, posts, accounts, onReload }) => {
     }
   };
   const duplicatePost = async (post) => {
-    if (!window.confirm(`Duplicate this post as a new draft? You can edit and reschedule the copy.`)) return;
+    if (!await DialogService.confirm(`Duplicate this post as a new draft? You can edit and reschedule the copy.`)) return;
     try {
       await socialAPI.duplicatePost(post.id, { status: 'draft' });
       toast.success('Duplicated as draft');

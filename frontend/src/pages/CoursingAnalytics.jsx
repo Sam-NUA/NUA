@@ -6,6 +6,7 @@ import { Timer, Flame, BellRing, AlertTriangle, DoorClosed, Loader2 } from 'luci
 import { useTheme } from '../contexts/ThemeContext';
 import { coursingAPI } from '../services/api';
 import { toast } from 'sonner';
+import { DialogService } from '../platform';
 
 const WINDOWS = [
   { days: 1, label: 'Today' },
@@ -50,7 +51,7 @@ function EndOfServicePanel() {
   useEffect(() => { load(); }, []);
 
   const handleClose = async () => {
-    if (!window.confirm(`Close out ${eos.openCount} open ticket${eos.openCount === 1 ? '' : 's'} and release their tables?`)) return;
+    if (!await DialogService.confirm(`Close out ${eos.openCount} open ticket${eos.openCount === 1 ? '' : 's'} and release their tables?`)) return;
     setClosing(true);
     try {
       const r = await coursingAPI.closeService('closed at end of service');

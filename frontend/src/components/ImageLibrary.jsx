@@ -6,6 +6,7 @@ import { Card, CardContent } from './ui/card';
 import { Upload, Search, Trash2, Image as ImageIcon, X, Check } from 'lucide-react';
 import { productImagesAPI } from '../services/api';
 import { toast } from 'sonner';
+import { DialogService } from '../platform';
 
 /**
  * Image Library: owner uploads images once (stored as base64 in Mongo) and
@@ -89,7 +90,7 @@ export default function ImageLibrary({ open, onClose, onPick, themeColor = '#f58
   };
 
   const remove = async (id) => {
-    if (!window.confirm('Delete this image from library? (Products using it keep their copy.)')) return;
+    if (!await DialogService.confirm('Delete this image from library? (Products using it keep their copy.)')) return;
     try {
       await productImagesAPI.delete(id);
       toast.success('Deleted');

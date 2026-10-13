@@ -10,6 +10,7 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from '../components/ui/tabs'
 import { useTheme } from '../contexts/ThemeContext';
 import { appointmentsAPI, servicesAPI, staffRosterAPI, clientIntakeAPI } from '../services/api';
 import { toast } from 'sonner';
+import { DialogService } from '../platform';
 
 const todayISO = () => new Date().toISOString().slice(0, 10);
 
@@ -80,7 +81,7 @@ export default function Appointments() {
 
   const transition = async (appt, action) => {
     if (action === 'no_show') {
-      const raw = window.prompt(`No-show fee for ${appt.customerName}? (leave blank for $0)`, appt.depositRequired || '');
+      const raw = await DialogService.prompt(`No-show fee for ${appt.customerName}? (leave blank for $0)`, appt.depositRequired || '');
       if (raw === null) return; // cancelled the prompt
       setBusyId(appt.id);
       try {
@@ -125,7 +126,7 @@ export default function Appointments() {
     finally { setSavingService(false); }
   };
   const removeService = async (svc) => {
-    if (!window.confirm(`Remove "${svc.name}" from the catalog?`)) return;
+    if (!await DialogService.confirm(`Remove "${svc.name}" from the catalog?`)) return;
     try { await servicesAPI.delete(svc.id); toast.success('Service removed'); load(); }
     catch { toast.error('Failed to remove service'); }
   };
