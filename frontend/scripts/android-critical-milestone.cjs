@@ -366,12 +366,41 @@ async function main() {
   const isOnline = await page.evalPage('navigator.onLine');
   log(`navigator.onLine after disabling network: ${isOnline}`);
 
+  // A prior run proved the DB naming/activation theory wrong (the correctly-
+  // named nua-offline-biz-default database exists, with cached_reads
+  // already written — the queue module is active) but still found exactly
+  // 0 queued transactions, with no "Transaction failed"/"Saved offline"/
+  // "Transaction Complete!" toast text either — because that dump ran after
+  // a 15s poll loop, long after any toast would have auto-dismissed. Two
+  // real possibilities remain unproven: (a) the removed adb reverse mapping
+  // causes an immediate connection failure as assumed, or (b) it leaves the
+  // connection hanging (a timeout, not a fast refusal) long enough that
+  // axios's own request (no explicit timeout configured) is still in
+  // flight when this script gives up — which would also explain zero
+  // writes with no error toast. Prove which one directly, the same way the
+  // pre-login reachability check did, instead of assuming.
+  const offlineReachability = await page.evalPage(`
+    Promise.race([
+      fetch(${JSON.stringify(BACKEND)} + '/api/ready').then(r => ({ ok: true, status: r.status })).catch(e => ({ ok: false, message: e.message, name: e.name })),
+      new Promise(resolve => setTimeout(() => resolve({ ok: false, message: 'still pending after 10s — a hang, not a fast refusal', name: 'LocalTimeout' }), 10000)),
+    ])
+  `);
+  log(`direct fetch() check with the tunnel removed: ${JSON.stringify(offlineReachability)}`);
+
   log('ringing up one cash sale while offline');
   await page.click(`[data-testid="product-${product.id}"]`);
   await page.click('[data-testid="pos-proceed-payment"]');
   await page.click('[data-testid="pay-cash"]');
   await page.click('[data-testid="cash-exact"]');
   await page.click('[data-testid="cash-complete"]');
+
+  // Captured right away, not after the poll loop below — any toast
+  // (Saved offline / Transaction Complete! / Transaction failed) auto-
+  // dismisses after a few seconds, so reading it later always comes back
+  // empty regardless of what actually happened.
+  await wait(1500);
+  const checkoutToastText = await page.evalPage('document.body.innerText').catch(() => null);
+  log(`page text ~1.5s after the checkout click burst: ${JSON.stringify((checkoutToastText || '').split('\n').filter(l => /offline|complete|fail|unknown table|error/i.test(l)))}`);
 
   log('confirming the sale actually landed in durable offline storage');
   let pendingBeforeRestart = 0;
@@ -384,15 +413,12 @@ async function main() {
     }
   }
   if (pendingBeforeRestart !== 1) {
-    // The backend's own log is the one thing not in question here (a prior
-    // real run showed zero POST /api/transactions after the tunnel was
-    // torn down — the "offline" simulation itself is working). What's
-    // still unproven is what the app did about that failure: dump the
-    // toast text React actually rendered (which of handleCheckout's three
-    // branches fired) and every IndexedDB database that actually exists —
-    // not just the nua-offline-biz-* ones countPendingTransactions looks
-    // for — instead of guessing a second time.
-    const toastText = await page.evalPage('document.body.innerText').catch(() => null);
+    // The toast text was already captured right after the click burst,
+    // above — by now any toast has long since auto-dismissed. This dump is
+    // just every IndexedDB database that actually exists, not only the
+    // nua-offline-biz-* ones countPendingTransactions looks for (a prior
+    // run used this to rule out the DB-naming/activation theory: the
+    // correctly-named database exists, with cached_reads already written).
     const dbDump = await page.evalPage(`(async function(){
       const dbs = await indexedDB.databases();
       const out = [];
@@ -416,7 +442,6 @@ async function main() {
       return out;
     })();`);
     log(`every IndexedDB database that actually exists: ${JSON.stringify(dbDump)}`);
-    log(`relevant toast/page text: ${JSON.stringify((toastText || '').split('\n').filter(l => /offline|complete|fail|unknown table|error/i.test(l)))}`);
     throw new Error(`Expected exactly 1 queued offline transaction before restart, found ${pendingBeforeRestart}`);
   }
   log('exactly 1 transaction is queued offline, as expected');
