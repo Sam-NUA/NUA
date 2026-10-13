@@ -51,14 +51,35 @@ jobs:
       - name: Sync Capacitor Android project
         working-directory: ./frontend
         run: npx cap sync android
-      # The ubuntu-latest runner image's own pre-installed SDK doesn't put
-      # `sdkmanager` on PATH reliably across image revisions (confirmed by
-      # a real CI run: "sdkmanager: command not found" even with
-      # ANDROID_HOME/ANDROID_SDK_ROOT set) — this action is the maintained,
-      # version-pinned way to get a working sdkmanager regardless.
-      - uses: android-actions/setup-android@v3
+      # Two real CI failures ruled out the two obvious options before this
+      # one: (1) the ubuntu-latest image's own pre-installed SDK doesn't put
+      # `sdkmanager` on PATH reliably ("sdkmanager: command not found" even
+      # with ANDROID_HOME/ANDROID_SDK_ROOT set); (2) `android-actions/
+      # setup-android@v3` unconditionally runs `sdkmanager tools` as part of
+      # its own setup, and Google has removed that legacy "tools" package
+      # from the SDK repository ("Warning: Failed to find package 'tools'",
+      # exit code 1) — not something this workflow's own inputs control.
+      # So: fetch Google's own cmdline-tools zip directly (this runner has
+      # real internet access, unlike this repo's dev sandbox — see the
+      # dl.google.com block in ANDROID_ARCHITECTURE.md) and drive sdkmanager
+      # from that, asking only for the packages this build actually needs.
+      - name: Install Android cmdline-tools
+        run: |
+          set -eu
+          curl -fsSL -o /tmp/cmdline-tools.zip \
+            https://dl.google.com/android/repository/commandlinetools-linux-15859902_latest.zip
+          mkdir -p "$HOME/android-sdk/cmdline-tools"
+          unzip -q /tmp/cmdline-tools.zip -d "$HOME/android-sdk/cmdline-tools"
+          mv "$HOME/android-sdk/cmdline-tools/cmdline-tools" "$HOME/android-sdk/cmdline-tools/latest"
+          echo "ANDROID_HOME=$HOME/android-sdk" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$HOME/android-sdk" >> "$GITHUB_ENV"
+          echo "$HOME/android-sdk/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
+          echo "$HOME/android-sdk/platform-tools" >> "$GITHUB_PATH"
       - name: Install the platform/build-tools this project targets
-        run: sdkmanager "platforms;android-36" "build-tools;36.0.0"
+        run: |
+          set -eu
+          yes | sdkmanager --licenses >/dev/null
+          sdkmanager "platform-tools" "platforms;android-36" "build-tools;36.0.0"
       - name: Build debug APK
         working-directory: ./frontend/android
         run: ./gradlew assembleDebug --no-daemon
