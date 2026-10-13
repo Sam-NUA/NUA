@@ -47,7 +47,14 @@ jobs:
       - uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
-          java-version: '17'   # Android Gradle Plugin 8.x requires JDK 17+
+          # @capacitor/android's own build.gradle (node_modules/@capacitor/
+          # android/capacitor/build.gradle) hardcodes sourceCompatibility/
+          # targetCompatibility JavaVersion.VERSION_21 — AGP 8.x itself only
+          # needs 17, but javac refuses source release 21 on an older JDK
+          # ("invalid source release: 21", a real CI failure, not assumed).
+          # Gradle 8.14.3 (this project's wrapper) and AGP 8.13.0 both
+          # support running on JDK 21.
+          java-version: '21'
       - name: Sync Capacitor Android project
         working-directory: ./frontend
         run: npx cap sync android
