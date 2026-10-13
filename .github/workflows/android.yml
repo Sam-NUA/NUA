@@ -167,37 +167,30 @@ jobs:
           force-avd-creation: false
           emulator-options: -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
           disable-animations: true
-          script: |
-            set -eu
-            # DIAGNOSTIC (temporary): two prior real CI failures both came
-            # up with an empty $APK from `find`, first against a relative
-            # `apk` path, then against `$GITHUB_WORKSPACE/apk` -- neither
-            # explanation (wrong cwd) panned out. Print the actual
-            # environment and directory contents this script sees before
-            # giving find another guess.
-            echo "pwd: $(pwd)"
-            echo "GITHUB_WORKSPACE: ${GITHUB_WORKSPACE:-<unset>}"
-            echo "--- ls -la . ---"
-            ls -la . || true
-            echo "--- ls -la \$GITHUB_WORKSPACE ---"
-            ls -la "${GITHUB_WORKSPACE:-/nonexistent}" || true
-            echo "--- find / -iname '*.apk' (excluding /proc) ---"
-            find / -xdev -iname '*.apk' 2>/dev/null || true
-            find /home -iname '*.apk' 2>/dev/null || true
-            APK="$(find "$GITHUB_WORKSPACE/apk" -name '*.apk' 2>/dev/null | head -n1)"
-            echo "Installing $APK"
-            adb install -r "$APK"
-            adb logcat -c
-            adb shell am start -n com.nua.pos/.MainActivity
-            sleep 10
-            if ! adb shell pidof com.nua.pos; then
-              echo "::error::App process not found ~10s after launch — it crashed or failed to start."
-              adb logcat -d -s AndroidRuntime:E '*:F'
-              exit 1
-            fi
-            if adb logcat -d | grep -q "FATAL EXCEPTION"; then
-              echo "::error::FATAL EXCEPTION found in logcat even though the process is still alive."
-              adb logcat -d | grep -A 40 "FATAL EXCEPTION"
-              exit 1
-            fi
+          # The diagnostics from a real CI run proved the root cause of
+          # every prior failure here: this action runs EACH LINE of
+          # `script:` as its OWN separate `/bin/sh -c` invocation (visible
+          # as one "[command] /usr/bin/sh -c <line>" per line in its own
+          # logs) -- so a variable assigned on one line (like $APK) is
+          # gone by the next line's fresh shell, no matter how it's
+          # computed or quoted. The real APK was always right there
+          # (confirmed: `find /home -iname '*.apk'` found
+          # $GITHUB_WORKSPACE/apk/app-debug.apk every single time) --
+          # it just never survived to the next line. Fix: keep the whole
+          # thing on exactly one line, `;`-separated, so it runs as one
+          # shell. Pitfall avoided: a bare `grep -q ... && { ...; exit 1; }`
+          # as a top-level statement under `set -e` would abort the script
+          # when grep finds nothing (the desired, non-error case), because
+          # `-e` checks the exit status of the whole `&&` list -- the
+          # trailing `; true` neutralizes that.
+          script: >-
+            set -eu;
+            APK="$(find "$GITHUB_WORKSPACE/apk" -name '*.apk' | head -n1)";
+            echo "Installing $APK";
+            adb install -r "$APK";
+            adb logcat -c;
+            adb shell am start -n com.nua.pos/.MainActivity;
+            sleep 10;
+            adb shell pidof com.nua.pos || { echo "::error::App process not found ~10s after launch — it crashed or failed to start."; adb logcat -d -s AndroidRuntime:E '*:F'; exit 1; };
+            ( adb logcat -d | grep -q "FATAL EXCEPTION" ) && { echo "::error::FATAL EXCEPTION found in logcat even though the process is still alive."; adb logcat -d | grep -A 40 "FATAL EXCEPTION"; exit 1; } ; true;
             echo "App launched and stayed running with a clean logcat — real emulator smoke test passed."
