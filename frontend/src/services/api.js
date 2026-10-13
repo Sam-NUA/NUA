@@ -1,6 +1,7 @@
 import axios from 'axios';
 import { SecureStorageService, isNative } from '../platform';
 import { APP_VERSION } from '../version';
+import { tripVersionGate } from '../lib/versionGate';
 
 const API_BASE_URL = `${process.env.REACT_APP_BACKEND_URL}/api`;
 
@@ -43,6 +44,16 @@ let refreshPromise = null;
 api.interceptors.response.use(
   (response) => response,
   async (error) => {
+    // Directive Phase 11 — VersionGateMiddleware's 426 ("this app version
+    // is no longer supported"). Only a native build that opts into sending
+    // X-App-Version can ever see this (see the request interceptor above),
+    // so this never trips for web. Recorded globally rather than left for
+    // each individual caller's own catch block, which would otherwise show
+    // it as just another generic failed-request toast — see
+    // VersionGateLockScreen.jsx for what actually surfaces it.
+    if (error.response?.status === 426) {
+      tripVersionGate(error.response.data);
+    }
     const original = error.config;
     const isAuthEndpoint = original?.url?.includes('/auth/refresh') || original?.url?.includes('/auth/login');
     if (error.response?.status === 401 && original && !original._retriedAfterRefresh && !isAuthEndpoint) {

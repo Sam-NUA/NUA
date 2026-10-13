@@ -10,6 +10,7 @@ import { Toaster } from './components/ui/sonner';
 import BottomDock from './components/BottomDock';
 import BackButton from './components/BackButton';
 import LicensePage, { LicenseLockScreen, LicenseBanner } from './pages/LicensePage';
+import VersionGateLockScreen from './components/VersionGateLockScreen';
 const Login = lazy(() => import('./pages/Login'));
 const OnboardingWizard = lazy(() => import('./pages/OnboardingWizard'));
 const ResetPassword = lazy(() => import('./pages/ResetPassword'));
@@ -407,6 +408,7 @@ function App() {
         <AuthProvider>
         <BusinessProvider>
           <div className="App">
+            <VersionGateLockScreen />
             <BrowserRouter>
               {/* Page components are lazy-loaded (see the const X = lazy(...)
                   imports above) — one Suspense boundary here covers every
