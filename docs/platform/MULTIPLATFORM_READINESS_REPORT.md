@@ -191,7 +191,8 @@ MULTIPLATFORM_READINESS_REPORT}.md`.
 | Android Gradle build, GitHub-hosted `ubuntu-latest` runner (`.github/workflows/android.yml`, new this pass) | **BUILD SUCCESSFUL** — real `./gradlew assembleDebug` run, 334 actionable tasks executed in 1m 48s, a real ~8.3 MB debug APK uploaded as the `nua-pos-android-debug` CI artifact. See "Android status" below for the three distinct, real bugs this took to reach (none worked around or skipped). |
 | Android emulator install + launch (`emulator-smoke-test` job, new this pass) | **PASSED** — real AVD booted via KVM, `adb install` → `Success`, app launched, `adb shell pidof` returned a live PID ~10s later, clean logcat (no `FATAL EXCEPTION`). First real run of this app on any Android runtime in this effort. See "Android status" below. |
 | iOS native project generation (`npx cap add ios` + `sync`) | **Success** — SPM-based plugin resolution needs no Xcode |
-| iOS build/simulator/device run | **BLOCKED** — Xcode requires macOS, unavailable in this sandbox regardless of network policy |
+| iOS build/simulator run, this sandbox | **BLOCKED** — Xcode requires macOS, unavailable in this sandbox regardless of network policy |
+| iOS build + Simulator install/launch, GitHub-hosted `macos-latest` runner (`.github/workflows/ios.yml`, a later pass) | **PASSED** — real `xcodebuild` build of the actual Capacitor project, a real iOS Simulator booted, the app installed and launched, process still alive 5s later. First real run of this app on any iOS runtime in this effort. Same launch-only scope as Android's `emulator-smoke-test`: no backend call, no financial transaction. Real iPhone/iPad device run still unavailable from any CI environment this project has access to. |
 | On-device/emulator run of any kind (Android, iOS), this sandbox | **BLOCKED** — no `/dev/kvm`, no Android SDK/`adb` installed here (confirmed directly); Android's emulator run above happened on CI, not here, for the identical reason the Gradle build itself had to move to CI |
 | `apps/windows` + `packages/platform-core` unit tests (`node --test`) | **19 passed, 0 failed** |
 | Windows Electron app launch in this sandbox | **BLOCKED (by design)** — `main.cjs` refuses to start on anything but `win32`, confirmed by running it here; the real equivalent is CI's `windows-latest` job, which has run **green** on this branch's commits (including the integration work), per PR #22's own check runs. |
@@ -313,7 +314,7 @@ identity registry itself, no physical printer/scanner/touchscreen QA.
 
 ## iOS/iPadOS readiness
 
-**~25%.** A later pass of this same session was explicitly instructed to
+**~35%.** A later pass of this same session was explicitly instructed to
 start iOS/iPadOS work despite the directive's own Phase 10 deferral — see
 `IOS_IPADOS_ARCHITECTURE.md` for the full account. What's done: the
 native iOS project exists (`frontend/ios/`, via `npx cap add ios`, which
@@ -324,14 +325,20 @@ device-identity contract already accepted `platform: "ios"` and now has
 an explicit test proving the full register→login→revoke cycle for it;
 `Info.plist` gained the camera/microphone/local-network usage-description
 keys and an ATS exception for LAN printer traffic that would otherwise
-silently break on a real device. What's still missing, concretely: any
-build, simulator run, or device run of this project (impossible from this
-sandbox — Xcode requires macOS, not just a network-policy change, unlike
-Android's blocker); a `PrivacyInfo.xcprivacy` privacy manifest; signing,
-provisioning, and all Apple Developer Program prerequisites; any
-iPhone-specific (as opposed to iPad POS) layout work. See
-`HARDWARE_COMPATIBILITY_MATRIX.md`'s iPad column for the per-capability
-breakdown.
+silently break on a real device. A still later pass added a real macOS
+CI runner (`.github/workflows/ios.yml`): a real `xcodebuild` build, a
+real Simulator boot, install and launch all pass for real, matching
+Android's own launch-only `emulator-smoke-test` ceiling — the "no macOS
+build environment" blocker is closed for CI purposes. What's still
+missing, concretely: any run on a real iPhone/iPad device (no CI
+environment this project has access to exposes one, unlike Android's
+emulator which is a real if virtualized device); the full offline
+critical-acceptance milestone (order → offline → restart → reconnect →
+sync) that Android's `critical-acceptance-milestone` job now walks for
+real; a `PrivacyInfo.xcprivacy` privacy manifest; signing, provisioning,
+and all Apple Developer Program prerequisites; any iPhone-specific (as
+opposed to iPad POS) layout work. See `HARDWARE_COMPATIBILITY_MATRIX.md`'s
+iPad column for the per-capability breakdown.
 
 ## Hardware readiness
 

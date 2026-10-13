@@ -104,9 +104,12 @@ acceptance milestone first.
     session — see `WINDOWS_ARCHITECTURE.md` for the full account. (iOS
     scaffolding — `@capacitor/ios`, the native `frontend/ios/` project,
     Info.plist permission/ATS fixes — was done in a separate later pass;
-    see `IOS_IPADOS_ARCHITECTURE.md` for what's real there and what's
-    still only "ready to attempt," since no macOS build environment
-    exists in this sandbox to actually compile or run it.)
+    see `IOS_IPADOS_ARCHITECTURE.md` for what's real there. A later pass
+    added `.github/workflows/ios.yml` on a real `macos-latest` CI
+    runner: real build, real Simulator boot, install and launch all
+    pass for real now — the "no macOS build environment" gap is closed
+    for CI purposes; a physical iPhone/iPad and the full offline
+    critical-acceptance milestone remain unattempted on iOS.)
 
 ## Windows-specific (see WINDOWS_ARCHITECTURE.md and
 ## OFFLINE_SYNC_ARCHITECTURE.md's Windows section for the full detail)

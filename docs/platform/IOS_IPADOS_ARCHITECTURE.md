@@ -262,6 +262,17 @@ Identical reasoning to Android's section in `ANDROID_ARCHITECTURE.md`:
   service) — a stronger caveat than Android's "ready to attempt," since
   Android's own blocker could in principle be lifted inside this same
   sandbox by a network-policy change, and iOS's cannot.
+- **Update, a later pass**: that macOS build environment is now real.
+  `.github/workflows/ios.yml` runs on GitHub's `macos-latest` runner —
+  builds the actual Capacitor iOS project with `xcodebuild`, boots a
+  real iOS Simulator, installs the real app, launches it, and verifies
+  the process survives 5 seconds post-launch. All green on a real run
+  (no backend call, no financial transaction — same launch-only scope as
+  Android's `emulator-smoke-test` job). This proves the app actually
+  *builds and runs* on iOS for the first time; it is still not the full
+  critical acceptance milestone (order → offline → restart → reconnect →
+  sync) that Android's `critical-acceptance-milestone` job walks for real
+  — that remains unattempted on iOS.
 
 ## Classification
 
@@ -273,6 +284,11 @@ backend contract already accepted `"ios"` and is now explicitly tested
 (see `backend/tests/inprocess/test_device_identity.py`), and the two
 concrete platform gaps this pass found (camera/mic/local-network
 permission declarations, ATS exception for LAN printer traffic) are
-fixed. Not ALPHA: no build, no simulator run, no device run — and unlike
-Android, none of those is reachable from this sandbox at all, only from a
-macOS environment this pass had no access to.
+fixed. A later pass added a real macOS CI runner
+(`.github/workflows/ios.yml`): a real build, a real Simulator boot,
+install and launch all now pass for real — matching Android's own
+`emulator-smoke-test` ceiling. Still not ALPHA: no real device run (no
+physical iPhone/iPad reachable from any CI environment this project has
+access to), and the full critical acceptance milestone (order → offline
+→ restart → reconnect → sync) has not been walked on iOS the way it has
+on Android.
