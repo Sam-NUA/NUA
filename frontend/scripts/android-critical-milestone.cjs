@@ -273,6 +273,17 @@ async function setNetwork(enabled) {
   } else {
     try { adb(['reverse', '--remove', 'tcp:8001']); } catch { /* already removed */ }
     log('adb reverse tcp:8001 removed — the backend is now genuinely unreachable');
+    // A prior run's own fetch() probe came back {"ok":true,"status":200}
+    // AFTER this removal — which should be impossible if the tunnel is
+    // really gone. Confirm from adb's own side whether the mapping is
+    // actually gone (not just whether this command exited 0) rather than
+    // trust the removal call succeeded.
+    try {
+      const list = adb(['reverse', '--list']);
+      log(`adb reverse --list right after removal: ${JSON.stringify(list.trim())}`);
+    } catch (error) {
+      log(`adb reverse --list failed: ${error.message}`);
+    }
   }
   await wait(3000); // propagation isn't instant
 }
@@ -379,13 +390,31 @@ async function main() {
   // flight when this script gives up — which would also explain zero
   // writes with no error toast. Prove which one directly, the same way the
   // pre-login reachability check did, instead of assuming.
+  // A prior run's own fetch() probe here came back {"ok":true,"status":200}
+  // even with the reverse mapping removed — which, if the tunnel is really
+  // gone, should be impossible. Two things could explain a false "ok":
+  // (a) a plain GET being served from the WebView's own HTTP cache instead
+  // of hitting the network at all, or (b) the removal not actually taking
+  // on adb's own side (checked separately in setNetwork() now). Rule out
+  // (a) here: a cache-busting query param plus `cache: 'no-store'` forces
+  // a real network attempt, and a POST (what the real checkout sends) is
+  // never served from cache regardless.
   const offlineReachability = await page.evalPage(`
     Promise.race([
-      fetch(${JSON.stringify(BACKEND)} + '/api/ready').then(r => ({ ok: true, status: r.status })).catch(e => ({ ok: false, message: e.message, name: e.name })),
+      fetch(${JSON.stringify(BACKEND)} + '/api/ready?cachebust=' + Date.now(), { cache: 'no-store' })
+        .then(r => ({ ok: true, status: r.status })).catch(e => ({ ok: false, message: e.message, name: e.name })),
       new Promise(resolve => setTimeout(() => resolve({ ok: false, message: 'still pending after 10s — a hang, not a fast refusal', name: 'LocalTimeout' }), 10000)),
     ])
   `);
-  log(`direct fetch() check with the tunnel removed: ${JSON.stringify(offlineReachability)}`);
+  log(`direct cache-busted GET with the tunnel removed: ${JSON.stringify(offlineReachability)}`);
+  const offlinePostReachability = await page.evalPage(`
+    Promise.race([
+      fetch(${JSON.stringify(BACKEND)} + '/api/transactions', { method: 'POST', cache: 'no-store', headers: { 'Content-Type': 'application/json' }, body: '{}' })
+        .then(r => ({ ok: true, status: r.status })).catch(e => ({ ok: false, message: e.message, name: e.name })),
+      new Promise(resolve => setTimeout(() => resolve({ ok: false, message: 'still pending after 10s — a hang, not a fast refusal', name: 'LocalTimeout' }), 10000)),
+    ])
+  `);
+  log(`direct unauthenticated POST with the tunnel removed: ${JSON.stringify(offlinePostReachability)}`);
 
   log('ringing up one cash sale while offline');
   await page.click(`[data-testid="product-${product.id}"]`);
