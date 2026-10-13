@@ -97,3 +97,92 @@ jobs:
           path: frontend/android/app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
           retention-days: 7
+
+  # Installing on, or even booting, an Android emulator is impossible in
+  # this repo's own dev sandbox: no /dev/kvm, no hardware virtualization
+  # exposed, no Android SDK/adb installed (confirmed directly, not
+  # assumed). GitHub-hosted ubuntu-latest runners DO expose /dev/kvm, so
+  # — same pattern as the `android` job above getting past the sandbox's
+  # dl.google.com block — this job boots a real AVD there instead.
+  #
+  # Scope is deliberately a launch smoke test, not the full critical
+  # acceptance milestone (order → offline → restart → reconnect → sync →
+  # exactly one order): that would mean either standing up a throwaway
+  # backend+Mongo inside this job (docker-compose.yml already defines the
+  # stack; not wired up here) or creating real orders against the live
+  # `https://app.nuapos.com.au` backend the APK was built against — the
+  # latter is exactly the kind of live-financial-transaction risk this
+  # effort has avoided throughout. This job only installs the APK,
+  # launches it, and verifies the process survives and logcat shows no
+  # fatal exception — proving the real packaged app actually boots on a
+  # real (if emulated) Android device for the first time, nothing more.
+  # One known, accepted side effect: launching the real app does make one
+  # real write to production — `App.js`'s `trackEvent('app_launch')` —
+  # the same harmless telemetry call any real install of this build would
+  # make; no financial or tenant-business-data writes occur.
+  emulator-smoke-test:
+    needs: android
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Download the debug APK built by the android job
+        uses: actions/download-artifact@v4
+        with:
+          name: nua-pos-android-debug
+          path: apk
+      - name: Enable KVM group perms (required for emulator acceleration)
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: AVD cache
+        uses: actions/cache@v4
+        id: avd-cache
+        with:
+          path: |
+            ~/.android/avd/*
+            ~/.android/adb*
+          key: avd-34-google_apis-x86_64
+      - name: Create AVD snapshot for caching
+        if: steps.avd-cache.outputs.cache-hit != 'true'
+        uses: ReactiveCircus/android-emulator-runner@v2
+        with:
+          # API 34 (Android 14): well within this app's minSdk 24..
+          # targetSdk 36 range, and a widely available, fast-booting image
+          # for a launch-only check — nothing here depends on 36-specific
+          # behavior.
+          api-level: 34
+          target: google_apis
+          arch: x86_64
+          force-avd-creation: false
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          disable-animations: false
+          script: echo "Generated AVD snapshot for caching."
+      - name: Install the real APK and verify it launches without crashing
+        uses: ReactiveCircus/android-emulator-runner@v2
+        with:
+          api-level: 34
+          target: google_apis
+          arch: x86_64
+          force-avd-creation: false
+          emulator-options: -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          disable-animations: true
+          script: |
+            set -eu
+            APK="$(find apk -name '*.apk' | head -n1)"
+            echo "Installing $APK"
+            adb install -r "$APK"
+            adb logcat -c
+            adb shell am start -n com.nua.pos/.MainActivity
+            sleep 10
+            if ! adb shell pidof com.nua.pos; then
+              echo "::error::App process not found ~10s after launch — it crashed or failed to start."
+              adb logcat -d -s AndroidRuntime:E '*:F'
+              exit 1
+            fi
+            if adb logcat -d | grep -q "FATAL EXCEPTION"; then
+              echo "::error::FATAL EXCEPTION found in logcat even though the process is still alive."
+              adb logcat -d | grep -A 40 "FATAL EXCEPTION"
+              exit 1
+            fi
+            echo "App launched and stayed running with a clean logcat — real emulator smoke test passed."
