@@ -384,6 +384,39 @@ async function main() {
     }
   }
   if (pendingBeforeRestart !== 1) {
+    // The backend's own log is the one thing not in question here (a prior
+    // real run showed zero POST /api/transactions after the tunnel was
+    // torn down — the "offline" simulation itself is working). What's
+    // still unproven is what the app did about that failure: dump the
+    // toast text React actually rendered (which of handleCheckout's three
+    // branches fired) and every IndexedDB database that actually exists —
+    // not just the nua-offline-biz-* ones countPendingTransactions looks
+    // for — instead of guessing a second time.
+    const toastText = await page.evalPage('document.body.innerText').catch(() => null);
+    const dbDump = await page.evalPage(`(async function(){
+      const dbs = await indexedDB.databases();
+      const out = [];
+      for (const d of dbs) {
+        const db = await new Promise((resolve, reject) => {
+          const req = indexedDB.open(d.name);
+          req.onsuccess = () => resolve(req.result);
+          req.onerror = () => reject(req.error);
+        });
+        const stores = {};
+        for (const storeName of db.objectStoreNames) {
+          stores[storeName] = await new Promise((resolve) => {
+            const countReq = db.transaction(storeName, 'readonly').objectStore(storeName).count();
+            countReq.onsuccess = () => resolve(countReq.result);
+            countReq.onerror = () => resolve('?');
+          });
+        }
+        out.push({ name: d.name, version: d.version, stores });
+        db.close();
+      }
+      return out;
+    })();`);
+    log(`every IndexedDB database that actually exists: ${JSON.stringify(dbDump)}`);
+    log(`relevant toast/page text: ${JSON.stringify((toastText || '').split('\n').filter(l => /offline|complete|fail|unknown table|error/i.test(l)))}`);
     throw new Error(`Expected exactly 1 queued offline transaction before restart, found ${pendingBeforeRestart}`);
   }
   log('exactly 1 transaction is queued offline, as expected');
