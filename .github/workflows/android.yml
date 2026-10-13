@@ -1,0 +1,61 @@
+name: Android build (foundation)
+on:
+  pull_request:
+    paths: ['frontend/**', '.github/workflows/android.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  android:
+    # GitHub-hosted ubuntu-latest runners ship a full internet-connected
+    # network path and a pre-installed Android SDK/cmdline-tools — unlike
+    # this repo's own dev sandbox, which reaches exactly the
+    # dl.google.com block documented in
+    # docs/platform/ANDROID_ARCHITECTURE.md's "Not ALPHA" section. This
+    # workflow exists specifically to get past that blocker somewhere
+    # that actually can, not to duplicate frontend-build/e2e-tests.
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      PUBLIC_URL: /
+      # A real absolute origin, same reasoning as the Windows workflow's
+      # reserved .invalid origin — except Android's build doesn't bake a
+      # live-reachable requirement the way Windows's prepare-renderer.cjs
+      # does, so the real API origin is fine here and matches what a real
+      # release build would actually ship with.
+      REACT_APP_BACKEND_URL: https://app.nuapos.com.au
+      CI: false   # CRA treats warnings as errors under CI=true; this repo isn't warning-clean yet (see ci.yml's frontend-build)
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install frontend dependencies
+        working-directory: ./frontend
+        run: npm ci
+      - name: Build shared React app
+        working-directory: ./frontend
+        run: npx craco build
+      - uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'   # Android Gradle Plugin 8.x requires JDK 17+
+      - name: Sync Capacitor Android project
+        working-directory: ./frontend
+        run: npx cap sync android
+      - name: Accept Android SDK licenses
+        run: yes | sdkmanager --licenses > /dev/null || true
+      - name: Ensure the platform/build-tools this project targets are installed
+        run: sdkmanager "platforms;android-36" "build-tools;36.0.0"
+      - name: Build debug APK
+        working-directory: ./frontend/android
+        run: ./gradlew assembleDebug --no-daemon
+      - name: Upload debug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: nua-pos-android-debug
+          path: frontend/android/app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
+          retention-days: 7
