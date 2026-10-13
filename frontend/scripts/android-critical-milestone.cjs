@@ -254,6 +254,26 @@ async function setNetwork(enabled) {
   log(`turning network ${action} on the device (svc wifi/data)`);
   adbShell(`svc wifi ${action}`);
   adbShell(`svc data ${action}`);
+  // A real run proved `svc wifi/data disable` alone doesn't actually cut
+  // this app off: it flips navigator.onLine (confirmed false in the log)
+  // but has no effect on the `adb reverse tcp:8001 tcp:8001` tunnel set up
+  // in main() — that tunnel runs over the adb protocol itself, not the
+  // emulated radio `svc` toggles the WiFi/data stack. The app's own
+  // checkout flow (offlineQueue.js's createTransactionResilient) doesn't
+  // trust navigator.onLine either — it always tries the real request and
+  // only queues on an actual network failure — so with the tunnel left up,
+  // the "offline" cash sale's POST /api/transactions sailed straight
+  // through to the backend (confirmed 200 in the backend's own log) and
+  // never queued. Tearing the tunnel down for real is what actually
+  // reproduces offline; restoring it is what actually reproduces
+  // reconnecting.
+  if (enabled) {
+    adb(['reverse', 'tcp:8001', 'tcp:8001']);
+    log('adb reverse tcp:8001 tcp:8001 restored — the backend is reachable again');
+  } else {
+    try { adb(['reverse', '--remove', 'tcp:8001']); } catch { /* already removed */ }
+    log('adb reverse tcp:8001 removed — the backend is now genuinely unreachable');
+  }
   await wait(3000); // propagation isn't instant
 }
 
