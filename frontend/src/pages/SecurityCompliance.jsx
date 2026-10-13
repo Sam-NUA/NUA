@@ -10,6 +10,7 @@ import { useAuth } from '../contexts/AuthContext';
 import { v15API, customersAPI } from '../services/api';
 import { toast } from 'sonner';
 import SensitiveActionReauthDialog from '../components/security/SensitiveActionReauthDialog';
+import { FileService } from '../platform';
 
 const LANGS = [{ c: 'en', n: 'English' }, { c: 'es', n: 'Español' }, { c: 'fr', n: 'Français' }, { c: 'hi', n: 'हिन्दी' }, { c: 'zh', n: '中文' }];
 
@@ -48,9 +49,7 @@ export default function SecurityCompliance() {
       setExportData(r.data);
       // Trigger download
       const blob = new Blob([JSON.stringify(r.data, null, 2)], { type: 'application/json' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a'); a.href = url; a.download = `gdpr-export-${cid}.json`; a.click();
-      URL.revokeObjectURL(url);
+      await FileService.downloadFile(blob, `gdpr-export-${cid}.json`);
       toast.success('GDPR export downloaded');
     } catch { toast.error('Export failed'); }
   };

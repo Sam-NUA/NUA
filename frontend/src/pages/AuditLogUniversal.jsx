@@ -8,7 +8,7 @@ import { Button } from '../components/ui/button';
 import { History, Search, User, Shield, Clock, RotateCcw, Download, FileCheck } from 'lucide-react';
 import { toast } from 'sonner';
 import { useAuth } from '../contexts/AuthContext';
-import { DialogService } from '../platform';
+import { DialogService, FileService } from '../platform';
 
 const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
 const H = () => ({ Authorization: `Bearer ${localStorage.getItem('nua_token')}` });
@@ -93,11 +93,8 @@ export default function AuditLog() {
       if (complianceStart) params.start = complianceStart;
       if (complianceEnd) params.end = complianceEnd;
       const r = await axios.get(`${API}/audit/compliance-export.csv`, { headers: H(), params, responseType: 'blob' });
-      const url = URL.createObjectURL(r.data);
-      const a = document.createElement('a');
       const label = `${complianceStart || 'all-time'}_to_${complianceEnd || 'now'}`;
-      a.href = url; a.download = `compliance-${label}.csv`; a.click();
-      URL.revokeObjectURL(url);
+      await FileService.downloadFile(r.data, `compliance-${label}.csv`);
       toast.success('Compliance export downloaded');
     } catch (err) { toast.error(err.response?.data?.detail || 'Export failed'); }
     finally { setComplianceExporting(false); }

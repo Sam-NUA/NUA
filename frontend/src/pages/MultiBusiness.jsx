@@ -12,6 +12,7 @@ import { useBusiness } from '../contexts/BusinessContext';
 import { businessAPI } from '../services/api';
 import { BUSINESS_TYPE_OPTIONS, VERTICAL_LABELS, getVertical } from '../lib/businessVertical';
 import { toast } from 'sonner';
+import { FileService } from '../platform';
 
 const BLANK_FORM = { name: '', type: 'restaurant', abn: '', address: '', phone: '', email: '', timezone: 'Australia/Sydney', currency: 'AUD', taxRate: 10 };
 
@@ -111,11 +112,7 @@ export default function MultiBusiness() {
     try {
       const r = await businessAPI.exportData(b.id);
       const blob = new Blob([JSON.stringify(r.data, null, 2)], { type: 'application/json' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url; a.download = `${b.slug || b.id}-export-${new Date().toISOString().slice(0, 10)}.json`;
-      a.click();
-      URL.revokeObjectURL(url);
+      await FileService.downloadFile(blob, `${b.slug || b.id}-export-${new Date().toISOString().slice(0, 10)}.json`);
       toast.success('Export downloaded');
     } catch {
       toast.error('Export failed');

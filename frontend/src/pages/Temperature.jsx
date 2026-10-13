@@ -11,7 +11,7 @@ import {
   Thermometer, Snowflake, Plus, RefreshCcw, Bell, Bluetooth, Wifi, Wrench, Trash2,
   AlertTriangle, CheckCircle2, Calendar, FileDown, Copy, Zap,
 } from 'lucide-react';
-import { DialogService } from '../platform';
+import { DialogService, FileService } from '../platform';
 
 /**
  * Temperature Monitoring — HACCP compliant, hardware-agnostic.
@@ -191,7 +191,7 @@ export default function Temperature() {
     } finally { setBusy(false); }
   };
 
-  const exportCSV = () => {
+  const exportCSV = async () => {
     if (!reportData) return;
     const rows = [
       ['Device', 'Type', 'Temperature (°C)', 'Humidity (%)', 'Status', 'Recorded at', 'Source', 'Note'],
@@ -202,12 +202,7 @@ export default function Temperature() {
     ];
     const csv = rows.map(r => r.map(v => `"${String(v ?? '').replace(/"/g, '""')}"`).join(',')).join('\n');
     const blob = new Blob([csv], { type: 'text/csv' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `temperature-report-${reportData.range.start}_to_${reportData.range.end}.csv`;
-    a.click();
-    URL.revokeObjectURL(url);
+    await FileService.downloadFile(blob, `temperature-report-${reportData.range.start}_to_${reportData.range.end}.csv`);
   };
 
   const runScan = async () => {

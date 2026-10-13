@@ -12,6 +12,7 @@ import { useTheme } from '../contexts/ThemeContext';
 import { bookingAnalyticsAPI } from '../services/api';
 import MiniChart from '../components/charts/MiniChart';
 import { toast } from 'sonner';
+import { FileService } from '../platform';
 
 const money = (v) => v === null || v === undefined ? '—' : `$${Number(v).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
@@ -95,10 +96,7 @@ export default function BookingAnalytics() {
     try {
       const fn = kind === 'csv' ? bookingAnalyticsAPI.downloadCsv : bookingAnalyticsAPI.downloadPdf;
       const r = await fn(params);
-      const url = URL.createObjectURL(r.data);
-      const a = document.createElement('a');
-      a.href = url; a.download = `booking-report-${range.start}_to_${range.end}.${kind}`; a.click();
-      URL.revokeObjectURL(url);
+      await FileService.downloadFile(r.data, `booking-report-${range.start}_to_${range.end}.${kind}`);
       toast.success(`${kind.toUpperCase()} downloaded`);
     } catch {
       toast.error(`${kind.toUpperCase()} export failed`);

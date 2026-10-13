@@ -8,7 +8,7 @@ import { Badge } from '../components/ui/badge';
 import { useTheme } from '../contexts/ThemeContext';
 import { inventoryAPI, productsAPI, aiPantryAPI, awardsAPI, staffMgmtAPI } from '../services/api';
 import { useToast } from '../hooks/use-toast';
-import { DialogService } from '../platform';
+import { DialogService, FileService } from '../platform';
 
 const BASE_UNITS = ['g', 'mL', 'ea'];
 const ALL_UNITS = { g: ['g', 'kg', 'mg'], mL: ['mL', 'L', 'cl'], ea: ['ea', 'box', 'case', 'pack'] };
@@ -460,8 +460,7 @@ function BASPanel() {
   const dl = async () => {
     try {
       const r = await inventoryAPI.basCsv({ fy, quarter });
-      const url = window.URL.createObjectURL(new Blob([r.data]));
-      const a = document.createElement('a'); a.href = url; a.download = `BAS-FY${fy}-${quarter}.csv`; a.click();
+      await FileService.downloadFile(new Blob([r.data]), `BAS-FY${fy}-${quarter}.csv`);
     } catch { /* download failed silently */ }
   };
   return (

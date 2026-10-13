@@ -13,6 +13,7 @@ import { ProductsToolbar } from '../components/products/ProductsToolbar';
 import { ProductTable } from '../components/products/ProductTable';
 import { BulkEditDialog } from '../components/products/BulkEditDialog';
 import { RecentlyEditedSidebar } from '../components/products/RecentlyEditedSidebar';
+import { FileService } from '../platform';
 import { ProductVariants } from '../components/products/ProductVariants';
 import { PromotionDialog } from '../components/products/PromotionDialog';
 import { ItemsKpiStrip } from '../components/products/ItemsKpiStrip';
@@ -442,7 +443,7 @@ const Products = () => {
     setInlineEditCell(null);
   };
 
-  const exportCsv = () => {
+  const exportCsv = async () => {
     const headers = ['id', 'name', 'sku', 'category', 'price', 'cost', 'stock', 'gstRate', 'eightySixed', 'modifiersCount'];
     const rows = filteredProducts.map(p => [
       p.id, p.name, p.sku, p.category, p.price, p.cost, p.stock, p.gstRate,
@@ -451,10 +452,7 @@ const Products = () => {
     const escape = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
     const csv = [headers.join(','), ...rows.map(r => r.map(escape).join(','))].join('\n');
     const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url; a.download = `products-${new Date().toISOString().slice(0, 10)}.csv`;
-    a.click(); URL.revokeObjectURL(url);
+    await FileService.downloadFile(blob, `products-${new Date().toISOString().slice(0, 10)}.csv`);
   };
 
   const onCsvImport = async (e) => {
