@@ -478,7 +478,20 @@ async function main() {
   {
     const deadline = Date.now() + 20000;
     while (Date.now() < deadline) {
-      pendingAfterRestart = await countPendingTransactions(page.evalPage);
+      try {
+        pendingAfterRestart = await countPendingTransactions(page.evalPage);
+      } catch (error) {
+        // A real run hit this immediately after reconnecting post-restart:
+        // "Access to the IndexedDB API is denied in this context" — the
+        // exact error Chromium throws when indexedDB is touched before the
+        // page has finished navigating to its real origin (e.g. still on
+        // about:blank right after the WebView reattaches). Not a real
+        // access-control failure, just reconnecting too early; retry
+        // rather than let one early call fail the whole run.
+        log(`countPendingTransactions failed right after restart (${error.message}) — retrying`);
+        await wait(1000);
+        continue;
+      }
       if (pendingAfterRestart > 0) break;
       await wait(1000);
     }
