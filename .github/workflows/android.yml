@@ -29,7 +29,13 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          # @capacitor/cli 8.5.3 hard-requires Node >=22 — `npx cap sync`
+          # refuses to run at all on 20 (confirmed by a real CI failure,
+          # not assumed: "[fatal] The Capacitor CLI requires NodeJS
+          # >=22.0.0"). frontend-build/e2e-tests in ci.yml stay on 20
+          # since craco build/test don't have this requirement; only this
+          # workflow's cap sync step needs the newer runtime.
+          node-version: '22'
           cache: 'npm'
           cache-dependency-path: frontend/package-lock.json
       - name: Install frontend dependencies

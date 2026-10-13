@@ -117,6 +117,10 @@ jobs:
         run: npm ci
       - name: Dependency vulnerability scan (report only — see frontend/SECURITY_DEPENDENCY_DEBT.md)
         run: npm audit --audit-level=high || true
+      - name: Unit tests (Jest via craco — platform abstraction, device capability detection)
+        run: npx craco test --watchAll=false
+        env:
+          CI: true
       - name: Build
         run: npx craco build
         env:
