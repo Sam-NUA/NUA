@@ -1,6 +1,7 @@
 import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
 import axios from 'axios';
 import { SecureStorageService, DeviceIdentityService } from '../platform';
+import * as offlineQueue from '../lib/offlineQueue';
 
 const AuthContext = createContext(null);
 const API = process.env.REACT_APP_BACKEND_URL;
@@ -39,6 +40,17 @@ export function AuthProvider({ children }) {
   }, []);
 
   useEffect(() => { checkAuth(); }, [checkAuth]);
+
+  // MOBILE_DESKTOP_BACKLOG.md — local offline storage must be partitioned
+  // per authorised business, not shared by every business that's ever
+  // logged in on this device. offlineQueue is a plain module (no React
+  // access of its own), so this is the one place that tells it whose data
+  // it's allowed to touch right now, same pattern as BusinessContext's own
+  // user-keyed effect below.
+  useEffect(() => {
+    if (user && user.businessId) offlineQueue.activate(user.businessId);
+    else if (user === false) offlineQueue.lock();
+  }, [user]);
 
   // A correct password is not the same as being signed in. When the account
   // carries a second factor the backend answers with a challenge instead of a

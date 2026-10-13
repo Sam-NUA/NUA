@@ -108,6 +108,7 @@
     "eslint-plugin-import": "2.31.0",
     "eslint-plugin-jsx-a11y": "6.10.2",
     "eslint-plugin-react": "7.37.4",
+    "fake-indexeddb": "^6.2.5",
     "globals": "15.15.0",
     "postcss": "^8.4.49",
     "serve": "^14.2.6",

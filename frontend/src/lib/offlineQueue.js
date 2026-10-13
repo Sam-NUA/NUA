@@ -12,22 +12,37 @@
 import { transactionsAPI } from '../services/api';
 import { trackEvent } from './telemetry';
 
-const DB_NAME = 'nua-offline';
+const LEGACY_DB_NAME = 'nua-offline';   // pre-partitioning name — see activate() below
 const DB_VERSION = 3;   // v2 added the coursing action store; v3 adds the read-side cache
 const STORE = 'pending_transactions';
+const COURSE_STORE_NAME = 'pending_course_actions';
 const CACHE_STORE = 'cached_reads';   // menu + open tickets, so the POS has something to render offline
 
-function openDB() {
+// A single shared IndexedDB database meant a device used for two different
+// businesses (a multi-venue consultant's own tablet, say) would share one
+// offline queue across both — queued sales, cached menus, everything. Not
+// hypothetical: named explicitly in MOBILE_DESKTOP_BACKLOG.md as a real,
+// unaddressed gap. AuthContext calls activate(businessId) the moment a real
+// session exists (and lock() on logout/sign-out failure) so every call
+// below operates on that business's own database, never a shared one.
+let currentBusinessId = null;
+const migratedBusinessIds = new Set();
+
+function dbNameFor(businessId) {
+  return businessId ? `nua-offline-biz-${businessId}` : LEGACY_DB_NAME;
+}
+
+function openNamedDB(name) {
   return new Promise((resolve, reject) => {
     if (!('indexedDB' in window)) { reject(new Error('IndexedDB unavailable')); return; }
-    const req = indexedDB.open(DB_NAME, DB_VERSION);
+    const req = indexedDB.open(name, DB_VERSION);
     req.onupgradeneeded = () => {
       const db = req.result;
       if (!db.objectStoreNames.contains(STORE)) {
         db.createObjectStore(STORE, { keyPath: 'id' });
       }
-      if (!db.objectStoreNames.contains('pending_course_actions')) {
-        db.createObjectStore('pending_course_actions', { keyPath: 'id' });
+      if (!db.objectStoreNames.contains(COURSE_STORE_NAME)) {
+        db.createObjectStore(COURSE_STORE_NAME, { keyPath: 'id' });
       }
       if (!db.objectStoreNames.contains(CACHE_STORE)) {
         db.createObjectStore(CACHE_STORE, { keyPath: 'key' });
@@ -36,6 +51,72 @@ function openDB() {
     req.onsuccess = () => resolve(req.result);
     req.onerror = () => reject(req.error);
   });
+}
+
+function openDB() {
+  return openNamedDB(dbNameFor(currentBusinessId));
+}
+
+async function readAllFrom(db, storeName) {
+  if (!db.objectStoreNames.contains(storeName)) return [];
+  return new Promise((resolve) => {
+    const req = db.transaction(storeName, 'readonly').objectStore(storeName).getAll();
+    req.onsuccess = () => resolve(req.result || []);
+    req.onerror = () => resolve([]);
+  });
+}
+
+async function moveAllTo(sourceDb, targetDb, storeName) {
+  const rows = await readAllFrom(sourceDb, storeName);
+  if (!rows.length) return;
+  await new Promise((resolve, reject) => {
+    const tx = targetDb.transaction(storeName, 'readwrite');
+    const store = tx.objectStore(storeName);
+    for (const row of rows) store.put(row);
+    tx.oncomplete = resolve;
+    tx.onerror = () => reject(tx.error);
+  });
+  await new Promise((resolve, reject) => {
+    const tx = sourceDb.transaction(storeName, 'readwrite');
+    tx.objectStore(storeName).clear();
+    tx.oncomplete = resolve;
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+/**
+ * Switch every queue/cache operation in this module onto the given
+ * business's own database. Whichever business activates FIRST on a given
+ * device, after this change ships, claims anything still sitting in the
+ * old shared database (a queued sale from an outage that was still
+ * in-flight across the exact deploy boundary — narrow, but real: dropping
+ * it would violate this codebase's "never silently lose a queued
+ * financial transaction" rule everywhere else). Every business after the
+ * first gets a clean, empty, correctly-scoped database, same as always.
+ * Safe to call repeatedly with the same businessId (no-ops after the first
+ * migration this session).
+ */
+export async function activate(businessId) {
+  if (!businessId || currentBusinessId === businessId) return;
+  currentBusinessId = businessId;
+  if (migratedBusinessIds.has(businessId)) return;
+  migratedBusinessIds.add(businessId);
+  try {
+    const legacyDb = await openNamedDB(LEGACY_DB_NAME);
+    const hasAnything = (await readAllFrom(legacyDb, STORE)).length
+      || (await readAllFrom(legacyDb, COURSE_STORE_NAME)).length;
+    if (!hasAnything) return;
+    const targetDb = await openNamedDB(dbNameFor(businessId));
+    await moveAllTo(legacyDb, targetDb, STORE);
+    await moveAllTo(legacyDb, targetDb, COURSE_STORE_NAME);
+  } catch { /* best-effort — a failed migration must never block the real queue from working */ }
+}
+
+/** Called on logout — stops any further read/write from resolving against
+ * whichever business was last active, so a fast account switch on a
+ * shared device can't read or flush the previous session's queue. */
+export function lock() {
+  currentBusinessId = null;
 }
 
 async function withStore(mode, fn) {
@@ -125,7 +206,7 @@ export async function createTransactionResilient(payload) {
 // food and fire courses; those calls used to fail hard while the sale beside
 // them queued happily. Same queue, same rules: only network-level failures
 // are held, real rejections still surface.
-const COURSE_STORE = 'pending_course_actions';
+const COURSE_STORE = COURSE_STORE_NAME;
 
 async function withCourseStore(mode, fn) {
   const db = await openDB();
