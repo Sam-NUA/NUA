@@ -261,6 +261,19 @@ async function main() {
 
   try { adb(['root']); } catch { log('adb root unavailable/unneeded on this image — continuing as shell user'); }
 
+  // The WebView's own fetch() to the throwaway backend failed with a raw
+  // "Failed to fetch" (a real network-level failure, not a 404/app-logic
+  // one) in a prior run. Isolate whether that's the emulator's basic
+  // gateway routing being broken at all, independent of Docker/WebView,
+  // by pinging the 10.0.2.2 alias itself from the emulator's own shell —
+  // this should always succeed if the emulator's networking is up.
+  try {
+    const pingResult = adbShell('ping -c 3 -W 2 10.0.2.2');
+    log(`ping 10.0.2.2 from inside the emulator:\n${pingResult}`);
+  } catch (error) {
+    log(`ping 10.0.2.2 from inside the emulator FAILED: ${error.message}`);
+  }
+
   log('clearing any previous app state and launching the app fresh');
   try { adbShell(`pm clear ${PACKAGE_ID}`); } catch { /* fine on a first install */ }
   adbShell(`am start -n ${PACKAGE_ID}/.MainActivity`);

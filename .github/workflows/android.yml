@@ -217,6 +217,21 @@ jobs:
         run: docker compose -f docker-compose.yml -f docker-compose.ci-milestone.yml up -d --build mongo mongo-init backend
       - name: Wait for the throwaway backend to report ready
         run: timeout 90 sh -c 'until curl -fsS http://localhost:8001/api/ready; do sleep 2; done'
+      - name: Diagnose whether the backend is reachable from a non-loopback address
+        # The emulator's own fetch() to this backend failed with a raw
+        # network error in a real run. The emulator's 10.0.2.2 alias routes
+        # through the host's main network stack, not strictly loopback, so
+        # confirm the Docker-published port is reachable that way too —
+        # isolates a Docker/iptables port-binding gap from an emulator-side
+        # networking problem before guessing further.
+        run: |
+          set -x
+          ip -4 addr show scope global | grep inet || true
+          HOST_IP="$(hostname -I | awk '{print $1}')"
+          echo "Host non-loopback IP: $HOST_IP"
+          curl -v --max-time 5 "http://$HOST_IP:8001/api/ready" || echo "::warning::Backend NOT reachable via $HOST_IP (non-loopback) — only via localhost"
+          sudo iptables -L -n -v | head -50 || true
+          sudo iptables -t nat -L -n -v | head -50 || true
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
