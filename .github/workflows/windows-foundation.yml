@@ -1,0 +1,43 @@
+name: Windows foundation
+on:
+  pull_request:
+    paths: ['apps/windows/**', 'packages/platform-core/**', 'frontend/**', '.github/workflows/windows-foundation.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 25
+    env:
+      # Reserved .invalid domain: never sends CI requests to a real venue.
+      REACT_APP_BACKEND_URL: https://windows-api.invalid
+      NUA_WINDOWS_API_ORIGIN: https://windows-api.invalid
+      PUBLIC_URL: /
+      CI: 'false'
+      CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - run: npm ci
+        working-directory: frontend
+      - run: npm ci
+        working-directory: apps/windows
+      - run: npm test
+        working-directory: apps/windows
+      - run: npm run build
+        working-directory: frontend
+      - run: npm run prepare:renderer
+        working-directory: apps/windows
+      - run: node scripts/smoke.cjs
+        working-directory: apps/windows
+      - run: npm run dist
+        working-directory: apps/windows
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nua-windows-foundation-unsigned
+          path: apps/windows/dist/*.exe
+          if-no-files-found: error
+          retention-days: 7

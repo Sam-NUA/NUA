@@ -1,0 +1,47 @@
+{
+  "name": "@nua/windows",
+  "version": "0.1.0",
+  "private": true,
+  "description": "NUA Windows foundation \u2014 unsigned review builds only",
+  "author": "NUA",
+  "main": "src/main.cjs",
+  "scripts": {
+    "test": "node --test test/*.test.cjs ../../packages/platform-core/test/*.test.cjs",
+    "prepare:renderer": "node scripts/prepare-renderer.cjs",
+    "start": "electron .",
+    "dist": "electron-builder --win nsis --x64 --publish never"
+  },
+  "devDependencies": {
+    "electron": "44.7.0",
+    "electron-builder": "26.15.3"
+  },
+  "build": {
+    "appId": "com.nua.pos.windows.foundation",
+    "productName": "NUA POS Foundation",
+    "asar": true,
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "src/**/*",
+      "renderer/**/*",
+      "package.json"
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true
+    },
+    "publish": null
+  }
+}

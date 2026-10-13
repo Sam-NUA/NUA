@@ -1,0 +1,9 @@
+{
+  "name": "@nua/platform-core",
+  "version": "0.1.0",
+  "private": true,
+  "main": "queue.cjs",
+  "scripts": {
+    "test": "node --test test/*.test.cjs"
+  }
+}
