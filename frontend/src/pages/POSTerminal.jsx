@@ -25,6 +25,7 @@ import POSHeaderBar from '../components/pos/POSHeaderBar';
 import ScanVoucherButton from '../components/pos/ScanVoucherButton';
 import TableNumberField from '../components/pos/TableNumberField';
 import { CourseHeader, SendToKitchenBar, ReadyBanner, SeatPicker } from '../components/pos/CourseControls';
+import SensitiveActionReauthDialog from '../components/security/SensitiveActionReauthDialog';
 import { validateTable } from '../lib/tableNumber';
 import { readableTextColor } from '../lib/contrast';
 import { groupCartByCourse, showCourseUI, courseKeys, courseLabel, lineCourse,
@@ -70,6 +71,7 @@ const POSTerminal = () => {
   const [showCompVoidQuick, setShowCompVoidQuick] = useState(false);
   const [compVoidForm, setCompVoidForm] = useState({ type: 'comp', reason: '', amount: '', printVoid: false });
   const [compVoidBusy, setCompVoidBusy] = useState(false);
+  const [showCompVoidReauth, setShowCompVoidReauth] = useState(false);
   const [tablesDialogMode, setTablesDialogMode] = useState('view'); // view | move | merge | split
   const [movingTab, setMovingTab] = useState(null);
   const [moveTargetTable, setMoveTargetTable] = useState('');
@@ -927,9 +929,16 @@ const POSTerminal = () => {
 
   const jumpToDiscounts = () => { setCartTab('cart'); setShowDiscountPicker(true); };
 
-  const handleQuickCompVoid = async () => {
+  const handleQuickCompVoid = () => {
     if (!compVoidForm.reason.trim()) { toast({ title: 'Reason required', variant: 'destructive' }); return; }
     if (!compVoidForm.amount || parseFloat(compVoidForm.amount) <= 0) { toast({ title: 'Amount must be greater than 0', variant: 'destructive' }); return; }
+    setShowCompVoidReauth(true);
+  };
+
+  // Directive Phase 5 — same sensitive-action gate as CompVoid.jsx's
+  // standalone page, for this quick-dialog path to the same backend call.
+  const doQuickCompVoid = async () => {
+    setShowCompVoidReauth(false);
     setCompVoidBusy(true);
     try {
       await itemsSystemAPI.createCompVoid({
@@ -2763,6 +2772,12 @@ const POSTerminal = () => {
           </div>
         </DialogContent>
       </Dialog>
+      <SensitiveActionReauthDialog
+        open={showCompVoidReauth}
+        label={`record this ${compVoidForm.type === 'comp' ? 'comp' : 'void'}`}
+        onVerified={doQuickCompVoid}
+        onCancel={() => setShowCompVoidReauth(false)}
+      />
 
     </div>
   );
