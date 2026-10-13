@@ -329,10 +329,22 @@ async function main() {
     log(`post-submit diagnosis: outcome=${outcome} pathname=${pathname} loginErrorText=${JSON.stringify(errorText)}`);
   }
 
-  // Owners land on /owner-dashboard after login (App.js's `home` redirect),
-  // not on the POS terminal directly — navigate there the same way a real
-  // user would, via the sidebar's own nav link.
-  log('navigating from the owner dashboard to the POS terminal');
+  // A real run showed login succeeding (pathname left /, no login-error)
+  // but nav-pos still never appearing — something else is covering the
+  // real app shell. Dump exactly what's on screen instead of guessing
+  // again: known full-screen blockers (the first-run onboarding wizard,
+  // the license lock screen, the version-gate lock screen) plus every
+  // data-testid actually present, so whatever it is shows up by name.
+  const screenDump = await page.evalPage(`({
+    pathname: window.location.pathname,
+    onboardingWizard: !!document.querySelector('[data-testid="onboarding-wizard"]'),
+    licenseLockscreen: !!document.querySelector('[data-testid="license-lockscreen"]'),
+    versionGateLockscreen: !!document.querySelector('[data-testid="version-gate-lockscreen"]'),
+    testids: [...document.querySelectorAll('[data-testid]')].map(e => e.getAttribute('data-testid')).slice(0, 80),
+  })`);
+  log(`screen dump before navigating to POS: ${JSON.stringify(screenDump)}`);
+
+  log('navigating to the POS terminal via the sidebar');
   await page.waitForSelector('[data-testid="nav-pos"]', 45000);
   await page.click('[data-testid="nav-pos"]');
   await page.waitForSelector('[data-testid="pos-terminal"]', 20000);
