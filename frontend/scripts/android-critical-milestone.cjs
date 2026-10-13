@@ -122,17 +122,34 @@ async function connectToAppPage() {
   log(`app process pid=${pid}, locating its WebView devtools socket`);
   const socketName = await findDevtoolsSocket(pid);
   log(`forwarding tcp:${FORWARD_PORT} -> localabstract:${socketName}`);
-  try { adb(['forward', '--remove', `tcp:${FORWARD_PORT}`]); } catch { /* nothing to remove yet */ }
+  try { execFileSync('adb', ['forward', '--remove', `tcp:${FORWARD_PORT}`], { stdio: 'ignore' }); } catch { /* nothing to remove yet */ }
   adb(['forward', `tcp:${FORWARD_PORT}`, `localabstract:${socketName}`]);
+  // The forwarded port exists as soon as `adb forward` returns, but the
+  // WebView's devtools HTTP endpoint behind it isn't necessarily accepting
+  // connections yet — a real run hit "socket hang up" from CDP.List() on
+  // the very first attempt, not an empty target list, so both failure
+  // modes need to be retried, not just the empty-list one.
   let targets = [];
-  const deadline = Date.now() + 15000;
+  const deadline = Date.now() + 20000;
+  let lastError = null;
   while (Date.now() < deadline) {
-    targets = await CDP.List({ port: FORWARD_PORT });
-    if (targets.length) break;
+    try {
+      targets = await CDP.List({ port: FORWARD_PORT });
+      lastError = null;
+      if (targets.length) break;
+    } catch (error) { lastError = error; }
     await wait(500);
   }
+  if (lastError) throw lastError;
   if (!targets.length) throw new Error('WebView devtools endpoint had no page targets');
-  const client = await CDP({ port: FORWARD_PORT, target: targets[0].id });
+  let client;
+  let connectError = null;
+  const connectDeadline = Date.now() + 10000;
+  while (Date.now() < connectDeadline) {
+    try { client = await CDP({ port: FORWARD_PORT, target: targets[0].id }); connectError = null; break; }
+    catch (error) { connectError = error; await wait(500); }
+  }
+  if (connectError) throw connectError;
   await client.Runtime.enable();
   return client;
 }
