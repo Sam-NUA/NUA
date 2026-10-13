@@ -194,3 +194,116 @@ jobs:
             adb shell pidof com.nua.pos || { echo "::error::App process not found ~10s after launch — it crashed or failed to start."; adb logcat -d -s AndroidRuntime:E '*:F'; exit 1; };
             ( adb logcat -d | grep -q "FATAL EXCEPTION" ) && { echo "::error::FATAL EXCEPTION found in logcat even though the process is still alive."; adb logcat -d | grep -A 40 "FATAL EXCEPTION"; exit 1; } ; true;
             echo "App launched and stayed running with a clean logcat — real emulator smoke test passed."
+
+  # The job above proves the real APK boots; this one proves the one flow
+  # OFFLINE_SYNC_ARCHITECTURE.md has repeatedly flagged as explicitly NOT
+  # verified: order -> offline -> restart -> reconnect -> sync -> exactly
+  # one order. It stands up its own throwaway backend+Mongo
+  # (docker-compose.yml — destroyed with this runner) and builds its own
+  # APK against that, via 10.0.2.2 (the emulator's documented alias for the
+  # runner's own loopback) — never against the real
+  # `https://app.nuapos.com.au` backend the other two jobs' APK targets, so
+  # no real financial transaction is ever made against production.
+  critical-acceptance-milestone:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    env:
+      PUBLIC_URL: /
+      REACT_APP_BACKEND_URL: http://10.0.2.2:8001
+      CI: false
+    steps:
+      - uses: actions/checkout@v4
+      - name: Start a throwaway backend + Mongo (never production)
+        run: docker compose -f docker-compose.yml -f docker-compose.ci-milestone.yml up -d --build mongo mongo-init backend
+      - name: Wait for the throwaway backend to report ready
+        run: timeout 90 sh -c 'until curl -fsS http://localhost:8001/api/ready; do sleep 2; done'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install frontend dependencies
+        working-directory: ./frontend
+        run: npm ci
+      - name: Build shared React app against the throwaway backend
+        working-directory: ./frontend
+        run: npx craco build
+      - uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '21'
+      - name: Sync Capacitor Android project
+        working-directory: ./frontend
+        run: npx cap sync android
+      - name: Install Android cmdline-tools
+        run: |
+          set -eu
+          curl -fsSL -o /tmp/cmdline-tools.zip \
+            https://dl.google.com/android/repository/commandlinetools-linux-15859902_latest.zip
+          mkdir -p "$HOME/android-sdk/cmdline-tools"
+          unzip -q /tmp/cmdline-tools.zip -d "$HOME/android-sdk/cmdline-tools"
+          mv "$HOME/android-sdk/cmdline-tools/cmdline-tools" "$HOME/android-sdk/cmdline-tools/latest"
+          echo "ANDROID_HOME=$HOME/android-sdk" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$HOME/android-sdk" >> "$GITHUB_ENV"
+          echo "$HOME/android-sdk/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
+          echo "$HOME/android-sdk/platform-tools" >> "$GITHUB_PATH"
+      - name: Install the platform/build-tools this project targets
+        run: |
+          set -eu
+          yes | sdkmanager --licenses >/dev/null
+          sdkmanager "platform-tools" "platforms;android-36" "build-tools;36.0.0"
+      - name: Build debug APK pointed at the throwaway backend
+        working-directory: ./frontend/android
+        run: ./gradlew assembleDebug --no-daemon
+      - name: Enable KVM group perms (required for emulator acceleration)
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: AVD cache
+        uses: actions/cache@v4
+        id: avd-cache
+        with:
+          path: |
+            ~/.android/avd/*
+            ~/.android/adb*
+          # Distinct key from emulator-smoke-test's own AVD cache above —
+          # same image, but two jobs writing the same cache key in one
+          # workflow run race each other.
+          key: avd-34-google_apis-x86_64-milestone
+      - name: Create AVD snapshot for caching
+        if: steps.avd-cache.outputs.cache-hit != 'true'
+        uses: ReactiveCircus/android-emulator-runner@v2
+        with:
+          api-level: 34
+          target: google_apis
+          arch: x86_64
+          force-avd-creation: false
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          disable-animations: false
+          script: echo "Generated AVD snapshot for caching."
+      - name: Install the APK and walk the full critical acceptance milestone
+        uses: ReactiveCircus/android-emulator-runner@v2
+        with:
+          api-level: 34
+          target: google_apis
+          arch: x86_64
+          force-avd-creation: false
+          emulator-options: -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          disable-animations: true
+          # See emulator-smoke-test's own comment above: this action runs
+          # each `script:` line as its own separate shell, so everything
+          # that needs to share state (cwd, env) stays on one line.
+          script: >-
+            set -eu;
+            APK="$(find "$GITHUB_WORKSPACE/frontend/android/app/build/outputs/apk/debug" -name '*.apk' | head -n1)";
+            echo "Installing $APK";
+            adb install -r "$APK";
+            adb logcat -c;
+            cd "$GITHUB_WORKSPACE/frontend" && MILESTONE_BACKEND_URL=http://localhost:8001 node scripts/android-critical-milestone.cjs;
+      - name: Show backend logs (debugging aid)
+        if: always()
+        run: docker compose -f docker-compose.yml -f docker-compose.ci-milestone.yml logs backend --tail 300
+      - name: Tear down the throwaway backend
+        if: always()
+        run: docker compose -f docker-compose.yml -f docker-compose.ci-milestone.yml down -v

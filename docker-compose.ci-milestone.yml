@@ -1,0 +1,13 @@
+# Overlay for .github/workflows/android.yml's critical-acceptance-milestone
+# job only — never used for local dev (docker-compose.yml alone covers
+# that). server.py's CORS allowlist is built from FRONTEND_URL; the base
+# compose file sets it to http://localhost:3000 for the browser dev
+# server, but the real app this job drives is a packaged Capacitor
+# Android app, whose WebView origin is https://localhost (Capacitor's own
+# androidScheme: "https" convention), not localhost:3000. Without this
+# override the backend's CORS would silently reject every request from
+# the real app under test.
+services:
+  backend:
+    environment:
+      FRONTEND_URL: https://localhost
