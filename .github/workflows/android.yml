@@ -51,9 +51,13 @@ jobs:
       - name: Sync Capacitor Android project
         working-directory: ./frontend
         run: npx cap sync android
-      - name: Accept Android SDK licenses
-        run: yes | sdkmanager --licenses > /dev/null || true
-      - name: Ensure the platform/build-tools this project targets are installed
+      # The ubuntu-latest runner image's own pre-installed SDK doesn't put
+      # `sdkmanager` on PATH reliably across image revisions (confirmed by
+      # a real CI run: "sdkmanager: command not found" even with
+      # ANDROID_HOME/ANDROID_SDK_ROOT set) — this action is the maintained,
+      # version-pinned way to get a working sdkmanager regardless.
+      - uses: android-actions/setup-android@v3
+      - name: Install the platform/build-tools this project targets
         run: sdkmanager "platforms;android-36" "build-tools;36.0.0"
       - name: Build debug APK
         working-directory: ./frontend/android
