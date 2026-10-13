@@ -318,7 +318,7 @@ async function main() {
     while (Date.now() < deadline) {
       const hasError = await page.evalPage(`!!document.querySelector('[data-testid="login-error"]')`);
       if (hasError) { outcome = 'login-error'; break; }
-      const hasNav = await page.evalPage(`!!document.querySelector('[data-testid="nav-pos"]')`);
+      const hasNav = await page.evalPage(`!!document.querySelector('[data-testid="dock-pos"]')`);
       if (hasNav) { outcome = 'nav-pos-visible'; break; }
       const stillOnLogin = await page.evalPage(`!!document.querySelector('[data-testid="login-page"]')`);
       if (!stillOnLogin) { outcome = 'left-login-page-no-nav-yet'; break; }
@@ -329,24 +329,16 @@ async function main() {
     log(`post-submit diagnosis: outcome=${outcome} pathname=${pathname} loginErrorText=${JSON.stringify(errorText)}`);
   }
 
-  // A real run showed login succeeding (pathname left /, no login-error)
-  // but nav-pos still never appearing — something else is covering the
-  // real app shell. Dump exactly what's on screen instead of guessing
-  // again: known full-screen blockers (the first-run onboarding wizard,
-  // the license lock screen, the version-gate lock screen) plus every
-  // data-testid actually present, so whatever it is shows up by name.
-  const screenDump = await page.evalPage(`({
-    pathname: window.location.pathname,
-    onboardingWizard: !!document.querySelector('[data-testid="onboarding-wizard"]'),
-    licenseLockscreen: !!document.querySelector('[data-testid="license-lockscreen"]'),
-    versionGateLockscreen: !!document.querySelector('[data-testid="version-gate-lockscreen"]'),
-    testids: [...document.querySelectorAll('[data-testid]')].map(e => e.getAttribute('data-testid')).slice(0, 80),
-  })`);
-  log(`screen dump before navigating to POS: ${JSON.stringify(screenDump)}`);
-
-  log('navigating to the POS terminal via the sidebar');
-  await page.waitForSelector('[data-testid="nav-pos"]', 45000);
-  await page.click('[data-testid="nav-pos"]');
+  // A real run's screen dump proved the actual root cause: the app shell
+  // was rendering fine (no onboarding wizard/license/version-gate blocker,
+  // real API calls for Today's page all succeeding) — the selector itself
+  // was just wrong. `components/Sidebar.jsx` (whose nav items use
+  // `nav-${path}` testids) is dead code, never imported by App.js. The
+  // real navigation the app actually renders is `BottomDock.jsx`, whose
+  // items use `dock-${path}` — i.e. `dock-pos`, not `nav-pos`.
+  log('navigating to the POS terminal via the bottom dock');
+  await page.waitForSelector('[data-testid="dock-pos"]', 45000);
+  await page.click('[data-testid="dock-pos"]');
   await page.waitForSelector('[data-testid="pos-terminal"]', 20000);
   await page.waitForSelector(`[data-testid="product-${product.id}"]`, 20000);
 
