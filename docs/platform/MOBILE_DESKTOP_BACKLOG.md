@@ -74,8 +74,12 @@ acceptance milestone first.
 
 ## Security hardening
 
-9. Keystore-hardware-backed secure storage (beyond
-   EncryptedSharedPreferences) — see `SECURITY_MODEL.md`.
+9. Real Keystore (Android) / Keychain (iOS)-backed secure storage — not
+   built at all. `@capacitor/preferences`, used today, was earlier and
+   incorrectly documented as "EncryptedSharedPreferences-backed"; verified
+   against its native source during the iOS pass to be plain
+   `SharedPreferences`/`UserDefaults`, neither encrypted nor hardware-backed.
+   See `SECURITY_MODEL.md` for the full correction.
 10. Biometric reauthentication for refunds/voids/sensitive settings
     (directive Phase 5) — not implemented at all this pass.
 
@@ -102,7 +106,10 @@ acceptance milestone first.
 16. Release channels (internal/staging/production tracks, Play Store
     listing, signing/keystore setup) — explicitly out of scope: "Do not
     publish anything during this assignment."
-17. Windows/iOS implementation — Windows is ChatGPT's lane this pass; iOS
-    has no `@capacitor/ios` dependency installed and no native project
-    generated, matching the directive's "no Apple-specific implementation
-    required yet."
+17. Windows implementation — ChatGPT's lane this pass, not assessed here;
+    see `COLLABORATION.md`. (iOS scaffolding — `@capacitor/ios`, the
+    native `frontend/ios/` project, Info.plist permission/ATS fixes — was
+    done in a later pass of this same session; see
+    `IOS_IPADOS_ARCHITECTURE.md` for what's real and what's still only
+    "ready to attempt," since no macOS build environment exists in this
+    sandbox to actually compile or run it.)

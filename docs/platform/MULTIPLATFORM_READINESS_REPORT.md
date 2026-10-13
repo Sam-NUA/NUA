@@ -33,10 +33,15 @@ Final SHA at time of this report: `8f47b42`.
   (platform-agnostic by construction); the browser-dependent fallback and
   file-export patterns got a real abstraction, partially rolled out (see
   backlog).
-- **Secure storage**: `@capacitor/preferences` (EncryptedSharedPreferences
-  on Android) for the primary token path, with a documented
-  compatibility mirror to `localStorage` for ~20 not-yet-migrated call
-  sites — a real, stated partial measure, not a complete one.
+- **Secure storage**: `@capacitor/preferences` for the primary token path
+  on Android/iOS. **Corrected claim**: an earlier pass of this report said
+  this was "EncryptedSharedPreferences on Android" — verified against the
+  plugin's own native source during the iOS pass and found false (plain
+  `SharedPreferences` on Android, plain `UserDefaults` on iOS, neither
+  encrypted or Keystore/Keychain-backed). No security property beyond
+  `localStorage`'s own app-sandboxing. Also has a documented compatibility
+  mirror to `localStorage` for ~20 not-yet-migrated call sites. See
+  `SECURITY_MODEL.md` — a real, stated gap, not a complete measure.
 
 ## Work completed
 
@@ -129,12 +134,25 @@ in-progress parallel work isn't this pass's job; see
 
 ## iOS/iPadOS readiness
 
-**~5%.** Nothing iOS-specific was built (correctly, per the directive's
-own Phase 10 deferral and because Android validation isn't done yet).
-Every Capacitor plugin installed this pass already supports iOS without
-further work; no `@capacitor/ios` dependency or native project exists.
-Blockers: no Xcode/macOS runner anywhere in this pass's environment
-either way.
+**~25%.** A later pass of this same session was explicitly instructed to
+start iOS/iPadOS work despite the directive's own Phase 10 deferral — see
+`IOS_IPADOS_ARCHITECTURE.md` for the full account. What's done: the
+native iOS project exists (`frontend/ios/`, via `npx cap add ios`, which
+succeeds on this Linux sandbox without Xcode since iOS plugin resolution
+is SPM-based, not Gradle-based); the platform abstraction layer required
+zero iOS-specific code changes (confirmed, not assumed); the backend's
+device-identity contract already accepted `platform: "ios"` and now has
+an explicit test proving the full register→login→revoke cycle for it;
+`Info.plist` gained the camera/microphone/local-network usage-description
+keys and an ATS exception for LAN printer traffic that would otherwise
+silently break on a real device. What's still missing, concretely: any
+build, simulator run, or device run of this project (impossible from this
+sandbox — Xcode requires macOS, not just a network-policy change, unlike
+Android's blocker); a `PrivacyInfo.xcprivacy` privacy manifest; signing,
+provisioning, and all Apple Developer Program prerequisites; any
+iPhone-specific (as opposed to iPad POS) layout work. See
+`HARDWARE_COMPATIBILITY_MATRIX.md`'s iPad column for the per-capability
+breakdown.
 
 ## Hardware readiness
 

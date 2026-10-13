@@ -3,7 +3,8 @@
   "appName": "NUA POS",
   "webDir": "build",
   "server": {
-    "androidScheme": "https"
+    "androidScheme": "https",
+    "iosScheme": "https"
   },
   "android": {
     "buildOptions": {
@@ -13,5 +14,8 @@
       "keystoreAliasPassword": null,
       "releaseType": "APK"
     }
+  },
+  "ios": {
+    "contentInset": "automatic"
   }
 }

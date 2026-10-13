@@ -44,10 +44,15 @@ already-issued token rejected on its very next API call either way.
 ## Secure local authentication
 
 `platform/capacitor/SecureStorageService.js` — `@capacitor/preferences`
-(EncryptedSharedPreferences-backed on Android) for the access token,
-mirrored to `localStorage` for backward compatibility with ~20
-not-yet-migrated pages (see `MOBILE_DESKTOP_BACKLOG.md` and
-`SECURITY_MODEL.md` for the caveat this mirror implies).
+for the access token. **Corrected claim**: an earlier pass of this doc
+said this was "EncryptedSharedPreferences-backed on Android" — checked
+against the plugin's own native source during the iOS pass and found
+false. It's plain `context.getSharedPreferences(group, MODE_PRIVATE)`,
+not encrypted, not Keystore-backed — no meaningfully different
+theft-resistance from `localStorage`. Also mirrored to `localStorage` for
+backward compatibility with ~20 not-yet-migrated pages (see
+`MOBILE_DESKTOP_BACKLOG.md` and `SECURITY_MODEL.md` for the full
+correction).
 
 ## Priority workflows — status against the directive's own list
 

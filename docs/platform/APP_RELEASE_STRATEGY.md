@@ -50,9 +50,19 @@ actually implements update checking yet).
 Development → TestFlight → App Store
 ```
 
-Prerequisites not yet in place: an Apple Developer Program enrollment, a
-provisioning profile, and — per `IOS_IPADOS_ARCHITECTURE.md` — the native
-iOS project itself (`@capacitor/ios`, `npx cap add ios`) doesn't exist yet.
+The native iOS project (`frontend/ios/`, `@capacitor/ios`) now exists —
+generated this pass via `npx cap add ios`, which succeeds without Xcode
+since Capacitor's iOS plugin resolution is Swift-Package-Manager-based.
+Prerequisites still not in place, per `IOS_IPADOS_ARCHITECTURE.md`: an
+Apple Developer Program enrollment, signing certificate and provisioning
+profile, a `PrivacyInfo.xcprivacy` privacy manifest (not yet created —
+required for App Store submission since the app uses `UserDefaults`, one
+of Apple's "required reason" APIs, via `@capacitor/preferences`), App
+Store assets (privacy policy URL, support URL, per-device screenshots),
+and — the hardest one — **a macOS build environment**. This sandbox is
+Linux; Xcode categorically does not run on it. Nothing past scaffolding
+(no build, no TestFlight upload, no simulator run) can happen until a
+real Mac, a macOS CI runner, or a cloud Mac-build service is available.
 
 ## Versioning (directive Phase 11 — not yet implemented)
 

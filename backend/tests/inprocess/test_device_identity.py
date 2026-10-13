@@ -149,6 +149,33 @@ def test_revoked_device_is_rejected_on_its_very_next_request_not_just_next_login
     assert rejected.status_code == 401, rejected.text
 
 
+def test_ios_platform_device_registers_and_enforces_revocation_identically_to_android(client, owner_headers):
+    """The validation gate (`ALLOWED_PLATFORMS`) already listed "ios" before
+    any iOS scaffolding existed, but no test ever exercised it — every other
+    test in this file registers "android". This proves the full
+    register → device-bound login → revoke → next-request-rejected cycle
+    works for "ios" too, since the enforcement code (RequireAuthMiddleware,
+    get_current_user) is platform-agnostic by construction and a future
+    change that narrowed ALLOWED_PLATFORMS to drop "ios" should fail a test,
+    not ship silently."""
+    reg = req(client, "POST", "/api/devices/register", headers=owner_headers,
+             json={"platform": "ios", "deviceName": "Front Counter iPad", "deviceModel": "iPad Pro"})
+    assert reg.status_code == 200, reg.text
+    assert reg.json()["platform"] == "ios"
+    device_id = reg.json()["id"]
+
+    login = req(client, "POST", "/api/auth/login",
+               json={"email": "owner@nua.com", "password": "NuaOwner2026!"},
+               headers={"X-Device-Id": device_id})
+    assert login.status_code == 200, login.text
+    device_bound_headers = {"Authorization": f"Bearer {login.json()['token']}"}
+
+    req(client, "POST", f"/api/devices/{device_id}/revoke", headers=owner_headers)
+
+    rejected = req(client, "GET", "/api/devices", headers=device_bound_headers)
+    assert rejected.status_code == 401, rejected.text
+
+
 def test_login_with_a_revoked_device_id_header_is_rejected_outright(client, owner_headers):
     reg = req(client, "POST", "/api/devices/register", headers=owner_headers,
              json={"platform": "android", "deviceName": "Pre-Revoked Tablet"})

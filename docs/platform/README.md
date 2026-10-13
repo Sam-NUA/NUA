@@ -23,7 +23,12 @@ Read in this order:
    test coverage, what's supported vs. simulated vs. untested, what's left,
    and the overall readiness verdict.
 
-`WINDOWS_ARCHITECTURE.md` and `IOS_IPADOS_ARCHITECTURE.md` are present as
-short pointer files only — Windows implementation is explicitly ChatGPT's
-lane this pass (see COLLABORATION.md), and no iOS-specific work was done
-or needed yet per the master directive's own Phase 10 guidance.
+`WINDOWS_ARCHITECTURE.md` is a short pointer file only — Windows
+implementation is explicitly ChatGPT's lane this pass (see
+`COLLABORATION.md`). `IOS_IPADOS_ARCHITECTURE.md` was later given full
+treatment in this same session, overriding the directive's own default
+Phase 10 deferral on explicit instruction: the native iOS project now
+exists and scaffolds correctly, with the real permission/ATS gaps found
+and fixed, but no build/device run was possible (no macOS environment in
+this sandbox) — read that document for the honest breakdown of what's
+real versus still blocked.

@@ -110,13 +110,20 @@ Reasoning to keep Electron rather than migrate to Tauri now:
 
 ### Secure storage / device identity
 
-- Android: Capacitor's `Preferences` plugin for non-sensitive key/value
-  (theme, shell selection), backed by Android's EncryptedSharedPreferences
-  under the hood from Capacitor 5+; for the JWT specifically, prefer a
-  dedicated secure-storage plugin (Keystore-backed) over plain
+- This ADR originally recommended a dedicated Keystore/Keychain-backed
+  secure-storage plugin for the JWT specifically, over plain
   `localStorage`/`Preferences`, since the access token is the one thing in
-  this app's `localStorage` usage (per the browser-API audit) that's a real
-  theft target, not just a UX convenience value.
+  this app's `localStorage` usage (per the browser-API audit) that's a
+  real theft target, not just a UX convenience value. **What was actually
+  built deviates from that recommendation**: the implementation pass used
+  `@capacitor/preferences` directly and, at the time, incorrectly
+  documented it as encryption-backed. Verified against the plugin's own
+  native source during the iOS pass: it's plain `SharedPreferences`
+  (Android) / `UserDefaults` (iOS), neither encrypted, neither
+  Keystore/Keychain-backed. See `SECURITY_MODEL.md`'s corrected version.
+  This ADR's original recommendation stands as the still-correct target;
+  `MOBILE_DESKTOP_BACKLOG.md` tracks picking and wiring in a real
+  secure-storage plugin as genuinely not done, not as optional polish.
 - Device identity (business → location → device → terminal → staff
   session, per the directive's Phase 4) is a **shared backend model**, not
   platform-specific — defined in this ADR and implemented against by
