@@ -33,19 +33,18 @@ acceptance milestone first.
    this item originally assumed). Same Blob contents/MIME types/filenames
    throughout; a real functional fix on Windows specifically, where the
    web `<a download>` path is silently blocked with no error surfaced.
-4. **~20 pages read `localStorage.getItem('nua_token')` directly**
-   instead of `SecureStorageService.getToken()` — currently safe on
-   Android only because the Capacitor adapter mirrors into `localStorage`
-   (see `SECURITY_MODEL.md`), but that mirror caps how much the
-   Preferences-based hardening actually buys until these are migrated.
-   List: `NotificationBell.jsx`, `AshChat.jsx`, `hooks/useLiveFeed.js`,
-   `AshCommandCenter.jsx`, `Approvals.jsx`, `AIPantry.jsx`,
-   `EmailMarketing.jsx`, `AshPermissions.jsx`, `StaffManagement.jsx`,
-   `StaffRoster.jsx`, `AuditLogUniversal.jsx`, `AutomationTriggers.jsx`,
-   `Products.jsx`, `AshDashboard.jsx`, `LoyaltyProgress.jsx`,
-   `MeasuredStock.jsx`, `Settings.jsx`, `AshMemory.jsx`, `ShiftSwaps.jsx`,
-   `Dashboard.jsx`, `HQDashboard.jsx`, `v26/StaffAvailability.jsx`,
-   `AshPlans.jsx`.
+4. **Done.** All 26 call sites that read `localStorage.getItem('nua_token')`
+   directly now go through the async `SecureStorageService.getToken()`/
+   `clearToken()` instead — real Keystore/Keychain/DPAPI, not just the
+   `localStorage` mirror those methods still write for backward
+   compatibility. One deliberate exception: `services/api.js`'s
+   `coursingAPI.streamUrl()` reads the mirror directly and always will —
+   `EventSource` has no async construction path or custom-header support,
+   so the token has to go in the URL synchronously. Verified: a clean
+   grep for stray direct reads, `craco build` green, the full Jest suite
+   (29 tests) green, and a manual re-read of every converted call site to
+   confirm no missing `await` (which a build/test run would not catch —
+   it would silently send `Bearer [object Promise]`).
 
 ## Hardware (new work, not porting)
 

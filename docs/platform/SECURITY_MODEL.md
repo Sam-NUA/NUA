@@ -62,10 +62,13 @@ Verified true of everything added this pass:
    read (an install updated from before this pass isn't silently signed
    out), tested with the native plugins mocked (5 Jest tests — the
    plugins themselves can't run outside a device/emulator). The
-   `localStorage` mirror for the ~20 pre-existing pages that read
-   `localStorage.getItem('nua_token')` directly is unchanged by this —
-   see `MOBILE_DESKTOP_BACKLOG.md` item 2 for that separate, still-open
-   gap. **Not yet verified**: this has not been exercised on a real
+   `localStorage` mirror `setToken`/`clearToken` still maintain exists
+   for `services/api.js`'s one deliberate `EventSource` exception (see
+   `MOBILE_DESKTOP_BACKLOG.md` item 4) — the 26 other call sites that
+   used to read that mirror directly were migrated to go through
+   `SecureStorageService.getToken()`/`clearToken()` in a later pass, so
+   they now get the real Keystore/Keychain/DPAPI benefit instead of just
+   the mirror. **Not yet verified**: this has not been exercised on a real
    device or emulator — e.g. a real login round-trip through the new
    plugin — only against mocked unit tests and a successful Gradle/SPM
    compile.
