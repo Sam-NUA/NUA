@@ -183,13 +183,22 @@ def test_is_rostered_now_compares_against_venue_local_time_not_utc():
         await db.roster_shifts.delete_many({"staffId": staff_id})
         sydney_now = datetime.now(ZoneInfo("Australia/Sydney")).replace(tzinfo=None)
         utc_now = datetime.now(timezone.utc).replace(tzinfo=None)
+        # A shift must be dated the day it STARTED, per _is_rostered_now's
+        # own documented contract for overnight shifts — not the day "now"
+        # happens to fall on. Those differ right around local midnight
+        # (e.g. now=00:05, shift start=23:55 the day before), and dating it
+        # by "now" instead was a real test-fixture bug that flaked exactly
+        # there: confirmed by two real CI failures landing within minutes of
+        # Sydney midnight, both clearing once the clock moved past it.
+        sydney_shift_start = sydney_now - timedelta(minutes=10)
+        utc_shift_start = utc_now - timedelta(minutes=10)
         try:
             # A 20-minute window around the current Sydney moment — covers
             # "now" only if the comparison is actually venue-local.
             await db.roster_shifts.insert_one({
                 "id": "SHIFT-TZ-TEST", "staffId": staff_id, "staffName": "TZ Tester",
-                "date": sydney_now.date().isoformat(),
-                "startTime": (sydney_now - timedelta(minutes=10)).strftime("%H:%M"),
+                "date": sydney_shift_start.date().isoformat(),
+                "startTime": sydney_shift_start.strftime("%H:%M"),
                 "endTime": (sydney_now + timedelta(minutes=10)).strftime("%H:%M"),
                 "businessId": business_id,
             })
@@ -205,8 +214,8 @@ def test_is_rostered_now_compares_against_venue_local_time_not_utc():
             await db.roster_shifts.update_one(
                 {"id": "SHIFT-TZ-TEST"},
                 {"$set": {
-                    "date": utc_now.date().isoformat(),
-                    "startTime": (utc_now - timedelta(minutes=10)).strftime("%H:%M"),
+                    "date": utc_shift_start.date().isoformat(),
+                    "startTime": utc_shift_start.strftime("%H:%M"),
                     "endTime": (utc_now + timedelta(minutes=10)).strftime("%H:%M"),
                 }},
             )
