@@ -418,10 +418,10 @@ spoofing-resistant pattern, not `request.url.path`.
 2. The `localStorage` mirror for token compatibility means Android's
    storage hardening is partial, not complete, until ~20 call sites
    migrate (named explicitly, not hidden).
-3. ~28 `window.confirm`/`prompt` sites and ~11 file-download sites still
-   call browser APIs directly — likely still functional in a Capacitor
-   WebView (it's still a real browser engine) but not yet using the
-   native-feeling abstraction.
+3. **Closed this pass.** All `window.confirm`/`prompt` sites (49 across
+   32 files) and all blob-download sites (13 across 12 files) now go
+   through `DialogService`/`FileService` instead of calling browser APIs
+   directly.
 4. The Windows local-backend-bundle vs. thin-client decision is now
    effectively thin-client by construction (`apps/windows` bundles no
    backend/Mongo), but was never explicitly re-confirmed as a decision

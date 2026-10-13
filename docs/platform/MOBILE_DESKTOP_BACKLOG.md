@@ -27,13 +27,12 @@ acceptance milestone first.
    `components/payments/RefundDialog.jsx` the same way before its own
    reauth step — none of the three is the actual confirming action a
    user relies on.
-3. **~11 of ~12 blob-download sites** still build `<a download>` inline
-   rather than calling `FileService.downloadFile`. List:
-   `Payroll.jsx`, `MultiBusiness.jsx`, `Temperature.jsx`,
-   `SecurityCompliance.jsx`, `InventoryAccounting.jsx`, `Products.jsx`,
-   `PaymentLinks.jsx`, `AuditLogUniversal.jsx`, `BookingAnalytics.jsx`,
-   `settings/BackupPanel.jsx`, `customers/GuestWalletDialog.jsx`,
-   `bas/BasWorksheetPanel.jsx`.
+3. **Done.** All blob-download sites now go through
+   `FileService.downloadFile` — 13 occurrences across 12 files (there
+   turned out to be zero pre-existing call sites, not the ~1-already-done
+   this item originally assumed). Same Blob contents/MIME types/filenames
+   throughout; a real functional fix on Windows specifically, where the
+   web `<a download>` path is silently blocked with no error surfaced.
 4. **~20 pages read `localStorage.getItem('nua_token')` directly**
    instead of `SecureStorageService.getToken()` — currently safe on
    Android only because the Capacitor adapter mirrors into `localStorage`
