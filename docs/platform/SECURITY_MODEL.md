@@ -38,25 +38,37 @@ Verified true of everything added this pass:
    password change for every user who'd ever logged in on it). Now an
    owner can revoke a specific device and have it rejected on its very
    next request. See `DEVICE_IDENTITY_MODEL.md`.
-2. **Token storage abstraction on Android/iOS, CORRECTED claim** — an
-   earlier pass of this document claimed `@capacitor/preferences` was
-   "EncryptedSharedPreferences-backed" on Android. That was checked
+2. **Token storage on Android/iOS — now genuinely hardened.** An earlier
+   pass of this document claimed `@capacitor/preferences` was
+   "EncryptedSharedPreferences-backed" on Android; that was checked
    against the installed plugin's actual native source during the iOS
-   pass and found **false**: it's plain
-   `context.getSharedPreferences(group, MODE_PRIVATE)` on Android and
-   plain `UserDefaults.standard` on iOS — neither encrypted at rest,
-   neither touching Android Keystore or iOS Keychain. The real security
-   property is identical to `localStorage`: sandboxed to this app, not
-   encrypted beyond that. The compatibility mirror into `localStorage`
-   (so ~20 pre-existing pages that read `localStorage.getItem('nua_token')`
-   directly keep working — see `MOBILE_DESKTOP_BACKLOG.md`) therefore
-   costs nothing security-wise that wasn't already true. **No token
-   storage hardening has actually happened on either platform yet** —
-   the `SecureStorageService` abstraction exists and is correctly
-   positioned to swap in a real Keystore/Keychain-backed plugin later
-   without touching call sites again, but that plugin isn't chosen or
-   installed. Tracked honestly in `MOBILE_DESKTOP_BACKLOG.md` as not
-   done, not as "v2 hardening" of something already secure.
+   pass and found false (plain `SharedPreferences`/`UserDefaults`,
+   identical security to `localStorage`). This pass replaces it with
+   `capacitor-secure-storage-plugin`, verified the same way — by reading
+   its own native source, not trusting its name or README — rather than
+   repeating that earlier mistake:
+   - **Android**: `PasswordStorageHelper.java` generates an RSA keypair
+     inside `AndroidKeyStore` (`KeyStore.getInstance("AndroidKeyStore")`)
+     and uses it to RSA-encrypt (`Cipher`, `RSA_ECB_PKCS1_PADDING`) the
+     value before it's written to `SharedPreferences` — the stored bytes
+     are ciphertext, and the decrypting key never leaves the Keystore.
+     The plugin's own fallback to plain base64 only applies below API 18;
+     this app's `minSdkVersion` is 24, so that path is unreachable here.
+   - **iOS**: `SecureStoragePlugin.swift` stores through
+     `KeychainWrapper`/`SwiftKeychainWrapper` — the real system Keychain,
+     not `UserDefaults`.
+   `SecureStorageService.getToken()` migrates an existing
+   `@capacitor/preferences`-stored token into the new store on first
+   read (an install updated from before this pass isn't silently signed
+   out), tested with the native plugins mocked (5 Jest tests — the
+   plugins themselves can't run outside a device/emulator). The
+   `localStorage` mirror for the ~20 pre-existing pages that read
+   `localStorage.getItem('nua_token')` directly is unchanged by this —
+   see `MOBILE_DESKTOP_BACKLOG.md` item 2 for that separate, still-open
+   gap. **Not yet verified**: this has not been exercised on a real
+   device or emulator — e.g. a real login round-trip through the new
+   plugin — only against mocked unit tests and a successful Gradle/SPM
+   compile.
 3. **Biometric reauthentication for sensitive actions** (refunds, voids,
    sensitive settings — directive Phase 5) — **the interface exists, no
    biometric hardware/API is wired into it; all three named categories
@@ -134,13 +146,11 @@ Verified true of everything added this pass:
 
 ## Explicitly not done, and why
 
-- **Any encryption-at-rest for the stored token, on Android or iOS** —
-  `@capacitor/preferences` does not provide this (see the corrected claim
-  above); a dedicated Keystore/Keychain-backed secure-storage plugin is
-  needed and not yet chosen or installed. This is a real, open gap, not
-  a "v1 judged sufficient" tradeoff — the earlier version of this
-  document described it as the latter incorrectly. Windows does not
-  share this gap — see item 4 above.
+- **Encryption-at-rest for the stored token, on Android or iOS** — item 2
+  above now closes this; `capacitor-secure-storage-plugin` is installed
+  and wired into `SecureStorageService`, verified at the native-source
+  level. What remains open: it hasn't run on a real device/emulator yet,
+  only against mocked unit tests and a successful compile.
 - **Windows offline queue is not wired to the live app** —
   `packages/platform-core/queue.cjs`'s `CashOrderQueue` is a real,
   independently tested (scope-fenced to a server-verified `{businessId,

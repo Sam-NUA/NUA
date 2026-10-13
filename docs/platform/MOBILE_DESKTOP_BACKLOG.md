@@ -74,12 +74,16 @@ acceptance milestone first.
 
 ## Security hardening
 
-9. Real Keystore (Android) / Keychain (iOS)-backed secure storage — not
-   built at all. `@capacitor/preferences`, used today, was earlier and
-   incorrectly documented as "EncryptedSharedPreferences-backed"; verified
-   against its native source during the iOS pass to be plain
-   `SharedPreferences`/`UserDefaults`, neither encrypted nor hardware-backed.
-   See `SECURITY_MODEL.md` for the full correction.
+9. **Done.** Real Keystore (Android) / Keychain (iOS)-backed secure
+   storage: `capacitor-secure-storage-plugin` replaces `@capacitor/
+   preferences` for the token, verified against its own native source
+   (real `AndroidKeyStore` RSA encryption before the `SharedPreferences`
+   write on Android, real Keychain via `SwiftKeychainWrapper` on iOS) —
+   see `SECURITY_MODEL.md` item 2. `SecureStorageService.getToken()`
+   migrates an existing `@capacitor/preferences` token in rather than
+   signing an upgraded install out; 5 Jest tests cover that migration
+   logic with the native plugins mocked. Still not run on a real device
+   or emulator — only against mocked tests and a successful compile.
 10. Biometric reauthentication for refunds/voids/sensitive settings
     (directive Phase 5) — not implemented at all this pass.
 

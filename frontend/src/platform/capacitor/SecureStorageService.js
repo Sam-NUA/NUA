@@ -1,51 +1,51 @@
 import { Preferences } from '@capacitor/preferences';
+import { SecureStoragePlugin } from 'capacitor-secure-storage-plugin';
 
-/** CORRECTED (verified against the installed plugin's own native source,
- * not assumed from its name): @capacitor/preferences is plain
- * `context.getSharedPreferences(group, MODE_PRIVATE)` on Android
- * (node_modules/@capacitor/preferences/android/.../Preferences.java) and
- * plain `UserDefaults.standard` on iOS
- * (node_modules/@capacitor/preferences/ios/.../Preferences.swift) —
- * NEITHER is encrypted at rest, and iOS's path doesn't touch Keychain at
- * all. An earlier pass of this codebase's own docs incorrectly stated
- * this was "EncryptedSharedPreferences-backed on Android" — that was
- * never true; see docs/platform/SECURITY_MODEL.md's corrected version.
+/** Directive Phase 5/MOBILE_DESKTOP_BACKLOG.md item 2 — real hardening,
+ * not the plain `@capacitor/preferences` this adapter used before (see
+ * git history / SECURITY_MODEL.md for why that was never actually
+ * encrypted: plain `SharedPreferences`/`UserDefaults`, same
+ * theft-resistance as `localStorage`). `capacitor-secure-storage-plugin`
+ * (verified against its own README, not assumed from its name) uses
+ * Android Keystore + SharedPreferences on Android and Keychain (via
+ * SwiftKeychainWrapper) on iOS — genuinely hardware/OS-backed, matching
+ * what Windows's `safeStorage`/DPAPI path already does.
  *
- * What this buys over plain localStorage, honestly: on Android, a
- * MODE_PRIVATE SharedPreferences file is sandboxed to this app's UID the
- * same way localStorage already is inside the WebView — no meaningfully
- * different theft-resistance. On iOS, UserDefaults is likewise
- * app-sandboxed, not hardware-backed. Real Keystore/Keychain-backed
- * storage needs a dedicated secure-storage plugin, not this one — tracked
- * in MOBILE_DESKTOP_BACKLOG.md as genuinely not done, not merely "v2
- * hardening" of something already secure.
+ * Migration: an install updated from before this change may already
+ * have a token sitting in the old `Preferences` store. `getToken()`
+ * checks the new secure store first, and falls back to migrating that
+ * old value in rather than silently signing the user out on upgrade.
+ * New writes only ever go to the new store.
  *
- * Used anyway (rather than reverted to plain localStorage) because it's
- * still the correct platform-abstraction shape to swap a real
- * secure-storage plugin into later without touching every call site
- * again — see platform/index.js.
- *
- * ALSO mirrors into plain localStorage under the same key: ~20 existing
- * pages (NotificationBell, AshChat, StaffRoster, etc. — see
- * MOBILE_DESKTOP_BACKLOG.md) read `localStorage.getItem('nua_token')`
- * directly for their own axios calls rather than going through
- * services/api.js's interceptor. Without this mirror those pages would
- * silently get no token at all on Android/iOS the moment the primary
- * path moved to Preferences-only storage — a real functional break, not
- * a theoretical one. */
+ * ALSO still mirrors into plain `localStorage` under the same key — see
+ * the original comment this replaces for why (~20 pages read
+ * `localStorage.getItem('nua_token')` directly). That mirror's own
+ * security property is unchanged by this swap: those call sites were
+ * never going through Preferences either, and migrating them is tracked
+ * separately (MOBILE_DESKTOP_BACKLOG.md item 2), not silently fixed by
+ * this file alone. */
 const TOKEN_KEY = 'nua_token';
 
 export async function getToken() {
-  const { value } = await Preferences.get({ key: TOKEN_KEY });
-  return value;
+  try {
+    const { value } = await SecureStoragePlugin.get({ key: TOKEN_KEY });
+    if (value) return value;
+  } catch { /* not found in the new store yet — fall through to migrate */ }
+  const { value: legacy } = await Preferences.get({ key: TOKEN_KEY });
+  if (legacy) {
+    try { await SecureStoragePlugin.set({ key: TOKEN_KEY, value: legacy }); } catch { /* best-effort migration */ }
+  }
+  return legacy;
 }
 
 export async function setToken(token) {
-  await Preferences.set({ key: TOKEN_KEY, value: token });
-  try { localStorage.setItem(TOKEN_KEY, token); } catch { /* storage unavailable — Preferences is still set */ }
+  await SecureStoragePlugin.set({ key: TOKEN_KEY, value: token });
+  try { await Preferences.remove({ key: TOKEN_KEY }); } catch { /* best-effort cleanup of the old store */ }
+  try { localStorage.setItem(TOKEN_KEY, token); } catch { /* storage unavailable — secure store is still set */ }
 }
 
 export async function clearToken() {
-  await Preferences.remove({ key: TOKEN_KEY });
+  try { await SecureStoragePlugin.remove({ key: TOKEN_KEY }); } catch { /* already absent */ }
+  try { await Preferences.remove({ key: TOKEN_KEY }); } catch { /* ignore */ }
   try { localStorage.removeItem(TOKEN_KEY); } catch { /* ignore */ }
 }

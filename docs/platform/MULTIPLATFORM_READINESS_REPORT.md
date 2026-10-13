@@ -344,9 +344,13 @@ above), camera QR scanning (works on web/Android/iPad via
 `ScannerService.isCameraScanAvailable()`, permission UX not native;
 honestly `false` on Electron — the Windows host's deny-all permission
 policy means the old direct `BarcodeDetector` check would have shown the
-scan button there and had it silently fail), secure token storage
-(mirrored to localStorage for compatibility on Android/iOS; genuinely
-OS-encrypted on Windows).
+scan button there and had it silently fail).
+**SUPPORTED, hardened, not yet device-verified** — secure token storage:
+`capacitor-secure-storage-plugin` now backs Android (real `AndroidKeyStore`)
+and iOS (real Keychain), replacing the previously-unencrypted
+`@capacitor/preferences` path; Windows was already OS-encrypted via
+DPAPI. Verified against each plugin's own native source and against
+mocked Jest tests, not yet against a real device/emulator run.
 **BLOCKED, interface exists (directive Phase 7)** — `CashDrawerService`
 and `PaymentTerminalService` now exist on every platform
 (`getCapability()` reports `'unsupported'`, actions reject rather than
