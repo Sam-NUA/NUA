@@ -513,6 +513,19 @@ async function main() {
   client = await connectToAppPage();
   page = makePageDriver(client);
 
+  // useOfflineQueue (hooks/useOfflineQueue.js) — the only thing that
+  // actually calls flushQueue(), on an 'online' event AND a 30s safety-net
+  // poll — is only mounted inside POSTerminal.jsx. A real run proved this
+  // the hard way: 90s of waiting with zero POST /api/transactions ever
+  // reaching the backend (confirmed in its own request log), because the
+  // app restart landed back on its default route for an owner (/today),
+  // not /pos, so that hook's effect was never running at all. Navigate
+  // back to POS before waiting for anything to auto-flush.
+  log('navigating back to the POS terminal so useOfflineQueue is actually mounted');
+  await page.waitForSelector('[data-testid="dock-pos"]', 45000);
+  await page.click('[data-testid="dock-pos"]');
+  await page.waitForSelector('[data-testid="pos-terminal"]', 20000);
+
   log('waiting for the queue to auto-flush now that the device is back online');
   let synced = false;
   {
