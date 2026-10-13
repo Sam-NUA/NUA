@@ -9,3 +9,5 @@ Encrypted atomic store writes a temporary file, fsyncs content, then renames. Co
 Card, gift-card/customer-balance and loyalty redemption are forbidden by the cash queue. Offline kitchen/booking/stock allocation is not enabled. Legacy unscoped IndexedDB data cannot be automatically assigned to the next logged-in business. A shared migration must quarantine it, reconcile with original business credentials and expose pending/retry/conflict states in POS UI. The active web queue is still unsafe until that coordinated change lands.
 
 Acceptance still required with the real app/API: take cash order, disconnect, restart, reauthenticate same business, reconnect, exactly one sale and expected inventory/KDS effects; then sign into a different business and prove no data visibility/replay. Current contract tests do not establish that full-stack milestone.
+
+The initial cash contract deliberately permits only product IDs and integer quantities, plus basic order labels. Prices, modifiers, discounts, payment secrets and arbitrary additional fields are rejected; server pricing remains authoritative. Expanded item/modifier support needs an explicit schema and integration tests.

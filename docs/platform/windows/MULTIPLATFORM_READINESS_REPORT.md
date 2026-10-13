@@ -12,7 +12,7 @@ This is FOUNDATION, not an integrated offline POS release. Store/queue primitive
 
 | Check | Result |
 |---|---|
-| Foundation unit/security/durability tests | PASS — 15 passed, 0 failed |
+| Foundation unit/security/durability tests | PASS — 17 passed, 0 failed |
 | Shared React production compile | PASS — compiled successfully, zero compile errors |
 | Windows renderer preparation | PASS — shared assets copied, inline web-only scripts removed, explicit API origin validated |
 | Backend flake8 | PASS — no findings |
@@ -21,9 +21,10 @@ This is FOUNDATION, not an integrated offline POS release. Store/queue primitive
 | Windows npm audit | 8 moderate package findings, one underlying build-only advisory; 0 high/critical. See DEPENDENCY_REVIEW.md |
 | Windows production npm audit | PASS — 0 findings |
 | Existing frontend npm audit | FAIL/debt — 129 package findings: 4 critical, 81 high, 39 moderate, 5 low; not ignored |
-| Full backend in-process | RUNNING — exact result to be appended; not yet claimed PASS |
+| Full backend in-process | PASS — first full run: 916 passed, 0 failed, 37,083 warnings in 498.59s; final rerun/CI pending |
 | Browser Playwright locally | BLOCKED — serve crashes on restricted `uv_interface_addresses`; CI required |
 | Windows shell/OS crypto/installer | CI PENDING — Linux host cannot prove Windows behavior |
+| Secret scan, branch diff | PASS — no leaks in this change; complete-tree scan flags an unchanged test fixture at backend/tests/test_iteration6_features.py:179 |
 | Physical Windows/hardware/payment | NOT TESTED |
 
 ## Readiness and blockers

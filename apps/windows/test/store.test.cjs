@@ -32,3 +32,14 @@ test('failed encryption preserves previous value and later writes recover', asyn
   assert.deepEqual(await store.read('scope'),{n:1}); fail=false;
   await store.write('scope',{n:3}); assert.deepEqual(await store.read('scope'),{n:3});
 });
+
+test('cash order survives encrypted-file restart and lost response without duplicate server effect', async t => {
+  const { CashOrderQueue } = require('../../../packages/platform-core/queue.cjs');
+  const root=await fs.mkdtemp(path.join(os.tmpdir(),'nua-restart-')); t.after(()=>fs.rm(root,{recursive:true,force:true}));
+  const crypto=cryptoFixture(), identity={businessId:'A',userId:'owner',deviceId:'till'}, server=new Map(); let first=true;
+  const send=async p=>{ if(!server.has(p.clientOpId))server.set(p.clientOpId,{id:'one-sale',businessId:'A'}); if(first){first=false;throw new Error('connection lost after commit');} return server.get(p.clientOpId); };
+  let q=new CashOrderQueue({store:new EncryptedStore(root,crypto),send,now:()=>0}); q.activate(identity);
+  await q.enqueue({paymentMethod:'cash',items:[{productId:'p',quantity:1}]}); await q.flush();
+  q=new CashOrderQueue({store:new EncryptedStore(root,crypto),send,now:()=>10000}); q.activate(identity); await q.flush();
+  assert.equal(server.size,1); assert.equal((await q.list())[0].state,'synced');
+});

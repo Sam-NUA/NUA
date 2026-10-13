@@ -31,8 +31,15 @@ class CashOrderQueue {
     const c = this.context();
     // No locally invented payment authorization, customer balances or loyalty.
     if (payload?.paymentMethod !== 'cash' || payload.customerId || payload.pointsRedeemed || payload.pointsDiscount || payload.giftCards?.length) throw new Error('Only simple cash orders may queue');
+    const allowed = new Set(['paymentMethod', 'items', 'orderType', 'tableNumber', 'walkInName', 'location', 'cashier']);
+    if (Object.keys(payload).some(key => !allowed.has(key)) || !Array.isArray(payload.items) ||
+        !payload.items.length || payload.items.length > 200) throw new Error('Unsupported cash order fields');
+    for (const item of payload.items) {
+      if (!item || typeof item.productId !== 'string' || !item.productId || item.productId.length > 160 ||
+          !Number.isSafeInteger(item.quantity) || item.quantity < 1 || item.quantity > 9999 ||
+          Object.keys(item).some(key => !['productId', 'quantity'].includes(key))) throw new Error('Unsupported cash order item');
+    }
     const owned = structuredClone(payload);
-    delete owned.businessId;
     owned.clientOpId = this.id(); // generated once, durable BEFORE the first send
     return this.exclusive(async () => {
       if (!this.current(c)) throw new Error('Session changed');
