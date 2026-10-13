@@ -490,12 +490,32 @@ async function main() {
 
   await setNetwork(true);
 
+  // A real run's CDP WebSocket was closed by the time this point was
+  // reached — the app itself was never restarted here (only the network
+  // state changed), but the debugger session doesn't survive the ~10s the
+  // backend container takes to come back up regardless (most likely the
+  // emulator's screen idling off during that gap; -no-window CI runs still
+  // model a screen that can sleep). Reconnect rather than assume the
+  // existing `client`/`page` are still good.
+  client = await connectToAppPage();
+  page = makePageDriver(client);
+
   log('waiting for the queue to auto-flush now that the device is back online');
   let synced = false;
   {
     const deadline = Date.now() + 90000; // useOfflineQueue's own 30s safety-net poll, with margin
     while (Date.now() < deadline) {
-      const pendingNow = await countPendingTransactions(page.evalPage);
+      let pendingNow;
+      try {
+        pendingNow = await countPendingTransactions(page.evalPage);
+      } catch (error) {
+        // Same CDP-session-drops-during-a-long-wait issue as above — this
+        // loop alone can run up to 90s, plenty of time for it to recur.
+        log(`CDP call failed mid-poll (${error.message}) — reconnecting and retrying`);
+        client = await connectToAppPage();
+        page = makePageDriver(client);
+        continue;
+      }
       if (pendingNow === 0) { synced = true; break; }
       await wait(3000);
     }
