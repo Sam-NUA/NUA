@@ -324,6 +324,19 @@ async function main() {
 
   try { adb(['root']); } catch { log('adb root unavailable/unneeded on this image — continuing as shell user'); }
 
+  // A real run's reconnect after the backend restart found dock-pos never
+  // appearing — but every evalPage() call throughout the 45s wait kept
+  // succeeding (never throwing), and the backend's own request log shows
+  // zero activity from the app for that whole window — not even the
+  // GET /api/auth/me a route change would trigger. That's consistent with
+  // the screen having locked from idle (this run has several real gaps —
+  // the docker compose stop/start cycle alone is ~15s): a backgrounded
+  // WebView's render commits can stop reaching the DOM even though one-off
+  // synchronous document.querySelector reads of the already-committed DOM
+  // still succeed, which is exactly the split this hit. Keep the screen on
+  // for the whole run so nothing backgrounds the activity involuntarily.
+  try { adbShell('svc power stayon true'); } catch { log('svc power stayon failed/unneeded — continuing'); }
+
   // A real run proved the emulator's basic gateway routing is fine (a
   // plain `ping 10.0.2.2` from inside the emulator succeeds cleanly) but
   // a real TCP fetch to http://10.0.2.2:8001 from the WebView still fails
