@@ -270,6 +270,20 @@ async function main() {
 
   log('waiting for the login screen');
   await page.waitForSelector('[data-testid="login-email"]');
+
+  // The previous run's diagnostic showed the app's own login request gets
+  // a generic "can't reach server" failure — isolate whether that's a
+  // real network-reachability problem (the emulator can't reach the
+  // throwaway backend at all) or something specific to how the app
+  // issues that one request, by testing raw fetch() to the backend
+  // directly from the WebView's own JS context first.
+  const reachability = await page.evalPage(`
+    fetch(${JSON.stringify(BACKEND.replace('localhost', '10.0.2.2'))} + '/api/ready')
+      .then(r => ({ ok: true, status: r.status }))
+      .catch(e => ({ ok: false, message: e.message, name: e.name }))
+  `);
+  log(`direct fetch() reachability check from inside the WebView: ${JSON.stringify(reachability)}`);
+
   await page.setValue('[data-testid="login-email"]', email);
   await page.setValue('[data-testid="login-password"]', password);
   await page.click('[data-testid="login-submit"]');
