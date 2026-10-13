@@ -192,12 +192,17 @@ acceptance milestone first.
     biometric plugin in later should need no call-site changes beyond
     `BiometricService.isAvailable()` starting to return `true` — that's
     the point of building the interface now rather than skipping it.
-27. Only `RefundDialog.jsx` is gated behind
-    `SensitiveActionReauthDialog` — void and "sensitive settings" (the
-    other two cases the directive names in Phase 5) have no reauth step
-    yet. The reusable piece (the dialog, the backend endpoint) exists;
-    finding and wiring every void/sensitive-settings call site is
-    real, unstarted work, not assumed covered by this one call site.
+27. **Updated — no longer accurate as written.** `SensitiveActionReauthDialog`
+    is now wired into `RefundDialog.jsx`, `CompVoid.jsx`/`POSTerminal.jsx`'s
+    comp/void dialog (void), and three sensitive-settings actions:
+    `SecurityCompliance.jsx`'s 2FA-disable and GDPR customer erasure, and
+    `EFTPOSTerminals.jsx`'s terminal removal. This is a deliberately
+    bounded set — actions matching the refund precedent (a real financial
+    or irreversible consequence from one action), not every settings
+    toggle in the app — not an exhaustive audit of every page. Real,
+    still-unstarted follow-on work: role/permission changes, staff PIN
+    resets, and tax/payment-provider configuration changes were not
+    reviewed for whether they belong on this same gate.
 
 ## Directive Phase 7 (remaining hardware) and Phase 12 (telemetry) — what's not done
 

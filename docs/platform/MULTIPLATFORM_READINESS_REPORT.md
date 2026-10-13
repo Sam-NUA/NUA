@@ -432,9 +432,13 @@ spoofing-resistant pattern, not `request.url.path`.
    merely to fill it.
 6. `BiometricService.isAvailable()` is `false` everywhere (directive
    Phase 5) — no OS biometric plugin is installed on any platform, so the
-   PIN-reauth fallback is the only reauth path that exists today, and it's
-   wired into refunds only. Void and sensitive-settings changes remain
-   unguarded by any reauth step.
+   PIN-reauth fallback is the only reauth path that exists today. It's
+   now wired into refund, void (`CompVoid.jsx`/`POSTerminal.jsx`), and
+   three sensitive-settings actions (2FA disable, GDPR erase, EFTPOS
+   terminal removal) — a deliberately bounded set matching the refund
+   precedent, not an exhaustive audit. Role/permission changes, staff PIN
+   resets, and payment-provider configuration were not reviewed for
+   whether they belong on this gate too.
 7. Frontend version (`src/version.js`) and backend version
    (`backend/version.py`) are two independent constants with no shared
    source of truth or build-time check that they match — a release that

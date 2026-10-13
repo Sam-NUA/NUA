@@ -59,21 +59,24 @@ Verified true of everything added this pass:
    done, not as "v2 hardening" of something already secure.
 3. **Biometric reauthentication for sensitive actions** (refunds, voids,
    sensitive settings — directive Phase 5) — **the interface exists, no
-   biometric hardware/API is wired into it, and only one of the three
-   named call sites is actually gated.** `BiometricService` reports
-   `isAvailable() === false` on every platform (no Face ID/Touch ID/
-   BiometricPrompt/Windows Hello plugin is installed — same "don't fake
-   an unsupported provider" discipline as `PaymentTerminalService`). What
-   actually gates a sensitive action today is real and server-verified:
-   `POST /api/auth/verify-sensitive-action` accepts either the acting
-   user's own PIN or a manager/owner's PIN from the SAME business
-   (tenant-checked independently of the role check — a PIN from another
-   business is rejected regardless of how privileged its owner is in
-   their own business), mirroring the existing off-roster-login approval
-   pattern. `RefundDialog.jsx` is wired to require it before a refund's
-   actual API call fires; void and sensitive-settings are not yet wired
-   to the same gate — see `MOBILE_DESKTOP_BACKLOG.md` items 26-27 for
-   what that leaves open.
+   biometric hardware/API is wired into it; all three named categories
+   now have at least one real call site gated.** `BiometricService`
+   reports `isAvailable() === false` on every platform (no Face ID/Touch
+   ID/BiometricPrompt/Windows Hello plugin is installed — same "don't
+   fake an unsupported provider" discipline as `PaymentTerminalService`).
+   What actually gates a sensitive action today is real and
+   server-verified: `POST /api/auth/verify-sensitive-action` accepts
+   either the acting user's own PIN or a manager/owner's PIN from the
+   SAME business (tenant-checked independently of the role check — a PIN
+   from another business is rejected regardless of how privileged its
+   owner is in their own business), mirroring the existing off-roster-
+   login approval pattern. Wired in: `RefundDialog.jsx` (refund);
+   `CompVoid.jsx` and `POSTerminal.jsx`'s quick comp/void dialog (void);
+   `SecurityCompliance.jsx`'s 2FA-disable and GDPR erase, and
+   `EFTPOSTerminals.jsx`'s terminal removal (sensitive settings). This is
+   a deliberately bounded set, not an exhaustive audit of every settings
+   page — see `MOBILE_DESKTOP_BACKLOG.md` item 27 for what's still
+   unreviewed.
 4. **Windows (Electron) host isolation** — built and tested independently
    (originally by Codex on `feat/windows-foundation`, folded in here):
    `apps/windows/src/main.cjs` runs the renderer sandboxed

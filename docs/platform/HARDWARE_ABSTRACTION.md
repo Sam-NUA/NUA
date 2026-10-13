@@ -103,11 +103,12 @@ Not a hardware capability in the printer/scanner/drawer sense, but the
 same "interface exists, honestly unsupported" pattern applies:
 `frontend/src/platform/*/BiometricService.js`'s `isAvailable()` is
 `false` on every platform (no Face ID/Touch ID/BiometricPrompt/Windows
-Hello plugin installed). What actually gates a sensitive action today —
-wired into `RefundDialog.jsx` — is `POST /api/auth/verify-sensitive-
-action`'s server-verified PIN re-entry. See `SECURITY_MODEL.md` for the
-full account, including why void/sensitive-settings aren't wired to the
-same gate yet.
+Hello plugin installed). What actually gates a sensitive action today
+— wired into refund, void, and three sensitive-settings call sites —
+is `POST /api/auth/verify-sensitive-action`'s server-verified PIN
+re-entry. See `SECURITY_MODEL.md` for the full account, including which
+call sites are covered and which settings pages were deliberately not
+reviewed.
 
 ## Summary — what's real vs. what's a documented gap
 
