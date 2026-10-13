@@ -18,27 +18,15 @@ acceptance milestone first.
 
 ## Call-site migrations (abstraction exists, not every site swapped)
 
-2. **~28 of ~30 `window.confirm`/`prompt` sites** still call the browser
-   API directly rather than `DialogService`. Two were swapped in
-   `POSTerminal.jsx` (held-sale resume/cancel) to prove the pattern.
-   Full list from the Phase 0 browser-API audit: `SecurityCompliance.jsx`,
-   `SocialMedia.jsx`, `InventoryAccounting.jsx`, `CoursingAnalytics.jsx`,
-   `Products.jsx`, `LicensePage.jsx`, `v26/VoucherManager.jsx`,
-   `AutomationTriggers.jsx`, `finance/Budgets.jsx`, `StockTransfers.jsx`,
-   `Categories.jsx`, `finance/Deposits.jsx`, `finance/Journals.jsx`,
-   `finance/ChartOfAccounts.jsx`, `BookingExperience.jsx`,
-   `AuditLogUniversal.jsx`, `components/payments/RefundDialog.jsx`,
-   `StaffRoster.jsx`, `Reservations.jsx`, `v25/Subscriptions.jsx`,
-   `Vouchers.jsx`, `Today.jsx`, `Appointments.jsx`, `AshMemory.jsx`,
-   `LoyaltyProgress.jsx`, `Temperature.jsx`, `ImageLibrary.jsx`,
-   `Settings.jsx`, `social/SocialCalendar.jsx`, `Clubmember.jsx`,
-   `floor/TableInfoDrawer.jsx`, `AshPermissions.jsx`,
-   `IdentitySettings.jsx`, `EFTPOSTerminals.jsx`,
-   `products/ProductVariants.jsx`. Each is a mechanical
-   `window.confirm(...)` → `await DialogService.confirm(...)` swap inside
-   an already-async handler in most cases — low risk, high count, exactly
-   the kind of change worth doing as its own focused pass rather than
-   mixed into this one.
+2. **Done.** All remaining `window.confirm`/`prompt` sites now go through
+   `DialogService` — 49 occurrences across 32 files, migrated as their
+   own focused pass. Three were deliberately left as direct
+   `window.confirm` calls: `EFTPOSTerminals.jsx` and
+   `SecurityCompliance.jsx` use it as a cheap pre-validation step before
+   the real `SensitiveActionReauthDialog` gate (see item 27), and
+   `components/payments/RefundDialog.jsx` the same way before its own
+   reauth step — none of the three is the actual confirming action a
+   user relies on.
 3. **~11 of ~12 blob-download sites** still build `<a download>` inline
    rather than calling `FileService.downloadFile`. List:
    `Payroll.jsx`, `MultiBusiness.jsx`, `Temperature.jsx`,
