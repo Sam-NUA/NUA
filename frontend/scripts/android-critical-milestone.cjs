@@ -11,9 +11,12 @@
  *
  * Runs on the CI runner's host (NOT inside the emulator). Talks to the
  * throwaway backend over localhost; the app-under-test on the emulator
- * reaches that same backend via 10.0.2.2, the emulator's documented alias
- * for the host loopback interface (baked into this job's APK build via
- * REACT_APP_BACKEND_URL — see the workflow).
+ * reaches that same backend the same way, via `adb reverse tcp:8001
+ * tcp:8001` tunnelling the device's own localhost back to this runner's
+ * (baked into this job's APK build via REACT_APP_BACKEND_URL — see the
+ * workflow). A real run proved the emulator's documented 10.0.2.2 NAT
+ * alias reaches the host for ICMP but not for a TCP fetch to this
+ * Docker-published port, so this avoids that path entirely.
  *
  * Drives the app's own real DOM (via data-testid hooks already used by
  * this project's Jest/e2e tests) over the WebView's Chrome DevTools
@@ -261,18 +264,25 @@ async function main() {
 
   try { adb(['root']); } catch { log('adb root unavailable/unneeded on this image — continuing as shell user'); }
 
-  // The WebView's own fetch() to the throwaway backend failed with a raw
-  // "Failed to fetch" (a real network-level failure, not a 404/app-logic
-  // one) in a prior run. Isolate whether that's the emulator's basic
-  // gateway routing being broken at all, independent of Docker/WebView,
-  // by pinging the 10.0.2.2 alias itself from the emulator's own shell —
-  // this should always succeed if the emulator's networking is up.
+  // A real run proved the emulator's basic gateway routing is fine (a
+  // plain `ping 10.0.2.2` from inside the emulator succeeds cleanly) but
+  // a real TCP fetch to http://10.0.2.2:8001 from the WebView still fails
+  // outright — a known rough edge combining QEMU's NAT (slirp) with
+  // Docker's own port-publishing under nested virtualization, not an app
+  // or script bug. `adb reverse` sidesteps the whole NAT path: the app
+  // (built against plain http://localhost:8001 — see android.yml) now
+  // reaches the throwaway backend by tunnelling the device's own
+  // localhost:8001 straight to this runner's localhost:8001, the exact
+  // path already confirmed reachable (the earlier `curl .../api/ready`
+  // step). Kept the ping as a cheap ongoing sanity check, not the fix.
   try {
     const pingResult = adbShell('ping -c 3 -W 2 10.0.2.2');
     log(`ping 10.0.2.2 from inside the emulator:\n${pingResult}`);
   } catch (error) {
     log(`ping 10.0.2.2 from inside the emulator FAILED: ${error.message}`);
   }
+  adb(['reverse', 'tcp:8001', 'tcp:8001']);
+  log('adb reverse tcp:8001 tcp:8001 — the device\'s own localhost:8001 now tunnels to this runner\'s localhost:8001');
 
   log('clearing any previous app state and launching the app fresh');
   try { adbShell(`pm clear ${PACKAGE_ID}`); } catch { /* fine on a first install */ }
@@ -284,14 +294,11 @@ async function main() {
   log('waiting for the login screen');
   await page.waitForSelector('[data-testid="login-email"]');
 
-  // The previous run's diagnostic showed the app's own login request gets
-  // a generic "can't reach server" failure — isolate whether that's a
-  // real network-reachability problem (the emulator can't reach the
-  // throwaway backend at all) or something specific to how the app
-  // issues that one request, by testing raw fetch() to the backend
-  // directly from the WebView's own JS context first.
+  // Confirm the adb reverse tunnel actually works before trusting the
+  // login flow to it — a direct fetch() from the WebView's own JS context
+  // to the same localhost:8001 the app itself is built against.
   const reachability = await page.evalPage(`
-    fetch(${JSON.stringify(BACKEND.replace('localhost', '10.0.2.2'))} + '/api/ready')
+    fetch(${JSON.stringify(BACKEND)} + '/api/ready')
       .then(r => ({ ok: true, status: r.status }))
       .catch(e => ({ ok: false, message: e.message, name: e.name }))
   `);
