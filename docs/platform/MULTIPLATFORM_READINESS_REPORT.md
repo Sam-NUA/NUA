@@ -188,9 +188,10 @@ MULTIPLATFORM_READINESS_REPORT}.md`.
 | Android native project generation (`npx cap add android` + `sync`) | **Success** — all 8 plugins recognized |
 | Android Gradle build (`./gradlew assembleDebug`), this sandbox | **BLOCKED** — sandbox network policy returns 403 for `dl.google.com` (Android Gradle Plugin fetch); Gradle itself downloads fine from the allowed `services.gradle.org`. Not a code defect — a sandbox network-egress limit. |
 | Android Gradle build, GitHub-hosted `ubuntu-latest` runner (`.github/workflows/android.yml`, new this pass) | **BUILD SUCCESSFUL** — real `./gradlew assembleDebug` run, 334 actionable tasks executed in 1m 48s, a real ~8.3 MB debug APK uploaded as the `nua-pos-android-debug` CI artifact. See "Android status" below for the three distinct, real bugs this took to reach (none worked around or skipped). |
+| Android emulator install + launch (`emulator-smoke-test` job, new this pass) | **PASSED** — real AVD booted via KVM, `adb install` → `Success`, app launched, `adb shell pidof` returned a live PID ~10s later, clean logcat (no `FATAL EXCEPTION`). First real run of this app on any Android runtime in this effort. See "Android status" below. |
 | iOS native project generation (`npx cap add ios` + `sync`) | **Success** — SPM-based plugin resolution needs no Xcode |
 | iOS build/simulator/device run | **BLOCKED** — Xcode requires macOS, unavailable in this sandbox regardless of network policy |
-| On-device/emulator run of any kind (Android, iOS) | **NOT TESTED** — no toolchain available in this sandbox |
+| On-device/emulator run of any kind (Android, iOS), this sandbox | **BLOCKED** — no `/dev/kvm`, no Android SDK/`adb` installed here (confirmed directly); Android's emulator run above happened on CI, not here, for the identical reason the Gradle build itself had to move to CI |
 | `apps/windows` + `packages/platform-core` unit tests (`node --test`) | **19 passed, 0 failed** |
 | Windows Electron app launch in this sandbox | **BLOCKED (by design)** — `main.cjs` refuses to start on anything but `win32`, confirmed by running it here; the real equivalent is CI's `windows-latest` job, which has run **green** on this branch's commits (including the integration work), per PR #22's own check runs. |
 | Full Playwright e2e suite | **13 passed, 0 failed** |
@@ -243,15 +244,40 @@ result):
    (Gradle 8.14.3 and AGP 8.13.0, this project's pinned versions, both
    run fine on it).
 
-**Still not ALPHA**: this debug APK has been built, not run — nothing
-has been installed on an actual Android emulator or device yet, and the
+**Also new this pass**: `.github/workflows/android.yml` gained a second
+job, `emulator-smoke-test`, that installs the built APK on a real AVD
+(booted via KVM on the same `ubuntu-latest` runner — this sandbox itself
+has no `/dev/kvm` and no SDK/`adb` installed, confirmed directly) and
+verifies it launches. This is the first time this app has actually *run*
+on an Android runtime in this entire effort, not just compiled. Real
+evidence from that job's own log, not inferred: `Performing Streamed
+Install` → `Success`; `Starting: Intent { cmp=com.nua.pos/.MainActivity
+}`; `adb shell pidof com.nua.pos` returned a real PID (`3755`) ~10
+seconds later, proving the process was still alive, not crashed; a
+`logcat` scan found no `FATAL EXCEPTION`. Getting this job right took
+three more real, sequential fixes after it first ran (not fabricated or
+skipped past): an unrelated-looking "sdkmanager tools" collision never
+recurred here since this job uses the SDK `android-emulator-runner`
+installs itself, but two real bugs did surface — (1) that action runs
+*each line* of its `script:` input as its own separate shell invocation,
+so a variable set on one line (the found APK's path) was silently gone
+by the next line; fixed by collapsing the whole install/launch/verify
+sequence into one `;`-separated shell line; (2) a `grep -q ... &&
+{ exit 1; }` top-level statement would have aborted the script under
+`set -e` on the exact case meant to be the success path (no fatal
+exception found) — fixed with a trailing `; true` guard.
+
+**Scope, stated plainly**: this is a launch smoke test, not the full
 critical acceptance milestone (order → offline → restart → reconnect →
-sync → exactly one order) has never been walked by hand on this APK.
-That remains the literal next step, and is now blocked only by this
-sandbox's own toolchain (no emulator, no device), not by anything in the
-code or CI — the artifact anyone would install to do that run now exists
-and downloads from `https://github.com/Sam-NUA/NUA/actions/runs/38390229531/artifacts/11808851859`
-(retained 7 days from this build).
+sync → exactly one order). That milestone needs either a throwaway
+backend+Mongo stood up inside the CI job (`docker-compose.yml` already
+defines the stack; not wired into this job) or creating real orders
+against the live `https://app.nuapos.com.au` backend this APK is built
+against — the latter is exactly the live-financial-transaction risk this
+effort has avoided throughout, so it was deliberately not attempted.
+Walking that full milestone by hand on a real tablet/emulator — now
+genuinely unblocked, since a working, launch-verified APK exists — is
+still this report's single highest-value next step.
 
 ## Windows readiness
 
@@ -376,11 +402,14 @@ spoofing-resistant pattern, not `request.url.path`.
 
 ## Known risks
 
-1. Android now has a real, CI-built debug APK (see "Android status"),
-   but it has never been installed or run on-device — every "should
-   work, same code path as web" claim in this pass's docs is still a
-   reasoned expectation from reading the code, not an observed result on
-   an actual emulator or phone/tablet.
+1. Android now has a real, CI-built debug APK that has also been
+   installed and launched on a real AVD emulator (see "Android status") —
+   a genuine first, not a reasoned expectation. What's still unverified:
+   a physical device (only an x86_64 emulator has run it so far), and
+   every actual POS workflow beyond "the app opens and stays alive" —
+   the critical acceptance milestone (order → offline → restart →
+   reconnect → sync) has never been walked on this build, by hand or
+   automated.
 2. The `localStorage` mirror for token compatibility means Android's
    storage hardening is partial, not complete, until ~20 call sites
    migrate (named explicitly, not hidden).
