@@ -274,6 +274,27 @@ async function main() {
   await page.setValue('[data-testid="login-password"]', password);
   await page.click('[data-testid="login-submit"]');
 
+  // A prior real run's backend logs showed the login POST never arrived at
+  // all — diagnose definitively what happened instead of guessing again:
+  // poll briefly for either a visible login error, the dashboard nav
+  // appearing, or neither, and log exactly what the page shows.
+  {
+    const deadline = Date.now() + 15000;
+    let outcome = 'timed-out-waiting';
+    while (Date.now() < deadline) {
+      const hasError = await page.evalPage(`!!document.querySelector('[data-testid="login-error"]')`);
+      if (hasError) { outcome = 'login-error'; break; }
+      const hasNav = await page.evalPage(`!!document.querySelector('[data-testid="nav-pos"]')`);
+      if (hasNav) { outcome = 'nav-pos-visible'; break; }
+      const stillOnLogin = await page.evalPage(`!!document.querySelector('[data-testid="login-page"]')`);
+      if (!stillOnLogin) { outcome = 'left-login-page-no-nav-yet'; break; }
+      await wait(500);
+    }
+    const pathname = await page.evalPage('window.location.pathname');
+    const errorText = await page.evalPage(`(document.querySelector('[data-testid="login-error"]') || {}).innerText || null`);
+    log(`post-submit diagnosis: outcome=${outcome} pathname=${pathname} loginErrorText=${JSON.stringify(errorText)}`);
+  }
+
   // Owners land on /owner-dashboard after login (App.js's `home` redirect),
   // not on the POS terminal directly — navigate there the same way a real
   // user would, via the sidebar's own nav link.
