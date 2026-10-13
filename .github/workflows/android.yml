@@ -169,12 +169,22 @@ jobs:
           disable-animations: true
           script: |
             set -eu
-            # Use an absolute path, not a workspace-relative one: a real
-            # CI failure showed `find apk -name '*.apk'` turning up empty
-            # here even though `actions/download-artifact` logged placing
-            # the file at $GITHUB_WORKSPACE/apk -- this action's `script:`
-            # does not reliably run with that as its cwd.
-            APK="$(find "$GITHUB_WORKSPACE/apk" -name '*.apk' | head -n1)"
+            # DIAGNOSTIC (temporary): two prior real CI failures both came
+            # up with an empty $APK from `find`, first against a relative
+            # `apk` path, then against `$GITHUB_WORKSPACE/apk` -- neither
+            # explanation (wrong cwd) panned out. Print the actual
+            # environment and directory contents this script sees before
+            # giving find another guess.
+            echo "pwd: $(pwd)"
+            echo "GITHUB_WORKSPACE: ${GITHUB_WORKSPACE:-<unset>}"
+            echo "--- ls -la . ---"
+            ls -la . || true
+            echo "--- ls -la \$GITHUB_WORKSPACE ---"
+            ls -la "${GITHUB_WORKSPACE:-/nonexistent}" || true
+            echo "--- find / -iname '*.apk' (excluding /proc) ---"
+            find / -xdev -iname '*.apk' 2>/dev/null || true
+            find /home -iname '*.apk' 2>/dev/null || true
+            APK="$(find "$GITHUB_WORKSPACE/apk" -name '*.apk' 2>/dev/null | head -n1)"
             echo "Installing $APK"
             adb install -r "$APK"
             adb logcat -c
