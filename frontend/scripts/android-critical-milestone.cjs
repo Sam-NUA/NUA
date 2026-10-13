@@ -144,19 +144,26 @@ async function connectToAppPage() {
   if (!targets.length) throw new Error('WebView devtools endpoint had no page targets');
   // Passing target.id makes the library re-fetch the target list and
   // connect to THAT target's own webSocketDebuggerUrl verbatim (see
-  // chrome-remote-interface's lib/chrome.js _fetchDebuggerURL) — but a
-  // real run showed the Android WebView's own JSON listing reports a
-  // host:port that doesn't match our adb-forwarded port, so that socket
-  // gets reset ("socket hang up") every time. Passing a path-only target
-  // string (starting with "/") makes the library build the ws:// URL from
-  // the host/port WE specify instead of trusting the WebView's own value.
+  // chrome-remote-interface's lib/chrome.js _fetchDebuggerURL). A real
+  // run's diagnostic log showed that URL already uses our correct
+  // forwarded port (ws://127.0.0.1:9333/...) — so the port was never the
+  // problem. The actual cause: Chrome DevTools' WebSocket handshake
+  // validates the request's Host header against what it expects (an
+  // anti-DNS-rebinding protection), and we were connecting with host
+  // 'localhost' while the WebView itself reports '127.0.0.1' — a mismatch
+  // the server answers by resetting the connection, indistinguishable
+  // from the outside from any other "socket hang up". Passing a
+  // path-only target string (starting with "/") makes the library build
+  // the ws:// URL from the host/port WE specify, so using the exact host
+  // the WebView itself reports avoids the mismatch entirely.
   const debuggerPath = (targets[0].webSocketDebuggerUrl.match(/\/devtools\/.*/) || [targets[0].webSocketDebuggerUrl])[0];
-  log(`WebView reported debugger URL "${targets[0].webSocketDebuggerUrl}" — connecting via path "${debuggerPath}" on our forwarded localhost:${FORWARD_PORT} instead`);
+  const debuggerHost = (targets[0].webSocketDebuggerUrl.match(/^wss?:\/\/([^:/]+)/) || [, '127.0.0.1'])[1];
+  log(`WebView reported debugger URL "${targets[0].webSocketDebuggerUrl}" — connecting to host "${debuggerHost}" port ${FORWARD_PORT} path "${debuggerPath}"`);
   let client;
   let connectError = null;
   const connectDeadline = Date.now() + 10000;
   while (Date.now() < connectDeadline) {
-    try { client = await CDP({ host: 'localhost', port: FORWARD_PORT, target: debuggerPath }); connectError = null; break; }
+    try { client = await CDP({ host: debuggerHost, port: FORWARD_PORT, target: debuggerPath }); connectError = null; break; }
     catch (error) { connectError = error; await wait(500); }
   }
   if (connectError) throw connectError;
