@@ -1,6 +1,7 @@
 // Printer service for LAN/Network receipt printing
 // Uses ESC/POS commands for thermal printers
 import { PrintService } from '../platform';
+import { trackEvent } from '../lib/telemetry';
 
 class PrinterService {
   constructor() {
@@ -170,6 +171,7 @@ class PrinterService {
       }
     } catch (error) {
       console.error('Error printing receipt:', error);
+      trackEvent('printer_failure', { path: 'network', message: String(error?.message || error).slice(0, 200) });
       // Fallback to browser print
       this.printBrowser(transaction, printerConfig);
       return false;

@@ -122,12 +122,72 @@ async def record_client_error(payload: dict, actor: Optional[dict]) -> None:
         log.exception("failed to record client error (non-fatal)")
 
 
+CLIENT_EVENT_RETENTION_DAYS = 30
+
+# Directive Phase 12 — structured client telemetry, deliberately bounded to
+# a known set of event types rather than an open string: an unbounded
+# "type" field is an easy place for a client bug (or something worse) to
+# smuggle an arbitrary label into a collection an owner reads back.
+CLIENT_EVENT_TYPES = frozenset({
+    "app_launch", "sync_failure", "printer_failure", "hardware_error", "device_registered",
+})
+
+# Never-log list (directive Phase 12). Enforced here, not trusted to every
+# call site that might someday post a `data` payload — if a future caller
+# accidentally includes one of these keys, it's dropped before it's ever
+# written, not merely asked not to send it.
+_NEVER_LOG_KEYS = frozenset({
+    "password", "token", "accesstoken", "refreshtoken", "authorization",
+    "pin", "cardnumber", "cvv", "cvc", "ssn",
+})
+
+
+def _redact(data: Any) -> Any:
+    if isinstance(data, dict):
+        return {k: ("[redacted]" if k.lower().replace("_", "").replace("-", "") in _NEVER_LOG_KEYS
+                    else _redact(v)) for k, v in list(data.items())[:20]}
+    if isinstance(data, list):
+        return [_redact(v) for v in data[:20]]
+    if isinstance(data, str):
+        return data[:500]
+    return data
+
+
+async def record_client_event(payload: dict, actor: Optional[dict]) -> None:
+    """A structured telemetry event from the client — app launch, a sync
+    failure, a printer failure, a device registration — never a crash
+    (that's record_client_error above). Same deliberately loose, bounded
+    posture as record_client_error: an untrusted diagnostic signal, not a
+    typed API contract.
+    """
+    try:
+        event_type = str(payload.get("type") or "")
+        if event_type not in CLIENT_EVENT_TYPES:
+            return
+        now = datetime.now(timezone.utc)
+        await db.client_event_log.insert_one({
+            "type": event_type,
+            "data": _redact(payload.get("data") or {}),
+            "platform": str(payload.get("platform") or "")[:50],
+            "appVersion": str(payload.get("appVersion") or "")[:50],
+            "osVersion": str(payload.get("osVersion") or "")[:300],
+            "actor": actor,
+            "at": now,
+            "expiresAt": now + timedelta(days=CLIENT_EVENT_RETENTION_DAYS),
+            "businessId": (actor or {}).get("businessId"),
+        })
+    except Exception:
+        log.exception("failed to record client event (non-fatal)")
+
+
 async def ensure_indexes() -> None:
     try:
         await db.error_log.create_index("expiresAt", expireAfterSeconds=0)
         await db.error_log.create_index("at")
         await db.client_error_log.create_index("expiresAt", expireAfterSeconds=0)
         await db.client_error_log.create_index("at")
+        await db.client_event_log.create_index("expiresAt", expireAfterSeconds=0)
+        await db.client_event_log.create_index("at")
     except Exception as e:
         log.info("observability indexes not created: %s", e)
 

@@ -81,6 +81,7 @@ from routes.voice_inbound import router as voice_inbound_router
 from routes.bill_split import router as bill_split_router
 from middleware.license_middleware import LicenseEnforcementMiddleware
 from middleware.actor_context import ActorContextMiddleware
+from middleware.version_middleware import VersionGateMiddleware
 
 app = FastAPI()
 
@@ -265,6 +266,7 @@ PUBLIC_API_PREFIXES = (
 
 PUBLIC_API_PATHS = {
     "/api/", "/api/health", "/api/healthz", "/api/ready",
+    "/api/version",                # directive Phase 11 — a client needs this reachable to even find out it's out of date
     "/api/ops/device-status",     # login-screen peripheral status — counts/booleans only
     # Auth itself, plus the endpoints the login screen needs before there is a user.
     "/api/auth/login", "/api/auth/register", "/api/auth/logout", "/api/auth/refresh",
@@ -340,6 +342,9 @@ PUBLIC_API_PATHS = {
     # A browser reporting its own crash — has to work from the login screen
     # and the guest ordering pages, neither of which carries a token.
     "/api/ops/client-errors",
+    # Same story for client telemetry (directive Phase 12) — an app_launch
+    # event fires before a session necessarily exists.
+    "/api/ops/client-events",
     # Booking policy the guest booking portal needs to enforce BEFORE
     # confirming (large-booking size tiers, experience requirements) — a
     # guest on BookingPortal.jsx has no token, same as the /api/public/
@@ -462,6 +467,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         # moment this feature exists to cover. Still bounded so one runaway
         # tab can't grow client_error_log unbounded.
         "/api/ops/client-errors": (30, 60),  # 30 req/min per IP
+        "/api/ops/client-events": (30, 60),  # 30 req/min per IP — same reasoning
     }
     # Ordered (prefix, limit, window) list for endpoints whose path carries
     # a variable segment (table_id, call_id) that PATH_OVERRIDES' exact-match
@@ -560,6 +566,10 @@ app.add_middleware(RequireAuthMiddleware)
 app.add_middleware(RateLimitMiddleware)
 app.add_middleware(LicenseEnforcementMiddleware)
 app.add_middleware(ActorContextMiddleware)
+# Outermost of this group — a client reporting a too-old version is
+# rejected before auth/rate-limit/license do any work at all. Fail-open
+# on a missing header (see version_middleware.py's own docstring).
+app.add_middleware(VersionGateMiddleware)
 
 
 # ═════════════════════════════════════════════════════════════════════════

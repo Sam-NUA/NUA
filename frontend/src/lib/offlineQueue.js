@@ -10,6 +10,7 @@
 // (QR/UPI confirmation, Stripe redirect, split payments) can't complete
 // offline regardless of this queue and are left as-is.
 import { transactionsAPI } from '../services/api';
+import { trackEvent } from './telemetry';
 
 const DB_NAME = 'nua-offline';
 const DB_VERSION = 3;   // v2 added the coursing action store; v3 adds the read-side cache
@@ -193,6 +194,7 @@ export async function flushCourseActions(onProgress) {
       // A real rejection on replay (the ticket was closed while we were away,
       // the course already fired) — drop it. Retrying forever would wedge
       // every later action behind one that can never succeed.
+      trackEvent('sync_failure', { entity: 'course_action', kind: row.kind, status: error?.response?.status });
       await withCourseStore('readwrite', (store) => store.delete(row.id));
     }
   }
@@ -307,6 +309,7 @@ export async function flushQueue(onProgress) {
         if (isNetworkFailure(error)) break; // still offline — stop, retry later
         // A real rejection on retry (e.g. stale data) — drop it rather than
         // block the queue forever; nothing silently retries an invalid sale.
+        trackEvent('sync_failure', { entity: 'transaction', status: error?.response?.status });
         await removeQueued(row.id);
       }
     }

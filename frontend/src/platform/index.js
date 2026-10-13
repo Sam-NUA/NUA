@@ -15,6 +15,10 @@ import * as webClipboard from './web/ClipboardService';
 import * as webNetwork from './web/NetworkService';
 import * as webSecureStorage from './web/SecureStorageService';
 import * as webDeviceIdentity from './web/DeviceIdentityService';
+import * as webScanner from './web/ScannerService';
+import * as webCashDrawer from './web/CashDrawerService';
+import * as webPaymentTerminal from './web/PaymentTerminalService';
+import * as webBiometric from './web/BiometricService';
 
 import * as capacitorDialog from './capacitor/DialogService';
 import * as capacitorPrint from './capacitor/PrintService';
@@ -23,6 +27,10 @@ import * as capacitorClipboard from './capacitor/ClipboardService';
 import * as capacitorNetwork from './capacitor/NetworkService';
 import * as capacitorSecureStorage from './capacitor/SecureStorageService';
 import * as capacitorDeviceIdentity from './capacitor/DeviceIdentityService';
+import * as capacitorScanner from './capacitor/ScannerService';
+import * as capacitorCashDrawer from './capacitor/CashDrawerService';
+import * as capacitorPaymentTerminal from './capacitor/PaymentTerminalService';
+import * as capacitorBiometric from './capacitor/BiometricService';
 
 import * as electronDialog from './electron/DialogService';
 import * as electronPrint from './electron/PrintService';
@@ -31,6 +39,10 @@ import * as electronClipboard from './electron/ClipboardService';
 import * as electronNetwork from './electron/NetworkService';
 import * as electronSecureStorage from './electron/SecureStorageService';
 import * as electronDeviceIdentity from './electron/DeviceIdentityService';
+import * as electronScanner from './electron/ScannerService';
+import * as electronCashDrawer from './electron/CashDrawerService';
+import * as electronPaymentTerminal from './electron/PaymentTerminalService';
+import * as electronBiometric from './electron/BiometricService';
 
 /** 'web' | 'android' | 'ios' | 'electron' */
 export function detectPlatform() {
@@ -75,3 +87,7 @@ export const ClipboardService = pick(webClipboard, capacitorClipboard, electronC
 export const NetworkService = pick(webNetwork, capacitorNetwork, electronNetwork);
 export const SecureStorageService = pick(webSecureStorage, capacitorSecureStorage, electronSecureStorage);
 export const DeviceIdentityService = pick(webDeviceIdentity, capacitorDeviceIdentity, electronDeviceIdentity);
+export const ScannerService = pick(webScanner, capacitorScanner, electronScanner);
+export const CashDrawerService = pick(webCashDrawer, capacitorCashDrawer, electronCashDrawer);
+export const PaymentTerminalService = pick(webPaymentTerminal, capacitorPaymentTerminal, electronPaymentTerminal);
+export const BiometricService = pick(webBiometric, capacitorBiometric, electronBiometric);

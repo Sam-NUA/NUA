@@ -1,5 +1,6 @@
 import { useEffect } from 'react';
 import { isNative, DeviceIdentityService } from '../platform';
+import { trackEvent } from '../lib/telemetry';
 
 const HEARTBEAT_INTERVAL_MS = 5 * 60 * 1000;
 
@@ -18,7 +19,7 @@ export default function useDeviceRegistration(user) {
     (async () => {
       const existing = await DeviceIdentityService.getStoredDeviceId();
       if (!existing) {
-        try { await DeviceIdentityService.register(); }
+        try { await DeviceIdentityService.register(); trackEvent('device_registered'); }
         catch { /* best-effort — a cashier mid-shift must never be blocked by this */ }
       }
       if (!cancelled) await DeviceIdentityService.heartbeat();

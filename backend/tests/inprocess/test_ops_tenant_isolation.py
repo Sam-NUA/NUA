@@ -154,6 +154,11 @@ def test_error_logs_are_scoped_per_business(client, owner_headers):
         "actor": {"businessId": "ops-errors-other-biz"}, "at": now, "expiresAt": now + timedelta(days=30),
         "businessId": "ops-errors-other-biz",
     }))
+    _run(db.client_event_log.insert_one({
+        "type": "printer_failure", "data": {}, "platform": "android", "appVersion": "x", "osVersion": "x",
+        "actor": {"businessId": "ops-errors-other-biz"}, "at": now, "expiresAt": now + timedelta(days=30),
+        "businessId": "ops-errors-other-biz",
+    }))
     try:
         mine_errors = req(client, "GET", "/api/ops/errors", headers=owner_headers).json()["errors"]
         assert not any(e["requestId"] == "req-otherbiz" for e in mine_errors)
@@ -161,8 +166,12 @@ def test_error_logs_are_scoped_per_business(client, owner_headers):
         mine_client_errors = req(client, "GET", "/api/ops/client-errors", headers=owner_headers).json()["errors"]
         assert not any(e["message"] == "Other biz client crash" for e in mine_client_errors)
 
+        mine_client_events = req(client, "GET", "/api/ops/client-events", headers=owner_headers).json()["events"]
+        assert not any(e.get("businessId") == "ops-errors-other-biz" for e in mine_client_events)
+
         theirs_errors = req(client, "GET", "/api/ops/errors", headers=other).json()["errors"]
         assert any(e["requestId"] == "req-otherbiz" for e in theirs_errors)
     finally:
         _run(db.error_log.delete_one({"requestId": "req-otherbiz"}))
         _run(db.client_error_log.delete_one({"message": "Other biz client crash"}))
+        _run(db.client_event_log.delete_many({"businessId": "ops-errors-other-biz"}))

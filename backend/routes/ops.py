@@ -11,9 +11,10 @@ from fastapi.responses import Response
 from database import db
 from deps import require_owner, require_owner_or_manager
 from middleware.actor_context import tenant_scope_filter
-from services.observability import check_health, record_client_error, _actor_from_request
+from services.observability import check_health, record_client_error, record_client_event, _actor_from_request
 from services import retention
 from services import backup
+import version as app_version
 
 router = APIRouter()
 
@@ -22,6 +23,20 @@ router = APIRouter()
 @router.get("/healthz")
 async def health():
     return await check_health()
+
+
+@router.get("/version")
+async def get_version():
+    """Public, unauthenticated — directive Phase 11. A client reads this to
+    decide whether to show an "update required" state; VersionGateMiddleware
+    (server.py) is the actual server-side enforcement, this is just the
+    client-friendly way to ask the same question without triggering it."""
+    return {
+        "app": "NUA POS",
+        "appVersion": app_version.APP_VERSION,
+        "apiVersion": app_version.API_VERSION,
+        "minSupportedVersion": app_version.MIN_SUPPORTED_APP_VERSION,
+    }
 
 
 @router.get("/ops/device-status")
@@ -66,6 +81,34 @@ async def recent_client_errors(limit: int = 50, user: dict = Depends(require_own
         exp = r.get("expiresAt")
         r["expiresAt"] = exp.isoformat() if hasattr(exp, "isoformat") else exp
     return {"errors": rows, "count": len(rows)}
+
+
+@router.post("/ops/client-events")
+async def report_client_event(payload: dict, request: Request):
+    """Directive Phase 12 — structured client telemetry (app launch, sync
+    failure, printer failure, device registration). Public and
+    unauthenticated by design, same reasoning as /ops/client-errors: an
+    app_launch event fires before there's necessarily a session. Silently
+    drops anything outside the known event-type set rather than raising —
+    see services/observability.py's CLIENT_EVENT_TYPES.
+    """
+    await record_client_event(payload or {}, _actor_from_request(request))
+    return {"recorded": True}
+
+
+@router.get("/ops/client-events")
+async def recent_client_events(limit: int = 50, user: dict = Depends(require_owner_or_manager)):
+    """The last N client telemetry events, newest first — same audience
+    and shape as /ops/client-errors, just the non-crash signals."""
+    limit = max(1, min(limit, 200))
+    q = tenant_scope_filter(user.get("businessId"))
+    rows = await db.client_event_log.find(q, {"_id": 0}).sort("at", -1).to_list(limit)
+    for r in rows:
+        at = r.get("at")
+        r["at"] = at.isoformat() if hasattr(at, "isoformat") else at
+        exp = r.get("expiresAt")
+        r["expiresAt"] = exp.isoformat() if hasattr(exp, "isoformat") else exp
+    return {"events": rows, "count": len(rows)}
 
 
 @router.get("/ops/errors")

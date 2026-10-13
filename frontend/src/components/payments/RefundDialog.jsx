@@ -7,6 +7,7 @@ import { Textarea } from '../ui/textarea';
 import { finalizeAPI } from '../../services/api';
 import { toast } from 'sonner';
 import { CreditCard, DollarSign, Coins, Gift, Plus, X, RotateCcw } from 'lucide-react';
+import SensitiveActionReauthDialog from '../security/SensitiveActionReauthDialog';
 
 const MODE_META = {
   card:         { label: 'Original card',  icon: CreditCard, c: '#3b82f6' },
@@ -25,6 +26,10 @@ export default function RefundDialog({ open, onClose, transaction, onDone }) {
   const [note, setNote] = useState('');
   const [splits, setSplits] = useState([]);
   const [saving, setSaving] = useState(false);
+  // Directive Phase 5 — a refund is a sensitive action: gated behind PIN
+  // reauth (or biometric, once/if a platform ever supports it) before the
+  // actual API call fires. See SensitiveActionReauthDialog.
+  const [showReauth, setShowReauth] = useState(false);
 
   useEffect(() => {
     if (open && transaction) {
@@ -51,6 +56,11 @@ export default function RefundDialog({ open, onClose, transaction, onDone }) {
     if (splits.some(s => s.mode !== 'card' && !transaction.customerId)) {
       return toast.error('Non-card refunds require a customer on the transaction');
     }
+    setShowReauth(true);
+  };
+
+  const doRefund = async () => {
+    setShowReauth(false);
     setSaving(true);
     try {
       const r = await finalizeAPI.createRefund({
@@ -169,6 +179,12 @@ export default function RefundDialog({ open, onClose, transaction, onDone }) {
           </Button>
         </DialogFooter>
       </DialogContent>
+      <SensitiveActionReauthDialog
+        open={showReauth}
+        label={`issue a $${total.toFixed(2)} refund`}
+        onVerified={doRefund}
+        onCancel={() => setShowReauth(false)}
+      />
     </Dialog>
   );
 }

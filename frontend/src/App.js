@@ -152,6 +152,21 @@ const LoyaltyGuestPortal = lazy(() => import('./pages/LoyaltyGuestPortal'));
 import { useTheme } from './contexts/ThemeContext';
 import useIdleLogout from './hooks/useIdleLogout';
 import useDeviceRegistration from './hooks/useDeviceRegistration';
+import { detectPlatform } from './platform';
+import { APP_VERSION } from './version';
+import { trackEvent } from './lib/telemetry';
+
+// Directive Phase 11 — "implement clear version identification." A
+// console line rather than an on-screen badge: a visible, always-present
+// UI element risks overlapping something on an already-busy POS screen
+// (toasts, an FAB, a status banner) this pass hasn't audited every page
+// for; "support can ask for this from devtools" is a real, low-risk way
+// to satisfy the requirement without touching layout anyone depends on.
+// Named as a deliberately-deferred follow-up in MOBILE_DESKTOP_BACKLOG.md,
+// not silently skipped.
+// eslint-disable-next-line no-console
+console.info(`NUA POS — App: ${APP_VERSION} · API: v1 · Platform: ${detectPlatform()}`);
+trackEvent('app_launch');
 
 function StaffLayout({ children }) {
   const { darkMode } = useTheme();

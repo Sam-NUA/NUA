@@ -17,12 +17,16 @@
  * structured fields via receipt.cjs, closing the same unescaped-
  * interpolated-receipt-HTML gap the Windows audit flagged (W07) for the
  * one call site that has fully structured data to give it. */
+import { trackEvent } from '../../lib/telemetry';
+
 export async function printHtml(html) {
   const result = await window.nuaDesktop.printHtml(html);
+  if (result.status !== 'submitted') trackEvent('printer_failure', { path: 'electron-html' });
   return result.status === 'submitted';
 }
 
 export async function printReceipt(receipt) {
   const result = await window.nuaDesktop.printReceipt(receipt);
+  if (result.status !== 'submitted') trackEvent('printer_failure', { path: 'electron-receipt' });
   return result.status === 'submitted';
 }

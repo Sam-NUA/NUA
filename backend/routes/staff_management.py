@@ -270,6 +270,41 @@ async def approve_pin_login(data: dict, request: Request = None):
     device_id = await _resolve_device_id_for_pin(request)
     return await _pin_login_result(staff, device_id)
 
+
+@router.post("/auth/verify-sensitive-action")
+async def verify_sensitive_action(data: dict, user: dict = Depends(get_user)):
+    """Directive Phase 5 — biometric reauthentication for sensitive actions
+    (refunds, voids, sensitive settings). No biometric hardware/plugin is
+    integrated on any platform yet — BiometricService reports 'unsupported'
+    everywhere (frontend/src/platform/*/BiometricService.js) — so this is
+    the real, server-verified step every platform actually uses today:
+    re-enter a PIN right before the action, checked here rather than
+    trusted client-side. Mirrors approve_pin_login's existing shape —
+    accepts either the acting user's own PIN, or any owner/manager's PIN
+    from the SAME business (so a lower-privilege staff member's refund
+    can be manager-approved, same as an off-roster login already is).
+    Returns a boolean, never a token — this cannot be used to switch
+    sessions, only to gate one action already in progress.
+    """
+    pin = str(data.get("pin", ""))
+    if not pin or len(pin) < 2 or len(pin) > 4:
+        raise HTTPException(status_code=400, detail="PIN must be 2-4 digits")
+    await _check_pin_lockout(pin)
+    candidate = await _unique_pin_user(pin)
+    if not candidate:
+        await _record_pin_failure(pin)
+        raise HTTPException(status_code=401, detail="Invalid PIN")
+    await _clear_pin_lockout(pin)
+    # Tenant isolation: a PIN from another business can never approve a
+    # sensitive action here, however privileged its owner is in their own
+    # business — checked independently of the role check below.
+    if candidate.get("businessId") != user.get("businessId"):
+        raise HTTPException(status_code=403, detail="PIN does not belong to this business")
+    if candidate["id"] != user["id"] and candidate.get("role") not in ("owner", "manager"):
+        raise HTTPException(status_code=403, detail="Only the acting staff member or a manager/owner can approve this")
+    return {"verified": True, "approvedBy": candidate.get("name"), "approvedById": candidate["id"]}
+
+
 @router.post("/auth/staff/{staff_id}/set-pin")
 async def set_staff_pin(staff_id: str, data: dict, user: dict = Depends(require_owner)):
     """Owner assigns a PIN to staff member"""

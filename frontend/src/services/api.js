@@ -1,5 +1,6 @@
 import axios from 'axios';
-import { SecureStorageService } from '../platform';
+import { SecureStorageService, isNative } from '../platform';
+import { APP_VERSION } from '../version';
 
 const API_BASE_URL = `${process.env.REACT_APP_BACKEND_URL}/api`;
 
@@ -21,6 +22,11 @@ api.interceptors.request.use(async (config) => {
     const token = await SecureStorageService.getToken();
     if (token) config.headers.Authorization = `Bearer ${token}`;
   }
+  // Only native builds report this (see version.js) — the backend's
+  // VersionGateMiddleware fails open on a missing header, so this is
+  // additive: it lets a native build start being gated once it opts in,
+  // it never changes web's behavior at all.
+  if (isNative()) config.headers['X-App-Version'] = APP_VERSION;
   return config;
 });
 
@@ -75,6 +81,11 @@ export const authAPI = {
   resetPassword: (token, password) => api.post('/auth/reset-password', { token, password }),
   ownerRecoveryInitiate: (recoveryKey, email) => api.post('/auth/owner-recovery/initiate', { recoveryKey, email }),
   ownerRecoveryComplete: (token, password, pin) => api.post('/auth/owner-recovery/complete', { token, password, ...(pin ? { pin } : {}) }),
+  // Directive Phase 5 — biometric reauthentication for sensitive actions.
+  // No biometric hardware is wired up anywhere (see
+  // hooks/useSensitiveActionReauth.js), so this PIN re-entry, verified
+  // server-side, is the real gate every platform uses today.
+  verifySensitiveAction: (pin) => api.post('/auth/verify-sensitive-action', { pin }),
 };
 
 // Device identity (backend/routes/devices.py) — see docs/platform/
@@ -381,6 +392,8 @@ export const opsAPI = {
   recentErrors: (limit = 50) => api.get('/ops/errors', { params: { limit } }),
   recentClientErrors: (limit = 50) => api.get('/ops/client-errors', { params: { limit } }),
   reportClientError: (payload) => api.post('/ops/client-errors', payload),
+  reportClientEvent: (payload) => api.post('/ops/client-events', payload),
+  recentClientEvents: (limit = 50) => api.get('/ops/client-events', { params: { limit } }),
 };
 
 // Backup / restore
