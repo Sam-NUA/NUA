@@ -159,11 +159,20 @@ async function connectToAppPage() {
   const debuggerPath = (targets[0].webSocketDebuggerUrl.match(/\/devtools\/.*/) || [targets[0].webSocketDebuggerUrl])[0];
   const debuggerHost = (targets[0].webSocketDebuggerUrl.match(/^wss?:\/\/([^:/]+)/) || [, '127.0.0.1'])[1];
   log(`WebView reported debugger URL "${targets[0].webSocketDebuggerUrl}" — connecting to host "${debuggerHost}" port ${FORWARD_PORT} path "${debuggerPath}"`);
+  // The host-header fix above still hung up every time. Reading
+  // chrome-remote-interface's chrome.js _start() further: before ever
+  // opening the WebSocket, it fetches `/json/protocol` over HTTP to
+  // learn the CDP schema — a discovery endpoint only full desktop Chrome
+  // serves. Android WebView's per-page devtools target almost certainly
+  // doesn't implement it, so that HTTP request itself is what was
+  // hanging/resetting, before the WebSocket step was ever reached.
+  // `local: true` makes the library use its own bundled protocol.json
+  // instead of fetching it from the device at all.
   let client;
   let connectError = null;
   const connectDeadline = Date.now() + 10000;
   while (Date.now() < connectDeadline) {
-    try { client = await CDP({ host: debuggerHost, port: FORWARD_PORT, target: debuggerPath }); connectError = null; break; }
+    try { client = await CDP({ host: debuggerHost, port: FORWARD_PORT, target: debuggerPath, local: true }); connectError = null; break; }
     catch (error) { connectError = error; await wait(500); }
   }
   if (connectError) throw connectError;
