@@ -142,11 +142,21 @@ async function connectToAppPage() {
   }
   if (lastError) throw lastError;
   if (!targets.length) throw new Error('WebView devtools endpoint had no page targets');
+  // Passing target.id makes the library re-fetch the target list and
+  // connect to THAT target's own webSocketDebuggerUrl verbatim (see
+  // chrome-remote-interface's lib/chrome.js _fetchDebuggerURL) — but a
+  // real run showed the Android WebView's own JSON listing reports a
+  // host:port that doesn't match our adb-forwarded port, so that socket
+  // gets reset ("socket hang up") every time. Passing a path-only target
+  // string (starting with "/") makes the library build the ws:// URL from
+  // the host/port WE specify instead of trusting the WebView's own value.
+  const debuggerPath = (targets[0].webSocketDebuggerUrl.match(/\/devtools\/.*/) || [targets[0].webSocketDebuggerUrl])[0];
+  log(`WebView reported debugger URL "${targets[0].webSocketDebuggerUrl}" — connecting via path "${debuggerPath}" on our forwarded localhost:${FORWARD_PORT} instead`);
   let client;
   let connectError = null;
   const connectDeadline = Date.now() + 10000;
   while (Date.now() < connectDeadline) {
-    try { client = await CDP({ port: FORWARD_PORT, target: targets[0].id }); connectError = null; break; }
+    try { client = await CDP({ host: 'localhost', port: FORWARD_PORT, target: debuggerPath }); connectError = null; break; }
     catch (error) { connectError = error; await wait(500); }
   }
   if (connectError) throw connectError;
