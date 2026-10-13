@@ -118,7 +118,21 @@ acceptance milestone first.
     how/whether it replaces the shared queue for cash orders specifically,
     quarantine whatever's already in a Windows install's existing
     IndexedDB store, and prove the full restart/reconnect/exactly-one/
-    foreign-tenant milestone against it for real.
+    foreign-tenant milestone against it for real. Re-examined this pass
+    (still deliberately not wired, same conclusion, now with a concrete
+    reason beyond "needs coordination"): the queue's own allowlist permits
+    `walkInName` on an order, but `backend/routes/transactions.py`'s
+    `TransactionCreate` schema (the only server endpoint this queue could
+    realistically call) has no `walkInName` field at all — it would
+    silently pass pydantic's default extra-field handling and the name
+    would never reach the stored order. Routing real cash sales through
+    this queue today means either accepting that silent data loss or
+    widening the backend schema first; building the IPC/electron wiring
+    around either choice without first resolving which (and without a real
+    backend to prove the exactly-once/foreign-tenant milestone against) is
+    exactly the kind of risky, unaudited change to a live POS flow this
+    project avoids making unilaterally. Left for a dedicated pass with the
+    schema question decided up front.
 19. Kitchen docket printing on Windows (`services/docket.js` via
     `nua:print-html`) relies on the preview window's `javascript: false`
     sandboxing rather than field-level HTML escaping the way the
