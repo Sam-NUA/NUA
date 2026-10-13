@@ -3,13 +3,14 @@
 Date: 2026-10-12 through 2026-10-13 (multiple passes of the same session —
 Android/Phase 0-2/6, then iOS, then the Windows takeover from Codex's
 `feat/windows-foundation`, then directive Phases 5/7/11/12/13/14, then a
-real GitHub-hosted Android CI build to a green `BUILD SUCCESSFUL`).
+real GitHub-hosted Android CI build to a green `BUILD SUCCESSFUL`, then a
+real Android emulator install+launch of that build).
 Repository: `Sam-NUA/nua`. Base branch: `main` (verified live-deployed, not
 `codex/owner-access` — see `CURRENT_ARCHITECTURE_AUDIT.md`). Base SHA:
 `9963583`. Working branch: `feat/multiplatform-foundation` (PR #22).
-Final SHA at time of this report: `d7512d2` (last functional commit —
-the JDK-21 fix that got Android CI green; this document's own commit on
-top of it changes no code).
+Final SHA at time of this report: `2c01727` (last functional commit —
+the fix that got the emulator smoke test passing; this document's own
+commit on top of it changes no code).
 
 ## Architecture chosen
 
