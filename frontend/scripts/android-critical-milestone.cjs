@@ -24,6 +24,16 @@
  * smoke.cjs uses for the Windows app, just reached through adb instead of
  * Playwright's built-in Electron support (Capacitor's Android WebView has
  * no such first-class automation library).
+ *
+ * Simulating "offline": several real runs proved `adb reverse --remove`
+ * alone doesn't do it. It stops the device from accepting brand-new
+ * connections through the tunnel, but the WebView's own HTTP keep-alive
+ * connections (already open from the dashboard's page-load requests
+ * before the tunnel comes down) keep right on working — a real
+ * POST /api/transactions landed on the backend with status 200 while
+ * "offline" before this was caught (see backend's own request log in a
+ * failed run). setNetwork() instead stops/starts the throwaway backend
+ * container itself, which actually closes those sockets from the far end.
  */
 const { execFileSync } = require('node:child_process');
 const CDP = require('chrome-remote-interface');
@@ -40,6 +50,13 @@ function adb(args) {
 }
 function adbShell(cmd) {
   return execFileSync('adb', ['shell', cmd], { encoding: 'utf8' });
+}
+// This script's own cwd is $GITHUB_WORKSPACE/frontend (see android.yml's
+// final step), one level below the compose files.
+function dockerCompose(args) {
+  return execFileSync('docker', [
+    'compose', '-f', '../docker-compose.yml', '-f', '../docker-compose.ci-milestone.yml', ...args,
+  ], { encoding: 'utf8' });
 }
 
 async function fetchJson(path, opts = {}) {
@@ -254,58 +271,48 @@ async function setNetwork(enabled) {
   log(`turning network ${action} on the device (svc wifi/data)`);
   adbShell(`svc wifi ${action}`);
   adbShell(`svc data ${action}`);
-  // A real run proved `svc wifi/data disable` alone doesn't actually cut
-  // this app off: it flips navigator.onLine (confirmed false in the log)
-  // but has no effect on the `adb reverse tcp:8001 tcp:8001` tunnel set up
-  // in main() — that tunnel runs over the adb protocol itself, not the
-  // emulated radio `svc` toggles the WiFi/data stack. The app's own
-  // checkout flow (offlineQueue.js's createTransactionResilient) doesn't
-  // trust navigator.onLine either — it always tries the real request and
-  // only queues on an actual network failure — so with the tunnel left up,
-  // the "offline" cash sale's POST /api/transactions sailed straight
-  // through to the backend (confirmed 200 in the backend's own log) and
-  // never queued. Tearing the tunnel down for real is what actually
-  // reproduces offline; restoring it is what actually reproduces
-  // reconnecting.
   if (enabled) {
     adb(['reverse', 'tcp:8001', 'tcp:8001']);
-    log('adb reverse tcp:8001 tcp:8001 restored — the backend is reachable again');
+    log('adb reverse tcp:8001 tcp:8001 restored');
   } else {
     try { adb(['reverse', '--remove', 'tcp:8001']); } catch { /* already removed */ }
-    log('adb reverse tcp:8001 removed — the backend is now genuinely unreachable');
-    // A prior run's own fetch() probe came back {"ok":true,"status":200}
-    // AFTER this removal — which should be impossible if the tunnel is
-    // really gone. Confirm from adb's own side whether the mapping is
-    // actually gone (not just whether this command exited 0) rather than
-    // trust the removal call succeeded.
-    try {
-      const list = adb(['reverse', '--list']);
-      log(`adb reverse --list right after removal: ${JSON.stringify(list.trim())}`);
-    } catch (error) {
-      log(`adb reverse --list failed: ${error.message}`);
+    log('adb reverse tcp:8001 removed');
+  }
+  // Four real runs, in order, proved adb reverse alone never actually cuts
+  // this app off: `svc wifi/data disable` flips navigator.onLine but
+  // doesn't touch the tunnel; removing the tunnel itself still left a real
+  // POST /api/transactions landing on the backend with status 200 while
+  // "offline" (confirmed in its own log) — adb's own bookkeeping said the
+  // mapping was gone (adb reverse --list came back empty), no device-wide
+  // HTTP proxy was configured, and nothing was listed as listening on the
+  // device's own port 8001, yet a raw fetch() still got a live round trip.
+  // The one thing all of that is consistent with: Chromium's WebView
+  // pools HTTP keep-alive connections per-origin, and the dashboard's own
+  // page-load requests already opened several to this exact host:port
+  // before the tunnel came down. `adb reverse --remove` stops the device
+  // from accepting brand-new connections through it — it does nothing to
+  // a connection that was already established and handed off before the
+  // removal, which is exactly what Chromium keeps reusing for every
+  // request afterwards, "offline" or not. The only thing that actually
+  // kills an already-open socket is closing the far end: stop the real
+  // backend process this test's own Docker Compose started, not just the
+  // tunnel to it.
+  if (enabled) {
+    dockerCompose(['start', 'backend']);
+    log('throwaway backend container started — the sale\'s next retry has somewhere to land');
+    const deadline = Date.now() + 30000;
+    let ready = false;
+    while (Date.now() < deadline) {
+      try {
+        const res = await fetch(`${BACKEND}/api/ready`);
+        if (res.ok) { ready = true; break; }
+      } catch { /* still coming up */ }
+      await wait(1000);
     }
-    // adb's own bookkeeping says the mapping is gone, yet a prior run's
-    // fetch() probes (both a cache-busted GET and a raw unauthenticated
-    // POST, which got a real 401 back — not a cache hit, a live
-    // round-trip) still reached something at localhost:8001. adb reverse
-    // isn't the only way a guest's "localhost" can resolve to the host: a
-    // device-wide HTTP proxy setting, or Capacitor's own CapacitorHttp
-    // bridge (which replaces window.fetch/XHR with native Android
-    // networking, bypassing the WebView's network stack and adb reverse's
-    // WebView-level tunnel entirely) could each explain it. Check both
-    // directly instead of guessing a third time.
-    try {
-      const proxySetting = adbShell('settings get global http_proxy');
-      log(`device-wide HTTP proxy setting: ${JSON.stringify(proxySetting.trim())}`);
-    } catch (error) {
-      log(`checking the device HTTP proxy setting failed: ${error.message}`);
-    }
-    try {
-      const sockets = adbShell("cat /proc/net/tcp | awk 'NR==1 || $2 ~ /:1F41$/'");
-      log(`device-side sockets bound to port 8001 (hex 1F41) after removal: ${JSON.stringify(sockets.trim())}`);
-    } catch (error) {
-      log(`checking device-side port 8001 sockets failed: ${error.message}`);
-    }
+    log(`throwaway backend reachable again from this runner's own localhost: ${ready}`);
+  } else {
+    dockerCompose(['stop', 'backend']);
+    log('throwaway backend container stopped — any reused keep-alive socket now gets a real connection failure, not just a refused new one');
   }
   await wait(3000); // propagation isn't instant
 }
@@ -398,45 +405,6 @@ async function main() {
   await setNetwork(false);
   const isOnline = await page.evalPage('navigator.onLine');
   log(`navigator.onLine after disabling network: ${isOnline}`);
-
-  // A prior run proved the DB naming/activation theory wrong (the correctly-
-  // named nua-offline-biz-default database exists, with cached_reads
-  // already written — the queue module is active) but still found exactly
-  // 0 queued transactions, with no "Transaction failed"/"Saved offline"/
-  // "Transaction Complete!" toast text either — because that dump ran after
-  // a 15s poll loop, long after any toast would have auto-dismissed. Two
-  // real possibilities remain unproven: (a) the removed adb reverse mapping
-  // causes an immediate connection failure as assumed, or (b) it leaves the
-  // connection hanging (a timeout, not a fast refusal) long enough that
-  // axios's own request (no explicit timeout configured) is still in
-  // flight when this script gives up — which would also explain zero
-  // writes with no error toast. Prove which one directly, the same way the
-  // pre-login reachability check did, instead of assuming.
-  // A prior run's own fetch() probe here came back {"ok":true,"status":200}
-  // even with the reverse mapping removed — which, if the tunnel is really
-  // gone, should be impossible. Two things could explain a false "ok":
-  // (a) a plain GET being served from the WebView's own HTTP cache instead
-  // of hitting the network at all, or (b) the removal not actually taking
-  // on adb's own side (checked separately in setNetwork() now). Rule out
-  // (a) here: a cache-busting query param plus `cache: 'no-store'` forces
-  // a real network attempt, and a POST (what the real checkout sends) is
-  // never served from cache regardless.
-  const offlineReachability = await page.evalPage(`
-    Promise.race([
-      fetch(${JSON.stringify(BACKEND)} + '/api/ready?cachebust=' + Date.now(), { cache: 'no-store' })
-        .then(r => ({ ok: true, status: r.status })).catch(e => ({ ok: false, message: e.message, name: e.name })),
-      new Promise(resolve => setTimeout(() => resolve({ ok: false, message: 'still pending after 10s — a hang, not a fast refusal', name: 'LocalTimeout' }), 10000)),
-    ])
-  `);
-  log(`direct cache-busted GET with the tunnel removed: ${JSON.stringify(offlineReachability)}`);
-  const offlinePostReachability = await page.evalPage(`
-    Promise.race([
-      fetch(${JSON.stringify(BACKEND)} + '/api/transactions', { method: 'POST', cache: 'no-store', headers: { 'Content-Type': 'application/json' }, body: '{}' })
-        .then(r => ({ ok: true, status: r.status })).catch(e => ({ ok: false, message: e.message, name: e.name })),
-      new Promise(resolve => setTimeout(() => resolve({ ok: false, message: 'still pending after 10s — a hang, not a fast refusal', name: 'LocalTimeout' }), 10000)),
-    ])
-  `);
-  log(`direct unauthenticated POST with the tunnel removed: ${JSON.stringify(offlinePostReachability)}`);
 
   log('ringing up one cash sale while offline');
   await page.click(`[data-testid="product-${product.id}"]`);
