@@ -66,7 +66,7 @@ async function signOut(page) {
   }
   const login = await api('/auth/login', null, { email, password });
   const businessId = login.user.businessId;
-  const product = await api('/products', login.token, { name: 'Windows durable cash test', category: 'Test', price: 19.5, cost: 0, stock: 10 });
+  const product = await api('/products', login.token, { name: 'Windows durable cash test', category: 'Test', price: 19.5, cost: 0, stock: 10, sku: 'WINDOWS-DURABLE-CASH' });
   await connect();
   let page = await launch(); await signIn(page, email);
   await page.getByTestId('dock-pos').click();
