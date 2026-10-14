@@ -526,6 +526,28 @@ async function main() {
   client = await connectToAppPage();
   page = makePageDriver(client);
 
+  // A real run's own page dump named the actual cause of the dock-pos
+  // timeout directly: pathname "/", testids: [], body text "Unable to
+  // check your session ... Wait a moment, then try again." — App.js's
+  // ProtectedRoutes authError screen (no data-testid, by design: it's a
+  // deliberate "let the human decide when to retry" choice, not a bug).
+  // The app restart a few steps back happened WHILE STILL OFFLINE (the
+  // network wasn't restored until after it), so AuthContext's mount-time
+  // checkAuth() genuinely failed and parked here — same thing a real
+  // cashier's tablet would show after rebooting mid-outage. There's no
+  // auto-retry once the network actually comes back (same as a real
+  // device), so do what a cashier would: tap the real "Try again" button.
+  const triedAgain = await page.evalPage(`(function(){
+    const btn = [...document.querySelectorAll('button')].find(b => b.textContent.trim() === 'Try again');
+    if (!btn) return false;
+    btn.click();
+    return true;
+  })();`);
+  if (triedAgain) {
+    log('hit the "Unable to check your session" screen (app restarted while still offline) — tapped Try again');
+    await wait(2000);
+  }
+
   // useOfflineQueue (hooks/useOfflineQueue.js) — the only thing that
   // actually calls flushQueue(), on an 'online' event AND a 30s safety-net
   // poll — is only mounted inside POSTerminal.jsx. A real run proved this
