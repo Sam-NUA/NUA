@@ -81,11 +81,10 @@ def create_access_token(user_id: str, email: str, role: str, business_id: str = 
 
 
 async def _resolve_device_id(request: Optional[Request], business_id: str) -> Optional[str]:
-    """An X-Device-Id header is only trusted when it names a device
-    actually registered (by any staff member) to SOME business — the
-    caller's own tenant match still has to hold once the rest of login
-    resolves their businessId, which the two call sites below check
-    themselves. A revoked device's id is rejected outright here, which is
+    """After credentials/MFA, select the device only for the verified business.
+    A map is a routing hint, never tenant authority. A legacy single-device
+    header is equally subject to strict ownership. A revoked id is rejected
+    outright here, which is
     the enforcement point for "this device can no longer sign in," distinct
     from RequireAuthMiddleware's check that an *existing* token's device
     hasn't been revoked since it was issued."""

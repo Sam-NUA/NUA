@@ -8,7 +8,7 @@ const { createCipheriv, createDecipheriv, randomBytes } = require('node:crypto')
 const { OfflineStore } = require('../src/offline-store.cjs');
 const { EncryptedStore } = require('../src/encrypted-store.cjs');
 function token(businessId, deviceId = 'DEV-A', sub = 'staff-A') {
-  return 'header.' + Buffer.from(JSON.stringify({ sub, businessId, deviceId })).toString('base64url') + '.signature';
+  return 'header.' + Buffer.from(JSON.stringify({ sub, businessId, deviceId, exp: Math.floor(Date.now() / 1000) + 3600 })).toString('base64url') + '.signature';
 }
 function memory() {
   const values = new Map();
@@ -21,6 +21,13 @@ function setup(store = memory()) {
   return { options, queue: new OfflineStore(options), switchTo: value => { currentToken = value; } };
 }
 const sale = { id: 'intent-1', businessId: 'A', state: 'pending', payload: { clientOpId: 'op-1', paymentMethod: 'cash', walkInName: 'A guest' } };
+test('an offline terminal cannot use an expired session', async () => {
+  const x = setup(); let now = Date.now();
+  const queue = new OfflineStore({ ...x.options, now: () => now });
+  await queue.activate('A'); now += 7200000;
+  await assert.rejects(queue.read('pending_transactions', 'A'));
+  assert.throws(() => queue.mutate('pending_transactions', 'A', [{ op: 'add', value: sale }]));
+});
 test('only server-verified, bound sessions can open a scope', async () => {
   const x = setup();
   await assert.rejects(x.queue.activate('B'));

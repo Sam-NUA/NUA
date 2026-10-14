@@ -2,8 +2,9 @@
 // Main-process storage boundary. Renderer hints never select a tenant or file.
 // The real API verifies the exact bearer before an encrypted scope is opened.
 class OfflineStore {
-  constructor({ store, readToken, verifyToken }) {
+  constructor({ store, readToken, verifyToken, now = Date.now }) {
     this.store = store; this.readToken = readToken; this.verifyToken = verifyToken;
+    this.now = now;
     this.active = null; this.generation = 0; this.operations = Promise.resolve();
   }
   lock() { this.active = null; this.generation++; }
@@ -15,20 +16,21 @@ class OfflineStore {
     const user = await this.verifyToken(token);
     const claim = JSON.parse(Buffer.from(token.split('.')[1], 'base64url').toString('utf8'));
     if (!user.id || !user.businessId || user.businessId !== expectedBusiness
-        || claim.sub !== user.id || claim.businessId !== user.businessId || !claim.deviceId) {
+        || claim.sub !== user.id || claim.businessId !== user.businessId || !claim.deviceId
+        || !Number.isFinite(claim.exp) || claim.exp * 1000 <= this.now()) {
       throw new Error('Verified terminal session required');
     }
     if (generation !== this.generation || token !== await this.readToken()) throw new Error('Terminal session changed');
-    this.active = { businessId: user.businessId, token,
+    this.active = { businessId: user.businessId, token, expiresAt: claim.exp * 1000,
       scope: JSON.stringify(['offline-v1', user.businessId, claim.deviceId]), generation };
   }
   context(expectedBusiness) {
     const c = this.active;
-    if (!c || c.businessId !== expectedBusiness) throw new Error('Offline records are locked');
+    if (!c || c.businessId !== expectedBusiness || c.expiresAt <= this.now()) throw new Error('Offline records are locked');
     return c;
   }
   assert(c) {
-    if (this.active !== c || c.generation !== this.generation) throw new Error('Terminal session changed');
+    if (this.active !== c || c.generation !== this.generation || c.expiresAt <= this.now()) throw new Error('Terminal session changed');
   }
   key(c, kind) {
     if (!['pending_transactions', 'pending_course_actions', 'cached_reads'].includes(kind)) throw new Error('Unsupported offline record type');

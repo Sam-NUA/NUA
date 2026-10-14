@@ -27,11 +27,16 @@ function claims(token) {
 export function captureScope() {
   if (!currentBusinessId) throw new Error('Offline storage is locked');
   const token = getSessionToken();
+  const activeClaims = claims(token);
+  if (activeClaims?.exp && activeClaims.exp * 1000 <= Date.now()) {
+    throw new Error('Session expired; reconnect and sign in before taking another sale');
+  }
   if (token !== activatedToken) {
     // A refresh may rotate the token for the same actor. A different tab's
     // login must never reuse this tab's previous business/menu/queue.
     const prior = claims(activatedToken), next = claims(token);
-    if (!prior?.sub || next?.sub !== prior.sub || next?.businessId !== currentBusinessId) {
+    if (!prior?.sub || next?.sub !== prior.sub || next?.businessId !== currentBusinessId
+        || next?.sessionId !== prior.sessionId || next?.deviceId !== prior.deviceId) {
       throw new Error('Offline session changed');
     }
   }

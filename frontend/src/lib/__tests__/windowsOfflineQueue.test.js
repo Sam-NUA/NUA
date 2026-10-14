@@ -55,3 +55,9 @@ it('fails closed when encrypted host persistence fails', async () => {
   await expect(queue.createTransactionResilient({ paymentMethod: 'cash', items: [] })).rejects.toThrow('OS encryption');
   expect(mockCreate).not.toHaveBeenCalled();
 });
+it('refuses a new sale after the verified token expires while offline', async () => {
+  mockToken = 'header.' + btoa(JSON.stringify({ sub: 'staff', businessId: 'A', exp: 1 })) + '.signature';
+  await queue.activate('A');
+  await expect(queue.createTransactionResilient({ paymentMethod: 'cash', items: [] })).rejects.toThrow('Session expired');
+  expect(mockCreate).not.toHaveBeenCalled();
+});

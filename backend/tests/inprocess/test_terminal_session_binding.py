@@ -31,6 +31,11 @@ def test_first_session_binding_revokes_even_the_original_unbound_tokens(client, 
     claim = jwt.decode(bound.json()["token"], os.environ["JWT_SECRET"], algorithms=["HS256"])
     assert claim["deviceId"] == terminal
     assert claim["sessionId"]
+    client.cookies.set("refresh_token", original_refresh)
+    refreshed = req(client, "POST", "/api/auth/refresh")
+    assert refreshed.status_code == 200, refreshed.text
+    renewed = jwt.decode(refreshed.json()["token"], os.environ["JWT_SECRET"], algorithms=["HS256"])
+    assert renewed["deviceId"] == terminal
     assert req(client, "GET", "/api/auth/me", headers=headers).status_code == 200
     assert req(client, "POST", f"/api/devices/{terminal}/revoke", headers=headers).status_code == 200
     client.cookies.clear()
@@ -94,3 +99,33 @@ def test_bind_rejects_a_foreign_device_and_legacy_session(client, terminal, owne
     client.cookies.clear()
     result = req(client, "POST", "/api/auth/bind-device", headers={"Authorization": "Bearer " + legacy}, json={"deviceId": terminal})
     assert result.status_code == 409
+
+
+def test_moving_account_cannot_retarget_its_existing_terminal_session(client, terminal):
+    login = sign_in(client)
+    headers = {"Authorization": "Bearer " + login.json()["token"]}
+    user_id = login.json()["user"]["id"]
+    assert req(client, "POST", "/api/auth/bind-device", headers=headers, json={"deviceId": terminal}).status_code == 200
+    try:
+        client.portal.call(db.auth_users.update_one, {"id": user_id}, {"$set": {"businessId": "moved-business"}})
+        assert req(client, "GET", "/api/auth/me", headers=headers).status_code == 401
+        assert req(client, "POST", "/api/auth/refresh").status_code == 401
+    finally:
+        client.portal.call(db.auth_users.update_one, {"id": user_id}, {"$set": {"businessId": "default"}})
+        client.cookies.clear()
+
+
+def test_explicit_bearer_and_middleware_use_the_same_actor_despite_old_cookie(client, owner_headers):
+    from routes.auth import create_access_token
+    other_id = str(uuid.uuid4())
+    client.portal.call(db.auth_users.insert_one, {"id": other_id, "email": other_id + "@example.com",
+        "role": "owner", "businessId": "cookie-other-business", "status": "active"})
+    try:
+        cookie = create_access_token(other_id, other_id + "@example.com", "owner", "cookie-other-business")
+        client.cookies.set("access_token", cookie)
+        result = req(client, "GET", "/api/auth/me", headers=owner_headers)
+        assert result.status_code == 200, result.text
+        assert result.json()["businessId"] == "default"
+    finally:
+        client.cookies.clear()
+        client.portal.call(db.auth_users.delete_one, {"id": other_id})
