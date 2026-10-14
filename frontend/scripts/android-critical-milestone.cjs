@@ -535,7 +535,29 @@ async function main() {
   // not /pos, so that hook's effect was never running at all. Navigate
   // back to POS before waiting for anything to auto-flush.
   log('navigating back to the POS terminal so useOfflineQueue is actually mounted');
-  await page.waitForSelector('[data-testid="dock-pos"]', 45000);
+  try {
+    await page.waitForSelector('[data-testid="dock-pos"]', 45000);
+  } catch (error) {
+    // The screen-stayon fix didn't change this at all — same timeout, same
+    // zero backend activity for the whole window (confirmed in its own
+    // request log: nothing but this script's own GET /api/ready). dock-pos
+    // lives in BottomDock, rendered unconditionally by StaffLayout for
+    // every route under it — so it should be on screen no matter which
+    // page the app landed back on, unless the page genuinely isn't
+    // rendering/ticking at all. Dump what's actually there, and what
+    // Android itself thinks has focus, instead of guessing a third time.
+    const dump = await page.evalPage(`({
+      pathname: window.location.pathname,
+      readyState: document.readyState,
+      bodyTextHead: document.body.innerText.slice(0, 300),
+      testids: [...document.querySelectorAll('[data-testid]')].map(e => e.getAttribute('data-testid')).slice(0, 80),
+    })`).catch(e => ({ evalPageFailed: e.message }));
+    log(`page dump when dock-pos never appeared: ${JSON.stringify(dump)}`);
+    let focus = '(unavailable)';
+    try { focus = adbShell('dumpsys window | grep mCurrentFocus').trim(); } catch (e) { focus = `dumpsys failed: ${e.message}`; }
+    log(`Android's own current window focus: ${JSON.stringify(focus)}`);
+    throw error;
+  }
   await page.click('[data-testid="dock-pos"]');
   await page.waitForSelector('[data-testid="pos-terminal"]', 20000);
 
