@@ -18,10 +18,24 @@ const STORE = 'pending_transactions';
 const COURSE_STORE_NAME = 'pending_course_actions';
 const CACHE_STORE = 'cached_reads';
 let currentBusinessId = null;
+let activatedToken = null;
 let epoch = 0;
+function claims(token) {
+  try { return JSON.parse(atob(token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/'))); }
+  catch { return null; }
+}
 export function captureScope() {
   if (!currentBusinessId) throw new Error('Offline storage is locked');
-  return { businessId: currentBusinessId, epoch, token: getSessionToken() };
+  const token = getSessionToken();
+  if (token !== activatedToken) {
+    // A refresh may rotate the token for the same actor. A different tab's
+    // login must never reuse this tab's previous business/menu/queue.
+    const prior = claims(activatedToken), next = claims(token);
+    if (!prior?.sub || next?.sub !== prior.sub || next?.businessId !== currentBusinessId) {
+      throw new Error('Offline session changed');
+    }
+  }
+  return { businessId: currentBusinessId, epoch, token };
 }
 export function assertScope(scope) {
   if (!scope || scope.epoch !== epoch || scope.businessId !== currentBusinessId
@@ -30,7 +44,8 @@ export function assertScope(scope) {
 function scopedRequest(scope) {
   assertScope(scope);
   if (!scope.token) throw new Error('Offline replay requires an authenticated session');
-  return { headers: { Authorization: `Bearer ${scope.token}` },
+  return { adapter: 'fetch', withCredentials: false,
+    headers: { Authorization: `Bearer ${scope.token}`, 'X-Offline-Business-Id': scope.businessId },
     _offlineScope: () => assertScope(scope), _skipAuthRefresh: true };
 }
 function dbNameFor(businessId) {
@@ -68,12 +83,13 @@ async function openDB(scope = captureScope()) {
 }
 
 /** Only call with the business returned by a verified login/auth/me. */
-export async function activate(businessId) {
+export async function activate(businessId, token = getSessionToken()) {
   if (!businessId) { lock(); return; }
-  if (businessId !== currentBusinessId) epoch += 1;
+  if (businessId !== currentBusinessId || token !== activatedToken) epoch += 1;
   currentBusinessId = businessId;
+  activatedToken = token;
 }
-export function lock() { epoch += 1; currentBusinessId = null; }
+export function lock() { epoch += 1; currentBusinessId = null; activatedToken = null; }
 
 async function withStore(mode, fn, scope = captureScope()) {
   const db = await openDB(scope);

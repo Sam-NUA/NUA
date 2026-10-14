@@ -51,6 +51,8 @@ it('pins the replay credential and opts out of cookie-based refresh', async () =
   await enqueueTransaction(sale()); transactionsAPI.create.mockResolvedValue({ data: { id: 'ok' } });
   await flushQueue(); const config = transactionsAPI.create.mock.calls[0][1];
   expect(config.headers.Authorization).toBe('Bearer A-token'); expect(config._skipAuthRefresh).toBe(true);
+  expect(config.headers['X-Offline-Business-Id']).toBe(business);
+  expect(config.adapter).toBe('fetch'); expect(config.withCredentials).toBe(false);
 });
 it.each([{ paymentMethod: 'Card' }, { paymentMethod: 'Cash', pointsRedeemed: 10 },
   { paymentMethod: 'Cash', paymentSplits: [{ method: 'card', amount: 5 }] }])('does not acknowledge uncertain non-cash payment offline: %p', async fields => {
@@ -72,4 +74,12 @@ it('holds uncertain kitchen actions for review rather than repeating side effect
   await flushQueue();
   expect(run).toHaveBeenCalledTimes(1);
   expect(await getQueuedCourseActions()).toHaveLength(1);
+});
+
+it('rejects a replacement token from another browser tab before reading or queueing', async () => {
+  await enqueueTransaction(sale());
+  localStorage.setItem('nua_token', 'another-account-token');
+  await expect(getQueued()).rejects.toThrow('session changed');
+  await expect(createTransactionResilient(sale())).rejects.toThrow('session changed');
+  expect(transactionsAPI.create).not.toHaveBeenCalled();
 });

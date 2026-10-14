@@ -24,7 +24,7 @@ Verified through source and GitHub Actions, rather than the stale PR description
 |---|---|---|
 | First login claimed all legacy, unowned queued transactions | No automatic migration. New v2 business databases; both old database families preserved untouched for support reconciliation | IndexedDB regression proves foreign legacy rows are not inherited or deleted |
 | `lock()` reopened the shared legacy database | Locked reads/writes reject, including asynchronous open/read callbacks | Locked-storage tests |
-| Replay looked up the current login after asynchronous work | Capture business, token and session epoch; pin bearer credential; disable cookie refresh for replay; stop on session changes | A→B switch test retains A's rows and sends no subsequent request under B |
+| Replay looked up the current login after asynchronous work, and another browser tab could replace shared credentials | Capture business, token and session epoch; bind activation to the verified login; reject a different account’s replacement token; pin bearer credentials using the fetch adapter with cookies omitted; disable cookie refresh for replay; stop on session changes. Server middleware rejects a mismatching X-Offline-Business-Id against the verified actor; this header never selects or grants a tenant | A→B switch test retains A's rows and sends no subsequent request under B |
 | Cash was only saved after a network error, leaving a crash window | Persist cash intent before HTTP, reuse its `clientOpId`, remove only after acknowledged success | Persist-before-send and lost-response/replay tests |
 | Rejected sales/actions were deleted | Retain review records, exclude rejected sales from automatic retry, provide active-business export in Settings | Rejection retention and no-repeat tests |
 | Card/loyalty/split uncertainty could be displayed as successful offline payment | Only ordinary cash is eligible; card, split, points and voucher-code paths propagate errors | Cash eligibility negative tests |
@@ -97,8 +97,8 @@ Final results are recorded below after the last code batch. Native CI is reporte
 | Check | Final local result |
 |---|---|
 | `cd backend && python -m pytest tests/inprocess -q` | **947 passed, 0 failed**, 37,945 deprecation warnings, 406.87 seconds |
-| Frontend Jest | **7 suites, 44 tests passed, 0 failed** |
-| Full Playwright suite | **14 passed, 0 failed**, 2.4 minutes before final logout-order fix; a new held-response sign-out regression is awaiting CI |
+| Frontend Jest | **7 suites, 45 tests passed, 0 failed** |
+| Full Playwright suite | **15 passed, 0 failed**, 2.2 minutes after logout-order fix; final cross-tab hardening is being rerun |
 | Separate bookings service | **35 passed, 0 failed**, 127 warnings |
 | Windows/platform-core Node tests | **19 passed, 0 failed, 0 skipped** |
 | React production build | Success, **0 errors**, existing lint/deprecation warnings |

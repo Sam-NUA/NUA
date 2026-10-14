@@ -21,7 +21,7 @@ export function AuthProvider({ children }) {
       const res = await axios.get(`${API}/api/auth/me`, {
         headers: { Authorization: `Bearer ${token}` }
       });
-      offlineQueue.activate(res.data.businessId);
+      offlineQueue.activate(res.data.businessId, token);
       setUser(res.data);
     } catch (error) {
       if ([401, 403].includes(error.response?.status)) {
@@ -51,17 +51,6 @@ export function AuthProvider({ children }) {
     return () => { unsubscribe(); clearInterval(timer); };
   }, [authError, checkAuth]);
 
-  // MOBILE_DESKTOP_BACKLOG.md — local offline storage must be partitioned
-  // per authorised business, not shared by every business that's ever
-  // logged in on this device. offlineQueue is a plain module (no React
-  // access of its own), so this is the one place that tells it whose data
-  // it's allowed to touch right now, same pattern as BusinessContext's own
-  // user-keyed effect below.
-  useEffect(() => {
-    if (user && user.businessId) offlineQueue.activate(user.businessId);
-    else offlineQueue.lock();
-  }, [user]);
-
   // A correct password is not the same as being signed in. When the account
   // carries a second factor the backend answers with a challenge instead of a
   // token, and the caller has to come back through completeTwoFactor. The
@@ -83,7 +72,7 @@ export function AuthProvider({ children }) {
     );
     if (res.data.twoFactorRequired) return { twoFactor: res.data };
     await SecureStorageService.setToken(res.data.token);
-    offlineQueue.activate(res.data.user.businessId);
+    offlineQueue.activate(res.data.user.businessId, res.data.token);
     setUser(res.data.user);
     return { user: res.data.user };
   };
@@ -100,7 +89,7 @@ export function AuthProvider({ children }) {
     // doesn't always get third-party cookies back, and being asked for a code
     // every shift is what drives staff to write the seed on the wall.
     if (!isNative() && res.data.deviceToken) localStorage.setItem('nua_device_token', res.data.deviceToken);
-    offlineQueue.activate(res.data.user.businessId);
+    offlineQueue.activate(res.data.user.businessId, res.data.token);
     setUser(res.data.user);
     return res.data;
   };
