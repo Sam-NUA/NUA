@@ -47,6 +47,14 @@ api.interceptors.request.use(async (config) => {
 // localStorage and retries the original request exactly once. Concurrent
 // 401s (several polling components failing around the same moment) share
 // one in-flight refresh instead of each firing their own.
+function sameSessionActor(previous, next) {
+  // Continuity check only; the server remains responsible for JWT validation.
+  try {
+    const decode = token => JSON.parse(atob(token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/')));
+    const a = decode(previous), b = decode(next);
+    return !!a.sub && !!a.businessId && a.sub === b.sub && a.businessId === b.businessId;
+  } catch { return false; }
+}
 let refreshPromise = null;
 api.interceptors.response.use(
   (response) => response,
@@ -63,7 +71,7 @@ api.interceptors.response.use(
     }
     const original = error.config;
     const isAuthEndpoint = original?.url?.includes('/auth/refresh') || original?.url?.includes('/auth/login');
-    if (error.response?.status === 401 && original && original._usesStaffSession && original._sessionToken === getSessionToken() && !original._skipAuthRefresh && !original._retriedAfterRefresh && !isAuthEndpoint) {
+    if (error.response?.status === 401 && original && original._usesStaffSession && original._sessionToken && original._sessionToken === getSessionToken() && !original._skipAuthRefresh && !original._retriedAfterRefresh && !isAuthEndpoint) {
       original._retriedAfterRefresh = true;
       try {
         if (!refreshPromise) {
@@ -74,6 +82,9 @@ api.interceptors.response.use(
         const r = await refreshPromise;
         const newToken = r.data?.token;
         if (newToken && original._sessionToken === getSessionToken()) {
+          if (!sameSessionActor(original._sessionToken, newToken)) {
+            throw new Error('Refresh changed account or business');
+          }
           await SecureStorageService.setToken(newToken);
           original.headers.Authorization = `Bearer ${newToken}`;
           return api(original);
