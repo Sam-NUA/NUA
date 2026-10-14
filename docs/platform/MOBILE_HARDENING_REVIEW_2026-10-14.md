@@ -31,7 +31,7 @@ Verified through source and GitHub Actions, rather than the stale PR description
 | Kitchen action retries can repeat side effects (fire/void printing and audit) | Uncertain kitchen actions are retained for manual reconciliation, with honest UI messages; no automatic blind replay | Source walkthrough; full exactly-once KDS work remains required |
 | A delayed menu read could populate B's cache with A's results | Capture scope before fetch and check it before state/cache updates | Stale-scope cache test |
 | Native adapter copied bearer tokens to localStorage and accepted legacy fallback on OS errors | OS storage only, purge plaintext copies, fail closed; plaintext-only upgrades require fresh login | Native plugin mocks; native OS behaviour still needs device QA |
-| Logout suppressed deletion failures and could revive an old token next launch | Persist non-secret signed-out tombstone before deletion; invalidate in-memory token immediately; surface failures | Tombstone and deletion-failure tests |
+| Logout suppressed deletion failures, could revive an old token next launch, and waited on an unbounded remote request | Clear locally before remote logout; bound the remote request to five seconds; persist non-secret signed-out tombstone before deletion; invalidate memory immediately; surface failures | Tombstone/deletion-failure unit tests and held-response browser regression |
 | Trusted-device bypass token used plaintext localStorage on native shells | Native remembered-device option disabled; browser behaviour retained | Native login source; real biometric/secure trusted-device flow remains deferred |
 | Shared refresh could replace another session or a guest credential | Refresh only automatically injected staff credentials, and only while original token is still active | Source review and existing guest/auth e2e coverage |
 | Secure-storage exception occurred outside AuthContext's try block | Catch it, gate protected screens and retry verification on connectivity recovery | Regression build; offline restart cannot authorise a new session locally |
@@ -98,7 +98,7 @@ Final results are recorded below after the last code batch. Native CI is reporte
 |---|---|
 | `cd backend && python -m pytest tests/inprocess -q` | **947 passed, 0 failed**, 37,945 deprecation warnings, 406.87 seconds |
 | Frontend Jest | **7 suites, 44 tests passed, 0 failed** |
-| Full Playwright suite | **14 passed, 0 failed**, 2.4 minutes; includes terminal/PIN-confirmation/export and mobile screenshot |
+| Full Playwright suite | **14 passed, 0 failed**, 2.4 minutes before final logout-order fix; a new held-response sign-out regression is awaiting CI |
 | Separate bookings service | **35 passed, 0 failed**, 127 warnings |
 | Windows/platform-core Node tests | **19 passed, 0 failed, 0 skipped** |
 | React production build | Success, **0 errors**, existing lint/deprecation warnings |

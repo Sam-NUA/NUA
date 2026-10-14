@@ -55,3 +55,19 @@ test('owner recovery saves a PIN and supports PIN sign-in', async ({ page }) => 
   await page.getByTestId('pin-submit').click();
   await expect(page.getByTestId('login-page')).not.toBeVisible();
 });
+
+
+test('sign-out clears the local credential before an unresponsive logout endpoint answers', async ({ page }) => {
+  await loginAsOwner(page);
+  let release;
+  const held = new Promise(resolve => { release = resolve; });
+  await page.route('**/api/auth/logout', async route => {
+    await held;
+    await route.abort().catch(() => {});
+  });
+  try {
+    await page.getByTestId('dock-logout').click();
+    await expect.poll(() => page.evaluate(() => localStorage.getItem('nua_token'))).toBeNull();
+    await expect(page.getByTestId('login-page')).toBeVisible();
+  } finally { release(); }
+});

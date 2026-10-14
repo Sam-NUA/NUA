@@ -108,9 +108,13 @@ export function AuthProvider({ children }) {
   const logout = async () => {
     offlineQueue.lock();
     setUser(false);
-    try { await axios.post(`${API}/api/auth/logout`, {}, { withCredentials: true }); } catch {}
-    await SecureStorageService.clearToken();
-    setUser(false);
+    // Local sign-out must complete even when an offline server never answers.
+    // Clear the OS/web credential before attempting cookie/session cleanup.
+    let storageError;
+    try { await SecureStorageService.clearToken(); }
+    catch (error) { storageError = error; setAuthError(true); }
+    try { await axios.post(`${API}/api/auth/logout`, {}, { withCredentials: true, timeout: 5000 }); } catch {}
+    if (storageError) throw storageError;
   };
 
   const hasPermission = (page) => {
