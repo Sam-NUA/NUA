@@ -1,5 +1,8 @@
 # Multiplatform readiness report
 
+> **14 October 2026 review update:** See [MOBILE_HARDENING_REVIEW_2026-10-14.md](MOBILE_HARDENING_REVIEW_2026-10-14.md) for current fixes, validation and release limits. Earlier status/count/migration claims below are historical. The review removes native plaintext token fallback, quarantines legacy queues, retains rejected records, adds terminal management/export, and fixes scoped stock-transfer writes. Native cold-restart authorisation, hardware, signing and Windows checkout integration remain open.
+
+
 Date: 2026-10-12 through 2026-10-13 (multiple passes of the same session —
 Android/Phase 0-2/6, then iOS, then the Windows takeover from Codex's
 `feat/windows-foundation`, then directive Phases 5/7/11/12/13/14, then a

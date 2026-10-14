@@ -69,7 +69,7 @@
       // Service worker with auto-recovery: if a new SW takes control (i.e. an
       // old cached bundle was being served), reload immediately so the user
       // gets the fresh app code. Also force an update check on every load.
-      if ('serviceWorker' in navigator) {
+      if ('serviceWorker' in navigator && !window.Capacitor?.isNativePlatform?.() && !window.nuaDesktop) {
         var didReload = false;
         navigator.serviceWorker.addEventListener('controllerchange', function() {
           if (didReload) return;

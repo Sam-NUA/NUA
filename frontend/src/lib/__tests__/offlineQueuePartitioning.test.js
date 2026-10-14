@@ -48,7 +48,7 @@ describe('offlineQueue business partitioning', () => {
     expect(rows).toHaveLength(1);
   });
 
-  it('migrates rows sitting in the pre-partitioning shared database into the first business that activates', async () => {
+  it('quarantines unscoped legacy rows instead of claiming another business data', async () => {
     // Simulate a row queued before this change shipped, under the old
     // fixed database name, by writing directly to it.
     const legacyDb = await new Promise((resolve, reject) => {
@@ -73,7 +73,22 @@ describe('offlineQueue business partitioning', () => {
     const biz = uniqueBizId('migrate');
     await activate(biz);
     const rows = await getQueued();
-    expect(rows.map((r) => r.id)).toContain('legacy-row-1');
+    expect(rows).toHaveLength(0);
+    const retained = await new Promise((resolve, reject) => {
+      const req = indexedDB.open('nua-offline', 3);
+      req.onsuccess = () => {
+        const db = req.result; const read = db.transaction('pending_transactions').objectStore('pending_transactions').getAll();
+        read.onsuccess = () => { db.close(); resolve(read.result); };
+        read.onerror = () => reject(read.error);
+      };
+    });
+    expect(retained.map(row => row.id)).toContain('legacy-row-1');
+  });
+
+  it('locked storage rejects reads and writes', async () => {
+    lock();
+    await expect(getQueued()).rejects.toThrow('locked');
+    await expect(enqueueTransaction({ items: [] })).rejects.toThrow('locked');
   });
 
   it('activate() is idempotent for the same business (no error on repeat calls)', async () => {

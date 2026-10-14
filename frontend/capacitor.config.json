@@ -4,7 +4,7 @@
   "webDir": "build",
   "server": {
     "androidScheme": "https",
-    "iosScheme": "https"
+    "iosScheme": "capacitor"
   },
   "android": {
     "buildOptions": {

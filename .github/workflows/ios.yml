@@ -23,7 +23,7 @@ jobs:
       # the build, matching what a real release build would ship with.
       # Nothing in this job ever calls it — see the simulator-smoke-test
       # step below, which only boots and launches the app.
-      REACT_APP_BACKEND_URL: https://app.nuapos.com.au
+      REACT_APP_BACKEND_URL: https://native-smoke.example.invalid
       CI: false
     steps:
       - uses: actions/checkout@v4

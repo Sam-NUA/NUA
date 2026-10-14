@@ -288,6 +288,7 @@ async def create_transaction(transaction: TransactionCreate, user: dict = Depend
         "gst": round(gst, 2),
         "total": round(total, 2),
         "paymentMethod": transaction.paymentMethod,
+        "walkInName": transaction.walkInName,
         "customerId": transaction.customerId,
         "location": transaction.location or "Main",
         "cashier": transaction.cashier or user.get("name", "Staff"),

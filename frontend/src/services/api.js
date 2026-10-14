@@ -1,3 +1,4 @@
+import { getSessionToken } from '../platform/sessionToken';
 import axios from 'axios';
 import { SecureStorageService, isNative } from '../platform';
 import { APP_VERSION } from '../version';
@@ -19,8 +20,13 @@ const api = axios.create({
 // they're ALSO logged in as staff must not have that call silently
 // switched to their staff credential).
 api.interceptors.request.use(async (config) => {
+  config._offlineScope?.();
   if (!config.headers.Authorization) {
+    const before = getSessionToken();
     const token = await SecureStorageService.getToken();
+    if (before !== getSessionToken()) throw new Error('Session changed during request');
+    config._usesStaffSession = true;
+    config._sessionToken = token;
     if (token) config.headers.Authorization = `Bearer ${token}`;
   }
   // Only native builds report this (see version.js) — the backend's
@@ -28,6 +34,7 @@ api.interceptors.request.use(async (config) => {
   // additive: it lets a native build start being gated once it opts in,
   // it never changes web's behavior at all.
   if (isNative()) config.headers['X-App-Version'] = APP_VERSION;
+  config._offlineScope?.();
   return config;
 });
 
@@ -56,7 +63,7 @@ api.interceptors.response.use(
     }
     const original = error.config;
     const isAuthEndpoint = original?.url?.includes('/auth/refresh') || original?.url?.includes('/auth/login');
-    if (error.response?.status === 401 && original && !original._retriedAfterRefresh && !isAuthEndpoint) {
+    if (error.response?.status === 401 && original && original._usesStaffSession && original._sessionToken === getSessionToken() && !original._skipAuthRefresh && !original._retriedAfterRefresh && !isAuthEndpoint) {
       original._retriedAfterRefresh = true;
       try {
         if (!refreshPromise) {
@@ -66,7 +73,7 @@ api.interceptors.response.use(
         }
         const r = await refreshPromise;
         const newToken = r.data?.token;
-        if (newToken) {
+        if (newToken && original._sessionToken === getSessionToken()) {
           await SecureStorageService.setToken(newToken);
           original.headers.Authorization = `Bearer ${newToken}`;
           return api(original);
@@ -77,7 +84,7 @@ api.interceptors.response.use(
         // below; AuthContext's next checkAuth (or a protected-route guard)
         // is what actually navigates to /login, this just stops pretending
         // storage still holds something usable.
-        await SecureStorageService.clearToken();
+        if (original._sessionToken === getSessionToken()) await SecureStorageService.clearToken();
       }
     }
     return Promise.reject(error);
@@ -198,7 +205,7 @@ export const feedbackAPI = {
 // Transactions API
 export const transactionsAPI = {
   getAll: (params) => api.get('/transactions', { params }),
-  create: (data) => api.post('/transactions', data),
+  create: (data, config) => api.post('/transactions', data, config),
   getDetail: (id) => api.get(`/transactions/${id}`),
 };
 
@@ -368,11 +375,11 @@ export const floorPlansAPI = {
 export const coursingAPI = {
   getConfig: () => api.get('/coursing/config'),
   updateConfig: (data) => api.put('/coursing/config', data),
-  sendToKitchen: (data) => api.post('/coursing/send-to-kitchen', data),
+  sendToKitchen: (data, config) => api.post('/coursing/send-to-kitchen', data, config),
   openOrders: (params) => api.get('/coursing/orders/open', { params }),
-  addRound: (id, data) => api.post(`/coursing/orders/${id}/add-round`, data),
-  settle: (data) => api.post('/coursing/settle', data),
-  voidItems: (id, data) => api.post(`/coursing/orders/${id}/void`, data),
+  addRound: (id, data, config) => api.post(`/coursing/orders/${id}/add-round`, data, config),
+  settle: (data, config) => api.post('/coursing/settle', data, config),
+  voidItems: (id, data, config) => api.post(`/coursing/orders/${id}/void`, data, config),
   // SSE endpoint — consumed via EventSource, not axios.
   setPrintTarget: (printer, data) => api.put(`/print-targets/${encodeURIComponent(printer)}`, data),
   printHealth: () => api.get('/print-targets/health'),
@@ -439,9 +446,9 @@ export const kitchenAPI = {
   readyOrder: (id) => api.post(`/kitchen/orders/${id}/ready`),
   servedOrder: (id) => api.post(`/kitchen/orders/${id}/served`),
   cancelOrder: (id) => api.post(`/kitchen/orders/${id}/cancel`),
-  fireCourse: (id, course) => api.post(`/kitchen/orders/${id}/fire-course/${course}`),
-  holdCourse: (id, course) => api.post(`/kitchen/orders/${id}/hold-course/${course}`),
-  serveCourse: (id, course) => api.post(`/kitchen/orders/${id}/serve-course/${course}`),
+  fireCourse: (id, course, config) => api.post(`/kitchen/orders/${id}/fire-course/${course}`, null, config),
+  holdCourse: (id, course, config) => api.post(`/kitchen/orders/${id}/hold-course/${course}`, null, config),
+  serveCourse: (id, course, config) => api.post(`/kitchen/orders/${id}/serve-course/${course}`, null, config),
   readyCourse: (id, course) => api.post(`/kitchen/orders/${id}/ready-course/${course}`),
   setPriority: (id, priority) => api.post(`/kitchen/orders/${id}/priority`, null, { params: { priority } }),
   getAvgOrderTime: () => api.get('/kitchen/avg-order-time'),

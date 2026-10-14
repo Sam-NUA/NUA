@@ -1,3 +1,4 @@
+import DeviceManagementPanel from '../components/settings/DeviceManagementPanel';
 import React, { useState, useEffect } from 'react';
 import { Palette, MapPin, Users as UsersIcon, Building, GraduationCap, Plus, Edit, Trash2, Save, Receipt, Shield, ShieldCheck, Activity, DownloadCloud, Monitor, Zap, Printer, Globe, Clock, KeyRound, Target, Gift, Utensils, LayoutGrid, Percent, Mail } from 'lucide-react';
 import { Button } from '../components/ui/button';
@@ -405,6 +406,7 @@ const Settings = () => {
       {/* Hardware */}
       {activeTab === 'hardware' && (
         <div className="space-y-4">
+          {['owner', 'manager'].includes(user?.role) && <DeviceManagementPanel key={`${user.businessId}:${user.id}`} />}
           <Card><CardHeader><CardTitle>Printer Configuration</CardTitle></CardHeader>
           <CardContent className="space-y-3">
             {printers.map(p => (

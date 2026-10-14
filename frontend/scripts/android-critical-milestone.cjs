@@ -243,7 +243,7 @@ function makePageDriver(client) {
 // whatever the UI happens to be showing right now.
 async function countPendingTransactions(evalPage) {
   return evalPage(`(async function(){
-    const names = (await indexedDB.databases()).map(d => d.name).filter(n => n.startsWith('nua-offline-biz-'));
+    const names = (await indexedDB.databases()).map(d => d.name).filter(n => n.startsWith('nua-offline-v2-biz-'));
     if (!names.length) return 0;
     let total = 0;
     for (const name of names) {
@@ -616,6 +616,9 @@ async function main() {
   if (Math.abs(txn.total - product.price) > 0.01) {
     throw new Error(`Synced transaction total $${txn.total} doesn't match the expected $${product.price}`);
   }
+  if (!txn.clientOpId) throw new Error('Synced transaction is missing its durable idempotency key');
+  const owner = await fetchJson('/api/auth/me', { headers: { Authorization: `Bearer ${token}` } });
+  if (txn.businessId !== owner.businessId) throw new Error('Synced transaction belongs to another business');
   log(`exactly one server-side transaction exists: id=${txn.id} total=$${txn.total} clientOpId=${txn.clientOpId || '(none)'}`);
 
   log('PASS: order -> offline -> restart -> reconnect -> sync -> exactly one order, verified for real on a real (emulated) Android WebView.');

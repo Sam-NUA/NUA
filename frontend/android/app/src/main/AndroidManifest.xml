@@ -16,7 +16,7 @@
          config keyed on a domain pattern, which doesn't fit a printer
          whose LAN IP varies per venue. -->
     <application
-        android:allowBackup="true"
+        android:allowBackup="false"
         android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
         android:roundIcon="@mipmap/ic_launcher_round"
@@ -50,6 +50,11 @@
         </provider>
     </application>
 
+    <!-- Camera/voice are optional features; runtime permission remains required. -->
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
+    <uses-feature android:name="android.hardware.microphone" android:required="false" />
     <!-- Permissions -->
 
     <uses-permission android:name="android.permission.INTERNET" />

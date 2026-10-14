@@ -125,7 +125,12 @@ async def receive_transfer(transfer_id: str, user: dict = Depends(require_owner_
         raise HTTPException(status_code=400, detail=f"Transfer is already {transfer['status']}")
 
     field = f"stockByLocation.{transfer['toLocation']}"
-    await db.products.update_one({"id": transfer["productId"]}, {"$inc": {field: transfer["quantity"]}})
+    product_result = await db.products.update_one(
+        {"id": transfer["productId"], **tenant_scope_filter(user.get("businessId"))},
+        {"$inc": {field: transfer["quantity"]}},
+    )
+    if product_result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Product not found")
 
     now_iso = datetime.now(timezone.utc).isoformat()
     await db.stock_transfers.update_one(
@@ -146,7 +151,12 @@ async def cancel_transfer(transfer_id: str, user: dict = Depends(require_owner_o
         raise HTTPException(status_code=400, detail=f"Transfer is already {transfer['status']}")
 
     field = f"stockByLocation.{transfer['fromLocation']}"
-    await db.products.update_one({"id": transfer["productId"]}, {"$inc": {field: transfer["quantity"]}})
+    product_result = await db.products.update_one(
+        {"id": transfer["productId"], **tenant_scope_filter(user.get("businessId"))},
+        {"$inc": {field: transfer["quantity"]}},
+    )
+    if product_result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Product not found")
 
     await db.stock_transfers.update_one({"$and": [{"id": transfer_id}, tenant_scope_filter(user.get("businessId"))]}, {"$set": {"status": "cancelled"}})
     updated = await db.stock_transfers.find_one({"$and": [{"id": transfer_id}, tenant_scope_filter(user.get("businessId"))]}, {"_id": 0})

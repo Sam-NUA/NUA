@@ -23,7 +23,7 @@ jobs:
       # live-reachable requirement the way Windows's prepare-renderer.cjs
       # does, so the real API origin is fine here and matches what a real
       # release build would actually ship with.
-      REACT_APP_BACKEND_URL: https://app.nuapos.com.au
+      REACT_APP_BACKEND_URL: https://native-smoke.example.invalid
       CI: false   # CRA treats warnings as errors under CI=true; this repo isn't warning-clean yet (see ci.yml's frontend-build)
     steps:
       - uses: actions/checkout@v4

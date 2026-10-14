@@ -1,5 +1,8 @@
 # Security model (multiplatform additions)
 
+> **14 October 2026 review update:** See [MOBILE_HARDENING_REVIEW_2026-10-14.md](MOBILE_HARDENING_REVIEW_2026-10-14.md) for current fixes, validation and release limits. Earlier status/count/migration claims below are historical. The review removes native plaintext token fallback, quarantines legacy queues, retains rejected records, adds terminal management/export, and fixes scoped stock-transfer writes. Native cold-restart authorisation, hardware, signing and Windows checkout integration remain open.
+
+
 The backend's existing tenant isolation and RBAC (JWT + `tenant_scope_filter`'s
 fail-closed predicate, `deps.require_permission`) are unchanged by this
 work and remain the actual security boundary — see

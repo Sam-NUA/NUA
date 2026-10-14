@@ -1,3 +1,4 @@
+import { isNative } from '../platform';
 import React, { useState, useEffect } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import axios from 'axios';
@@ -288,9 +289,9 @@ export default function Login() {
                     className="text-center text-2xl tracking-[0.4em] font-mono h-14 bg-white border-nua-chromeBorderControl text-nua-chromeInk"
                     data-testid="twofactor-code" />
                   <label className="flex items-center gap-2 text-sm text-nua-chromeMuted cursor-pointer">
-                    <input type="checkbox" checked={trustDevice} className="accent-[#750D28] w-4 h-4"
+                    <input type="checkbox" disabled={isNative()} checked={!isNative() && trustDevice} className="accent-[#750D28] w-4 h-4"
                       onChange={e => setTrustDevice(e.target.checked)} data-testid="twofactor-trust" />
-                    Remember this terminal for 30 days
+                    {isNative() ? 'Native terminals require a code at each sign-in' : 'Remember this terminal for 30 days'}
                   </label>
                   <Button type="submit" className="w-full h-11 text-white font-medium hover:opacity-90"
                     style={{ backgroundColor: '#750D28' }} disabled={loading || code.length < 6}

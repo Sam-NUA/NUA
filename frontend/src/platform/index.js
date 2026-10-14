@@ -1,3 +1,4 @@
+import { rememberToken } from './sessionToken';
 /**
  * Platform abstraction layer (ADR-001). Business logic/components depend on
  * these exports, never on `window`/`navigator`/`document` directly, and
@@ -85,7 +86,28 @@ export const PrintService = pick(webPrint, capacitorPrint, electronPrint);
 export const FileService = pick(webFile, capacitorFile, electronFile);
 export const ClipboardService = pick(webClipboard, capacitorClipboard, electronClipboard);
 export const NetworkService = pick(webNetwork, capacitorNetwork, electronNetwork);
-export const SecureStorageService = pick(webSecureStorage, capacitorSecureStorage, electronSecureStorage);
+const tokenStorage = pick(webSecureStorage, capacitorSecureStorage, electronSecureStorage);
+let credentialGeneration = 0;
+export const SecureStorageService = {
+  async getToken() {
+    const generation = credentialGeneration;
+    const token = await tokenStorage.getToken();
+    if (generation !== credentialGeneration) throw new Error('Credential changed during read');
+    rememberToken(token);
+    return token;
+  },
+  async setToken(token) {
+    const generation = ++credentialGeneration;
+    await tokenStorage.setToken(token);
+    if (generation !== credentialGeneration) throw new Error('Credential changed during write');
+    rememberToken(token);
+  },
+  async clearToken() {
+    credentialGeneration += 1;
+    rememberToken(null);
+    await tokenStorage.clearToken();
+  },
+};
 export const DeviceIdentityService = pick(webDeviceIdentity, capacitorDeviceIdentity, electronDeviceIdentity);
 export const ScannerService = pick(webScanner, capacitorScanner, electronScanner);
 export const CashDrawerService = pick(webCashDrawer, capacitorCashDrawer, electronCashDrawer);

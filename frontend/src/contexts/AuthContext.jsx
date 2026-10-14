@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
 import axios from 'axios';
-import { SecureStorageService, DeviceIdentityService } from '../platform';
+import { SecureStorageService, DeviceIdentityService, isNative, NetworkService } from '../platform';
 import * as offlineQueue from '../lib/offlineQueue';
 
 const AuthContext = createContext(null);
@@ -14,20 +14,23 @@ export function AuthProvider({ children }) {
   const checkAuth = useCallback(async () => {
     setLoading(true);
     setAuthError(false);
-    const token = await SecureStorageService.getToken();
-    if (!token) { setUser(false); setLoading(false); return; }
+    offlineQueue.lock();
     try {
+      const token = await SecureStorageService.getToken();
+      if (!token) { offlineQueue.lock(); setUser(false); setLoading(false); return; }
       const res = await axios.get(`${API}/api/auth/me`, {
         headers: { Authorization: `Bearer ${token}` }
       });
+      offlineQueue.activate(res.data.businessId);
       setUser(res.data);
     } catch (error) {
       if ([401, 403].includes(error.response?.status)) {
         // The backend actually rejected this token (expired, revoked by a
         // password change or a device revocation, invalid) — it really is
         // a signed-out session.
-        await SecureStorageService.clearToken();
+        offlineQueue.lock();
         setUser(false);
+        try { await SecureStorageService.clearToken(); } catch { setAuthError(true); }
       } else {
         // A busy or unreachable server does not invalidate a session.
         // Keep the credential, but gate protected screens until verified —
@@ -40,6 +43,13 @@ export function AuthProvider({ children }) {
   }, []);
 
   useEffect(() => { checkAuth(); }, [checkAuth]);
+  useEffect(() => {
+    if (!authError) return;
+    const retry = () => { checkAuth(); };
+    const unsubscribe = NetworkService.addStatusListener(({ connected }) => { if (connected) retry(); });
+    const timer = setInterval(retry, 30000);
+    return () => { unsubscribe(); clearInterval(timer); };
+  }, [authError, checkAuth]);
 
   // MOBILE_DESKTOP_BACKLOG.md — local offline storage must be partitioned
   // per authorised business, not shared by every business that's ever
@@ -49,7 +59,7 @@ export function AuthProvider({ children }) {
   // user-keyed effect below.
   useEffect(() => {
     if (user && user.businessId) offlineQueue.activate(user.businessId);
-    else if (user === false) offlineQueue.lock();
+    else offlineQueue.lock();
   }, [user]);
 
   // A correct password is not the same as being signed in. When the account
@@ -58,6 +68,7 @@ export function AuthProvider({ children }) {
   // shape below makes that explicit so no caller can mistake a challenge for
   // a successful login.
   const login = async (email, password) => {
+    offlineQueue.lock();
     // A device that previously registered (see platform/*/DeviceIdentityService)
     // identifies itself on login so a revoked terminal is rejected outright —
     // see backend/routes/auth.py's _resolve_device_id and
@@ -67,11 +78,12 @@ export function AuthProvider({ children }) {
     const deviceId = await DeviceIdentityService.getStoredDeviceId();
     const res = await axios.post(
       `${API}/api/auth/login`,
-      { email, password, deviceToken: localStorage.getItem('nua_device_token') || undefined },
+      { email, password, deviceToken: isNative() ? undefined : localStorage.getItem('nua_device_token') || undefined },
       { withCredentials: true, headers: deviceId ? { 'X-Device-Id': deviceId } : {} },
     );
     if (res.data.twoFactorRequired) return { twoFactor: res.data };
     await SecureStorageService.setToken(res.data.token);
+    offlineQueue.activate(res.data.user.businessId);
     setUser(res.data.user);
     return { user: res.data.user };
   };
@@ -80,19 +92,22 @@ export function AuthProvider({ children }) {
     const deviceId = await DeviceIdentityService.getStoredDeviceId();
     const res = await axios.post(
       `${API}/api/auth/2fa/challenge`,
-      { challengeToken, code, trustDevice: !!trustDevice },
+      { challengeToken, code, trustDevice: !isNative() && !!trustDevice },
       { withCredentials: true, headers: deviceId ? { 'X-Device-Id': deviceId } : {} },
     );
     await SecureStorageService.setToken(res.data.token);
     // Kept alongside the cookie: a tablet running the POS as a home-screen app
     // doesn't always get third-party cookies back, and being asked for a code
     // every shift is what drives staff to write the seed on the wall.
-    if (res.data.deviceToken) localStorage.setItem('nua_device_token', res.data.deviceToken);
+    if (!isNative() && res.data.deviceToken) localStorage.setItem('nua_device_token', res.data.deviceToken);
+    offlineQueue.activate(res.data.user.businessId);
     setUser(res.data.user);
     return res.data;
   };
 
   const logout = async () => {
+    offlineQueue.lock();
+    setUser(false);
     try { await axios.post(`${API}/api/auth/logout`, {}, { withCredentials: true }); } catch {}
     await SecureStorageService.clearToken();
     setUser(false);

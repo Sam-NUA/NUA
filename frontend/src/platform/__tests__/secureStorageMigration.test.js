@@ -1,77 +1,57 @@
-/**
- * MOBILE_DESKTOP_BACKLOG.md item 2 — real Keystore/Keychain-backed token
- * storage (capacitor-secure-storage-plugin) replacing the previous,
- * never-actually-encrypted @capacitor/preferences path. The native
- * plugins themselves can't run outside a real device/emulator, so this
- * mocks both and tests the one piece of real new logic this file adds:
- * getToken() migrating an existing Preferences-stored token into the new
- * secure store rather than silently signing an upgraded install out.
- */
 const mockSecureGet = jest.fn();
+const mockSecureKeys = jest.fn();
 const mockSecureSet = jest.fn();
 const mockSecureRemove = jest.fn();
+const mockPrefRemove = jest.fn();
 const mockPrefGet = jest.fn();
 const mockPrefSet = jest.fn();
-const mockPrefRemove = jest.fn();
-
-jest.mock('capacitor-secure-storage-plugin', () => ({
-  SecureStoragePlugin: {
-    get: (...args) => mockSecureGet(...args),
-    set: (...args) => mockSecureSet(...args),
-    remove: (...args) => mockSecureRemove(...args),
-  },
-}));
-jest.mock('@capacitor/preferences', () => ({
-  Preferences: {
-    get: (...args) => mockPrefGet(...args),
-    set: (...args) => mockPrefSet(...args),
-    remove: (...args) => mockPrefRemove(...args),
-  },
-}));
-
+jest.mock('capacitor-secure-storage-plugin', () => ({ SecureStoragePlugin: {
+  get: (...a) => mockSecureGet(...a), keys: (...a) => mockSecureKeys(...a),
+  set: (...a) => mockSecureSet(...a), remove: (...a) => mockSecureRemove(...a),
+} }));
+jest.mock('@capacitor/preferences', () => ({ Preferences: { remove: (...a) => mockPrefRemove(...a), get: (...a) => mockPrefGet(...a), set: (...a) => mockPrefSet(...a) } }));
 const { getToken, setToken, clearToken } = require('../capacitor/SecureStorageService');
 
-describe('capacitor SecureStorageService', () => {
+describe('native credentials fail closed', () => {
   beforeEach(() => {
-    jest.clearAllMocks();
-    try { localStorage.clear(); } catch { /* jsdom always has it */ }
-  });
-
-  it('returns the token straight from the secure store when already migrated', async () => {
-    mockSecureGet.mockResolvedValue({ value: 'secure-token' });
-    const token = await getToken();
-    expect(token).toBe('secure-token');
-    expect(mockPrefGet).not.toHaveBeenCalled();
-  });
-
-  it('migrates an existing Preferences-stored token into the secure store on first read', async () => {
-    mockSecureGet.mockRejectedValue(new Error('not found')); // plugin throws per its own README when a key is missing
-    mockPrefGet.mockResolvedValue({ value: 'legacy-token' });
-    const token = await getToken();
-    expect(token).toBe('legacy-token');
-    expect(mockSecureSet).toHaveBeenCalledWith({ key: 'nua_token', value: 'legacy-token' });
-  });
-
-  it('returns null/undefined, not a crash, when neither store has a token (logged out)', async () => {
-    mockSecureGet.mockRejectedValue(new Error('not found'));
+    jest.resetAllMocks(); localStorage.clear();
     mockPrefGet.mockResolvedValue({ value: null });
-    const token = await getToken();
-    expect(token).toBeFalsy();
-    expect(mockSecureSet).not.toHaveBeenCalled();
+    mockSecureKeys.mockResolvedValue({ value: ['nua_token'] });
+    mockSecureGet.mockResolvedValue({ value: 'secure-token' });
   });
-
-  it('setToken writes only to the new secure store and cleans up the old one', async () => {
-    await setToken('fresh-token');
-    expect(mockSecureSet).toHaveBeenCalledWith({ key: 'nua_token', value: 'fresh-token' });
+  it('reads OS storage and purges both plaintext credentials', async () => {
+    localStorage.setItem('nua_token', 'plaintext'); localStorage.setItem('nua_device_token', 'trusted');
+    expect(await getToken()).toBe('secure-token');
+    expect(localStorage.length).toBe(0);
     expect(mockPrefRemove).toHaveBeenCalledWith({ key: 'nua_token' });
-    expect(localStorage.getItem('nua_token')).toBe('fresh-token');
   });
-
-  it('clearToken clears both stores and the localStorage mirror', async () => {
-    localStorage.setItem('nua_token', 'x');
-    await clearToken();
-    expect(mockSecureRemove).toHaveBeenCalledWith({ key: 'nua_token' });
-    expect(mockPrefRemove).toHaveBeenCalledWith({ key: 'nua_token' });
+  it('requires a fresh login when only legacy plaintext remains', async () => {
+    localStorage.setItem('nua_token', 'legacy'); mockSecureKeys.mockResolvedValue({ value: [] });
+    expect(await getToken()).toBeNull();
+    expect(mockSecureGet).not.toHaveBeenCalled(); expect(mockSecureSet).not.toHaveBeenCalled();
+  });
+  it('propagates a locked OS store instead of using plaintext', async () => {
+    localStorage.setItem('nua_token', 'legacy'); mockSecureKeys.mockRejectedValue(new Error('locked'));
+    await expect(getToken()).rejects.toThrow('locked');
+    expect(mockSecureGet).not.toHaveBeenCalled(); expect(localStorage.getItem('nua_token')).toBeNull();
+  });
+  it('propagates decryption failures for an existing key', async () => {
+    mockSecureGet.mockRejectedValue(new Error('decrypt failed'));
+    await expect(getToken()).rejects.toThrow('decrypt failed');
+  });
+  it('does not revive an OS token after a failed logout deletion', async () => {
+    mockPrefGet.mockResolvedValue({ value: 'true' });
+    expect(await getToken()).toBeNull();
+    expect(mockSecureGet).not.toHaveBeenCalled();
+  });
+  it('never mirrors a new token into localStorage', async () => {
+    await setToken('fresh'); expect(mockSecureSet).toHaveBeenCalledWith({ key: 'nua_token', value: 'fresh' });
     expect(localStorage.getItem('nua_token')).toBeNull();
+  });
+  it('overwrites the credential before removal and reports removal failure', async () => {
+    mockSecureRemove.mockRejectedValue(new Error('remove failed'));
+    await expect(clearToken()).rejects.toThrow('remove failed');
+    expect(mockSecureSet).toHaveBeenCalledWith({ key: 'nua_token', value: '' });
+    expect(mockSecureSet.mock.invocationCallOrder[0]).toBeLessThan(mockSecureRemove.mock.invocationCallOrder[0]);
   });
 });

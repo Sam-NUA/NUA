@@ -2,6 +2,12 @@
 // Separate from services/printer.js, which formats the CUSTOMER receipt —
 // a station docket is a kitchen-facing production ticket.
 
+export function escapeDocketText(value) {
+  return String(value ?? '').replace(/[&<>"']/g, char => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+  }[char]));
+}
+
 // "Bar Printer" -> "BAR", "Pizza Station" -> "PIZZA", "Kitchen Printer" -> "KITCHEN"
 export function stationLabel(printerName) {
   return String(printerName || '')
@@ -13,9 +19,9 @@ export function stationLabel(printerName) {
 // Group a section's items by their category, preserving first-seen order.
 export function groupByCategory(items) {
   const groups = [];
-  const index = {};
+  const index = Object.create(null);
   (items || []).forEach(item => {
-    const cat = (item.category || 'Other').toUpperCase();
+    const cat = String(item.category || 'Other').toUpperCase();
     if (!(cat in index)) {
       index[cat] = groups.length;
       groups.push({ category: cat, items: [] });
@@ -41,18 +47,18 @@ export function groupByCourse(items) {
 function itemRows(items, dim = false) {
   return (items || []).map(item => `
       <tr class="${dim ? 'dim' : ''}">
-        <td class="qty">${item.quantity || 1}×</td>
-        <td class="name">${item.seat ? `<span class="seat">S${item.seat}</span> ` : ''}${item.productName || item.name || ''}</td>
+        <td class="qty">${escapeDocketText(item.quantity || 1)}×</td>
+        <td class="name">${item.seat ? `<span class="seat">S${escapeDocketText(item.seat)}</span> ` : ''}${escapeDocketText(item.productName || item.name || '')}</td>
       </tr>
-      ${(item.allergens || []).length ? `<tr class="${dim ? 'dim' : ''}"><td></td><td class="allergen">!! ${item.allergens.map(a => String(a).toUpperCase()).join(', ')}</td></tr>` : ''}
-      ${(item.dietary || []).length ? `<tr class="${dim ? 'dim' : ''}"><td></td><td class="diet">(${item.dietary.join(', ')})</td></tr>` : ''}
-      ${item.notes ? `<tr class="${dim ? 'dim' : ''}"><td></td><td class="note">» ${item.notes}</td></tr>` : ''}
+      ${(item.allergens || []).length ? `<tr class="${dim ? 'dim' : ''}"><td></td><td class="allergen">!! ${escapeDocketText(item.allergens.map(a => String(a).toUpperCase()).join(', '))}</td></tr>` : ''}
+      ${(item.dietary || []).length ? `<tr class="${dim ? 'dim' : ''}"><td></td><td class="diet">(${escapeDocketText(item.dietary.join(', '))})</td></tr>` : ''}
+      ${item.notes ? `<tr class="${dim ? 'dim' : ''}"><td></td><td class="note">» ${escapeDocketText(item.notes)}</td></tr>` : ''}
   `).join('');
 }
 
 function categoryBlocks(items, dim = false) {
   return groupByCategory(items).map(g => `
-      <div class="cat${dim ? ' dim' : ''}">${g.category}</div>
+      <div class="cat${dim ? ' dim' : ''}">${escapeDocketText(g.category)}</div>
       <table>${itemRows(g.items, dim)}</table>
   `).join('');
 }
@@ -64,7 +70,7 @@ function courseBlocks(items, dim = false) {
   const unlabelled = courses.length === 1 && courses[0].key == null;
   if (unlabelled) return categoryBlocks(items, dim);
   return courses.map(c => `
-      <div class="course${dim ? ' dim' : ''}">${c.label || (c.key == null ? 'ORDER' : `COURSE ${c.key}`)}</div>
+      <div class="course${dim ? ' dim' : ''}">${escapeDocketText(c.label || (c.key == null ? 'ORDER' : `COURSE ${c.key}`))}</div>
       ${categoryBlocks(c.items, dim)}
   `).join('');
 }
@@ -89,19 +95,19 @@ export function generateDocketHTML(job) {
   const otherSections = sections.filter(s => stationLabel(s.printer) !== own);
 
   const othersHTML = otherSections.map(s => `
-      <div class="other-station">${stationLabel(s.printer)}</div>
+      <div class="other-station">${escapeDocketText(stationLabel(s.printer))}</div>
       ${courseBlocks(s.items, true)}
   `).join('');
 
   const stationChips = stations.map(s =>
-    `<span class="chip${s === own ? ' own' : ''}">${s}</span>`
+    `<span class="chip${s === own ? ' own' : ''}">${escapeDocketText(s)}</span>`
   ).join('');
 
   return `
     <!DOCTYPE html>
     <html>
     <head>
-      <title>Docket ${job.orderId || job.id}</title>
+      <title>Docket ${escapeDocketText(job.orderId || job.id)}</title>
       <style>
         body { font-family: 'Courier New', monospace; width: 80mm; margin: 0 auto; padding: 4mm; font-size: 13px; color: #000; }
         .station { text-align: center; font-size: 22px; font-weight: bold; letter-spacing: 2px; border: 2px solid #000; padding: 4px 0; }
@@ -138,13 +144,13 @@ export function generateDocketHTML(job) {
       </style>
     </head>
     <body>
-      <div class="station">${own}</div>
-      ${job.courseLabel ? `<div class="fired">FIRE: ${job.courseLabel}</div>` : ''}
+      <div class="station">${escapeDocketText(own)}</div>
+      ${job.courseLabel ? `<div class="fired">FIRE: ${escapeDocketText(job.courseLabel)}</div>` : ''}
       <div class="meta">
-        <span>${job.tableNumber ? `TABLE ${job.tableNumber}` : (job.orderId || '')}</span>
-        <span class="prio">P${job.priority || 2}${time ? ` · ${time}` : ''}</span>
+        <span>${escapeDocketText(job.tableNumber ? `TABLE ${job.tableNumber}` : (job.orderId || ''))}</span>
+        <span class="prio">P${escapeDocketText(job.priority || 2)}${time ? ` · ${time}` : ''}</span>
       </div>
-      ${job.tableNumber && job.orderId ? `<div class="meta"><span>${job.orderId}</span></div>` : ''}
+      ${job.tableNumber && job.orderId ? `<div class="meta"><span>${escapeDocketText(job.orderId)}</span></div>` : ''}
       <div class="sep"></div>
       ${courseBlocks(ownSection.items)}
       ${otherSections.length > 0 ? `

@@ -58,6 +58,7 @@ class SplitDetail(BaseModel):
 
 class Transaction(BaseModel):
     id: str
+    clientOpId: Optional[str] = None
     timestamp: datetime = Field(default_factory=datetime.utcnow)
     items: List[TransactionItem]
     subtotal: float
@@ -90,6 +91,7 @@ class Transaction(BaseModel):
     emailReceipt: Optional[str] = None
     smsReceipt: Optional[str] = None
     tableNumber: Optional[str] = None
+    walkInName: Optional[str] = Field(default=None, max_length=200)
     orderType: str = "retail"
     businessId: Optional[str] = None
 
@@ -119,4 +121,5 @@ class TransactionCreate(BaseModel):
     emailReceipt: Optional[str] = None
     smsReceipt: Optional[str] = None
     tableNumber: Optional[str] = None
+    walkInName: Optional[str] = Field(default=None, max_length=200)
     orderType: str = "retail"
