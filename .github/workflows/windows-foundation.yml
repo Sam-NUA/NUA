@@ -95,5 +95,7 @@ jobs:
         if: failure()
         with:
           name: windows-critical-acceptance-backend-log
-          path: ${{ runner.temp }}/nua-windows-backend.log
+          path: |
+            ${{ runner.temp }}/nua-windows-backend.log
+            ${{ runner.temp }}/nua-windows-acceptance.png
           retention-days: 7

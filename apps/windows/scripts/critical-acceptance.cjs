@@ -15,7 +15,7 @@ assert.equal(process.platform, 'win32');
 const email = 'windows-acceptance@example.com', otherEmail = 'windows-other@example.com';
 const password = randomBytes(24).toString('hex');
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
-let backend, host, proxy;
+let backend, host, proxy, page;
 async function api(route, token, body) {
   const response = await fetch('http://127.0.0.1:8123/api' + route, {
     method: body ? 'POST' : 'GET', headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
@@ -65,10 +65,12 @@ async function signOut(page) {
     try { await api('/health'); break; } catch (error) { if (i > 120) throw error; await sleep(1000); }
   }
   const login = await api('/auth/login', null, { email, password });
+  console.log('Acceptance: throwaway backend ready and authenticated');
   const businessId = login.user.businessId;
   const product = await api('/products', login.token, { name: 'Windows durable cash test', category: 'Test', price: 19.5, cost: 0, stock: 10, sku: 'WINDOWS-DURABLE-CASH' });
   await connect();
-  let page = await launch(); await signIn(page, email);
+  page = await launch(); await signIn(page, email);
+  console.log('Acceptance: first native session registered and bound');
   await page.getByTestId('dock-pos').click();
   await page.getByTestId(`product-${product.id}`).waitFor();
   await disconnect(); // Closes sockets too; no surviving keep-alive false outage.
@@ -84,12 +86,14 @@ async function signOut(page) {
   }
   assert.equal(rows.length, 1); const operation = rows[0].payload.clientOpId;
   assert.ok(operation); assert.equal(rows[0].businessId, businessId);
+  console.log('Acceptance: one cash intent persisted before process termination');
   const pid = host.process().pid;
   execFileSync('taskkill', ['/PID', String(pid), '/T', '/F']); host = null;
   await sleep(1000);
   page = await launch();
   await page.getByRole('button', { name: 'Try again' }).waitFor({ timeout: 30000 });
   assert.equal(await page.getByTestId('pos-terminal').count(), 0);
+  console.log('Acceptance: restarted offline with protected operations locked');
   await connect(); await page.getByRole('button', { name: 'Try again' }).click();
   await page.getByTestId('dock-pos').waitFor({ timeout: 60000 });
   // Switch before POS mounts/flushes, proving B cannot see A's durable sale.
@@ -97,6 +101,7 @@ async function signOut(page) {
   const foreignRows = await page.evaluate(() => window.nuaDesktop.readOffline('pending_transactions', 'acceptance-other-venue'));
   assert.deepEqual(foreignRows, []);
   await assert.rejects(page.evaluate(business => window.nuaDesktop.readOffline('pending_transactions', business), businessId));
+  console.log('Acceptance: other business cannot read the original terminal queue');
   await signOut(page); await signIn(page, email);
   await page.getByTestId('dock-pos').click();
   for (let i = 0; i < 90; i++) {
@@ -110,7 +115,13 @@ async function signOut(page) {
     await sleep(1000);
   }
   throw new Error('Durable sale did not reconcile');
-})().catch(error => { console.error(error.message); process.exitCode = 1; }).finally(async () => {
+})().catch(async error => {
+  console.error(error.message); process.exitCode = 1;
+  if (page && !page.isClosed()) {
+    console.error('Acceptance screen:', (await page.locator('body').innerText().catch(() => '')).slice(0, 4000));
+    await page.screenshot({ path: path.join(process.env.RUNNER_TEMP, 'nua-windows-acceptance.png'), fullPage: true }).catch(() => {});
+  }
+}).finally(async () => {
   if (host) await host.close();
   await disconnect();
   if (backend) backend.kill();
