@@ -622,7 +622,15 @@ async function main() {
   await client.close();
 }
 
-main().catch((error) => {
+main().then(() => {
+  // A real run proved this genuinely needed: every assertion passed and
+  // the PASS line printed, but the CI step then sat there for another 26
+  // minutes until something else cancelled it — Node doesn't exit on its
+  // own while something (the adb forward/reverse child processes, or the
+  // CDP client's underlying socket) is still keeping the event loop
+  // alive. Exit explicitly rather than hope everything closes cleanly.
+  process.exit(0);
+}).catch((error) => {
   console.error(`[milestone] FAIL: ${error.stack || error.message}`);
   try { console.error(execFileSync('adb', ['logcat', '-d'], { encoding: 'utf8', maxBuffer: 1024 * 1024 * 20 }).split('\n').slice(-200).join('\n')); } catch {}
   process.exit(1);
