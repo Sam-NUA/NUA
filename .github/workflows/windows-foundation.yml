@@ -69,10 +69,13 @@ jobs:
         working-directory: apps/windows
       - name: Generate and trust a throwaway loopback certificate
         id: certificate
+        timeout-minutes: 2
         shell: pwsh
         run: |
           python apps/windows/scripts/acceptance-cert.py
-          $certificate = Import-Certificate -FilePath "$env:RUNNER_TEMP/nua-acceptance-cert.pem" -CertStoreLocation Cert:\CurrentUser\Root
+          # Hosted Windows runners are administrators. The machine store
+          # avoids the interactive user-root trust dialog; validation stays on.
+          $certificate = Import-Certificate -FilePath "$env:RUNNER_TEMP/nua-acceptance-cert.pem" -CertStoreLocation Cert:\LocalMachine\Root -Confirm:$false
           "thumbprint=$($certificate.Thumbprint)" >> $env:GITHUB_OUTPUT
       - name: Cash sale, process kill, tenant switch and exactly-once replay
         shell: pwsh
@@ -85,7 +88,7 @@ jobs:
         shell: pwsh
         run: |
           if ('${{ steps.certificate.outputs.thumbprint }}') {
-            Remove-Item 'Cert:\CurrentUser\Root\${{ steps.certificate.outputs.thumbprint }}' -ErrorAction SilentlyContinue
+            Remove-Item 'Cert:\LocalMachine\Root\${{ steps.certificate.outputs.thumbprint }}' -ErrorAction SilentlyContinue
           }
           Remove-Item "$env:RUNNER_TEMP/nua-acceptance-key.pem" -ErrorAction SilentlyContinue
       - uses: actions/upload-artifact@v4
