@@ -52,7 +52,8 @@ function sameSessionActor(previous, next) {
   try {
     const decode = token => JSON.parse(atob(token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/')));
     const a = decode(previous), b = decode(next);
-    return !!a.sub && !!a.businessId && a.sub === b.sub && a.businessId === b.businessId;
+    return !!a.sub && !!a.businessId && a.sub === b.sub && a.businessId === b.businessId
+      && a.deviceId === b.deviceId && a.sessionId === b.sessionId;
   } catch { return false; }
 }
 let refreshPromise = null;
@@ -86,6 +87,9 @@ api.interceptors.response.use(
             throw new Error('Refresh changed account or business');
           }
           await SecureStorageService.setToken(newToken);
+          if (window.nuaDesktop) {
+            await window.nuaDesktop.activateOffline(JSON.parse(atob(newToken.split('.')[1].replace(/-/g, '+').replace(/_/g, '/'))).businessId);
+          }
           original.headers.Authorization = `Bearer ${newToken}`;
           return api(original);
         }
@@ -594,8 +598,7 @@ export const advancedAPI = {
 // no stored device id and this is a no-op header-wise, exactly as before.
 async function _deviceHeaders() {
   const { DeviceIdentityService } = await import('../platform');
-  const deviceId = await DeviceIdentityService.getStoredDeviceId();
-  return deviceId ? { 'X-Device-Id': deviceId } : {};
+  return DeviceIdentityService.getLoginHeaders();
 }
 
 // Staff Management — PIN, Timecards, Roster, Payrun

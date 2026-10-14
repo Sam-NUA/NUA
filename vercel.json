@@ -6,7 +6,8 @@
       "codex/review-launch-audit-2026-10-11": false,
       "codex/launch-review-corrections": false,
       "feat/windows-foundation": false,
-      "fix/mobile-isolation-review": false
+      "fix/mobile-isolation-review": false,
+      "fix/terminal-session-durability": false
     }
   },
   "services": {

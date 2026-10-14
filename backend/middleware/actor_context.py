@@ -76,7 +76,7 @@ class ActorContextMiddleware(BaseHTTPMiddleware):
         role = None
         jwt_business_id = None
         auth = request.headers.get("authorization") or ""
-        if request.cookies.get("access_token"):
+        if not auth and request.cookies.get("access_token"):
             auth = "Bearer " + request.cookies["access_token"]
         if auth.lower().startswith("bearer "):
             token = auth.split(" ", 1)[1]

@@ -17,7 +17,7 @@ export default function DeviceManagementPanel() {
     setError(''); setBusy(true);
     try {
       const scope = captureScope();
-      const [response, deviceId] = await Promise.all([devicesAPI.list(), DeviceIdentityService.getStoredDeviceId()]);
+      const [response, deviceId] = await Promise.all([devicesAPI.list(), DeviceIdentityService.getStoredDeviceId(scope.businessId)]);
       assertScope(scope); setDevices(response.data || []); setCurrentId(deviceId);
     } catch { setError('Could not load terminals. Check your connection and try again.'); }
     finally { setBusy(false); }

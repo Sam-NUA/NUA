@@ -6,6 +6,7 @@ const path = require('node:path');
 const { APP_ORIGIN, isAppUrl, apiOrigin, assetPath, safeFilename, safeHtmlDocument, assertSender, contentSecurityPolicy } = require('./policy.cjs');
 const { renderReceipt } = require('./receipt.cjs');
 const { EncryptedStore } = require('./encrypted-store.cjs');
+const { OfflineStore } = require('./offline-store.cjs');
 const { windowsCrypto } = require('./windows-crypto.cjs');
 protocol.registerSchemesAsPrivileged([{ scheme: 'nua', privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true } }]);
 let mainWindow;
@@ -64,6 +65,15 @@ async function start() {
   const secureStore = new EncryptedStore(path.join(app.getPath('userData'), 'secure'), windowsCrypto(safeStorage));
   // In-memory web session prevents credentials being persisted by Chromium.
   const hostSession = session.fromPartition('nua-windows-foundation');
+  const offlineStore = new OfflineStore({ store: secureStore,
+    readToken: () => secureStore.read('auth-token'),
+    verifyToken: async token => {
+      const result = await fetch(origin + '/api/auth/me', { headers: { Authorization: `Bearer ${token}` },
+        credentials: 'omit', redirect: 'error', signal: AbortSignal.timeout(15000) });
+      if (!result.ok) throw new Error('Terminal session could not be verified');
+      return result.json();
+    },
+  });
   hostSession.setPermissionRequestHandler((_wc, _permission, callback) => callback(false));
   hostSession.setPermissionCheckHandler(() => false);
   hostSession.on('will-download', event => event.preventDefault());
@@ -90,7 +100,7 @@ async function start() {
   mainWindow = new BrowserWindow({ width: 1400, height: 950, minWidth: 1024, minHeight: 768, title: 'NUA POS Foundation', autoHideMenuBar: true, webPreferences: { preload: path.join(__dirname, 'preload.cjs'), session: hostSession, sandbox: true, contextIsolation: true, nodeIntegration: false, webSecurity: true, devTools: !app.isPackaged } });
   restrict(mainWindow.webContents);
   Menu.setApplicationMenu(null);
-  guarded('nua:info', () => ({ version: app.getVersion(), bridgeVersion: 1, platform: 'windows', inputMode, releaseChannel: 'foundation', updates: 'manual-review-only', secureAuthIntegrated: true, offlineSyncIntegrated: false, hostname: os.hostname() }));
+  guarded('nua:info', () => ({ version: app.getVersion(), bridgeVersion: 1, platform: 'windows', inputMode, releaseChannel: 'foundation', updates: 'manual-review-only', secureAuthIntegrated: true, offlineSyncIntegrated: true, hostname: os.hostname() }));
   guarded('nua:fullscreen', value => {
     if (typeof value !== 'boolean') throw new Error('Invalid fullscreen value');
     mainWindow.setFullScreen(value);
@@ -108,9 +118,22 @@ async function start() {
   guarded('nua:token-get', () => secureStore.read('auth-token'));
   guarded('nua:token-set', value => {
     if (typeof value !== 'string' || !value || value.length > 8192) throw new Error('Invalid token value');
+    offlineStore.lock();
     return secureStore.write('auth-token', value);
   });
-  guarded('nua:token-clear', () => secureStore.write('auth-token', null));
+  guarded('nua:token-clear', () => { offlineStore.lock(); return secureStore.write('auth-token', null); });
+  guarded('nua:offline-activate', business => offlineStore.activate(business));
+  guarded('nua:offline-lock', () => offlineStore.lock());
+  guarded('nua:offline-read', (kind, business) => offlineStore.read(kind, business));
+  guarded('nua:offline-mutate', (kind, business, commands) => offlineStore.mutate(kind, business, commands));
+  guarded('nua:device-map-get', () => secureStore.read('device-map'));
+  guarded('nua:device-map-set', value => {
+    if (typeof value !== 'string' || value.length > 16000) throw new Error('Invalid terminal identities');
+    const map = JSON.parse(value);
+    if (!map || Array.isArray(map) || typeof map !== 'object' || Object.keys(map).length > 30
+        || Object.entries(map).some(([business, id]) => !business || typeof id !== 'string' || !id || id.length > 200)) throw new Error('Invalid terminal identities');
+    return secureStore.write('device-map', value);
+  });
   guarded('nua:device-id-get', () => secureStore.read('device-id'));
   guarded('nua:device-id-set', value => {
     if (typeof value !== 'string' || !value || value.length > 200) throw new Error('Invalid device id');

@@ -3,7 +3,7 @@ from pathlib import Path
 from datetime import datetime
 load_dotenv(Path(__file__).parent / '.env')
 
-from fastapi import FastAPI, APIRouter
+from fastapi import FastAPI, APIRouter, HTTPException
 from starlette.middleware.cors import CORSMiddleware
 import logging
 import os
@@ -409,15 +409,16 @@ class RequireAuthMiddleware(BaseHTTPMiddleware):
         # A refresh token must not be usable as an access token.
         if payload.get("type") not in (None, "access"):
             return JSONResponse(status_code=401, content={"detail": "Invalid token type"})
-        account = await db.auth_users.find_one({"id": payload.get("sub")}, {"passwordChangedAt": 1})
+        account = await db.auth_users.find_one({"id": payload.get("sub")}, {"passwordChangedAt": 1, "businessId": 1})
         if account and account.get("passwordChangedAt"):
             changed_at = datetime.fromisoformat(account["passwordChangedAt"]).timestamp()
             if payload.get("iat", 0) < changed_at:
                 return JSONResponse(status_code=401, content={"detail": "Password changed — please sign in again"})
-        if payload.get("deviceId"):
-            from services.device_auth import is_device_revoked_or_missing
-            if await is_device_revoked_or_missing(payload["deviceId"]):
-                return JSONResponse(status_code=401, content={"detail": "This device has been revoked"})
+        from services.device_auth import validate_session_device
+        try:
+            await validate_session_device(payload, (account or {}).get("businessId"))
+        except HTTPException as error:
+            return JSONResponse(status_code=error.status_code, content={"detail": error.detail})
         return await call_next(request)
 
 

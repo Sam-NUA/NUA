@@ -120,7 +120,7 @@ async def _has_roster_override_today(staff_id: str, business_id: Optional[str] =
 def _issue_staff_token(user: dict, device_id: Optional[str] = None) -> str:
     # Share issue-time/revocation semantics with password sign-in.
     from routes.auth import create_access_token
-    return create_access_token(user["id"], user["email"], user["role"], user.get("businessId"), device_id)
+    return create_access_token(user["id"], user["email"], user["role"], user.get("businessId"), device_id, str(uuid.uuid4()))
 
 
 async def _require_pin_eligible(user: dict) -> None:
@@ -180,9 +180,9 @@ async def _clear_pin_lockout(pin: str) -> None:
     await db.login_attempts.delete_one({"identifier": f"pin:{pin}"})
 
 
-async def _resolve_device_id_for_pin(request: Request) -> Optional[str]:
+async def _resolve_device_id_for_pin(request: Request, business_id: str) -> Optional[str]:
     from routes.auth import _resolve_device_id
-    return await _resolve_device_id(request)
+    return await _resolve_device_id(request, business_id)
 
 
 @router.post("/auth/pin-login")
@@ -205,7 +205,7 @@ async def pin_login(data: dict, request: Request = None):
         raise HTTPException(status_code=401, detail="Invalid PIN")
     await _clear_pin_lockout(pin)
     await _require_pin_eligible(user)
-    device_id = await _resolve_device_id_for_pin(request)
+    device_id = await _resolve_device_id_for_pin(request, user.get("businessId"))
 
     if user["role"] not in ("owner", "manager"):
         if (not await _is_rostered_now(user["id"], business_id=user.get("businessId"))
@@ -246,6 +246,7 @@ async def approve_pin_login(data: dict, request: Request = None):
     await _require_pin_eligible(staff)
     await _require_pin_eligible(manager)
 
+    device_id = await _resolve_device_id_for_pin(request, staff.get("businessId"))
     today_iso = datetime.now(timezone.utc).date().isoformat()
     await db.roster_overrides.update_one(
         {"staffId": staff["id"], "date": today_iso,
@@ -267,7 +268,6 @@ async def approve_pin_login(data: dict, request: Request = None):
     except Exception:
         pass
 
-    device_id = await _resolve_device_id_for_pin(request)
     return await _pin_login_result(staff, device_id)
 
 

@@ -48,6 +48,23 @@ function scopedRequest(scope) {
     headers: { Authorization: `Bearer ${scope.token}`, 'X-Offline-Business-Id': scope.businessId },
     _offlineScope: () => assertScope(scope), _skipAuthRefresh: true };
 }
+// Windows keeps Chromium in-memory. Its existing encrypted host store is
+// the durable backend for this same queue, not a second checkout engine.
+function desktopBridge() { return window.nuaDesktop || null; }
+async function desktopRead(kind, scope) {
+  assertScope(scope);
+  const rows = await desktopBridge().readOffline(kind, scope.businessId);
+  assertScope(scope);
+  return rows;
+}
+async function desktopWrite(kind, fn, scope) {
+  assertScope(scope);
+  const commands = [];
+  const store = Object.fromEntries(['add', 'put', 'delete'].map(op => [op, value => commands.push({ op, value })]));
+  fn(store);
+  await desktopBridge().mutateOffline(kind, scope.businessId, commands);
+  assertScope(scope);
+}
 function dbNameFor(businessId) {
   // Older shared AND first-login-migrated databases have unproven ownership.
   // Preserve them untouched for operator reconciliation; never auto-replay.
@@ -85,13 +102,19 @@ async function openDB(scope = captureScope()) {
 /** Only call with the business returned by a verified login/auth/me. */
 export async function activate(businessId, token = getSessionToken()) {
   if (!businessId) { lock(); return; }
-  if (businessId !== currentBusinessId || token !== activatedToken) epoch += 1;
-  currentBusinessId = businessId;
-  activatedToken = token;
+  const activation = ++epoch;
+  currentBusinessId = null; activatedToken = null;
+  if (desktopBridge()) await desktopBridge().activateOffline(businessId);
+  if (activation !== epoch || token !== getSessionToken()) throw new Error('Offline session changed');
+  currentBusinessId = businessId; activatedToken = token;
 }
-export function lock() { epoch += 1; currentBusinessId = null; activatedToken = null; }
+export function lock() {
+  epoch += 1; currentBusinessId = null; activatedToken = null;
+  if (desktopBridge()) desktopBridge().lockOffline().catch(() => {});
+}
 
 async function withStore(mode, fn, scope = captureScope()) {
+  if (desktopBridge()) return desktopWrite(STORE, fn, scope);
   const db = await openDB(scope);
   return new Promise((resolve, reject) => {
     const tx = db.transaction(STORE, mode);
@@ -114,6 +137,7 @@ export async function enqueueTransaction(payload, scope = captureScope()) {
 }
 
 export async function getQueued(scope = captureScope()) {
+  if (desktopBridge()) return desktopRead(STORE, scope);
   const db = await openDB(scope);
   return new Promise((resolve, reject) => {
     const tx = db.transaction(STORE, 'readonly');
@@ -188,6 +212,7 @@ export async function createTransactionResilient(payload) {
 const COURSE_STORE = COURSE_STORE_NAME;
 
 async function withCourseStore(mode, fn, scope = captureScope()) {
+  if (desktopBridge()) return desktopWrite(COURSE_STORE, fn, scope);
   const db = await openDB(scope);
   return new Promise((resolve, reject) => {
     if (!db.objectStoreNames.contains(COURSE_STORE)) { resolve(null); return; }
@@ -200,6 +225,7 @@ async function withCourseStore(mode, fn, scope = captureScope()) {
 }
 
 export async function getQueuedCourseActions(scope = captureScope()) {
+  if (desktopBridge()) return desktopRead(COURSE_STORE, scope);
   const db = await openDB(scope);
   return new Promise((resolve, reject) => {
     if (!db.objectStoreNames.contains(COURSE_STORE)) { resolve([]); return; }
@@ -276,6 +302,7 @@ export async function flushCourseActions(onProgress, scope = captureScope()) {
 // A regional drop-out mid-service used to mean a blank product grid, not
 // just a sale that queues quietly.
 async function withCacheStore(mode, fn, scope = captureScope()) {
+  if (desktopBridge()) return desktopWrite(CACHE_STORE, fn, scope);
   const db = await openDB(scope);
   return new Promise((resolve, reject) => {
     const tx = db.transaction(CACHE_STORE, mode);
@@ -287,6 +314,7 @@ async function withCacheStore(mode, fn, scope = captureScope()) {
 }
 
 async function readCache(key, scope = captureScope()) {
+  if (desktopBridge()) return (await desktopRead(CACHE_STORE, scope)).find(row => row.key === key) || null;
   const db = await openDB(scope);
   return new Promise((resolve, reject) => {
     const tx = db.transaction(CACHE_STORE, 'readonly');

@@ -1,6 +1,7 @@
-import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
+import React, { createContext, useContext, useState, useEffect, useCallback, useRef } from 'react';
 import axios from 'axios';
 import { SecureStorageService, DeviceIdentityService, isNative, NetworkService } from '../platform';
+import { bindTerminalSession } from '../services/terminalSession';
 import * as offlineQueue from '../lib/offlineQueue';
 
 const AuthContext = createContext(null);
@@ -10,8 +11,13 @@ export function AuthProvider({ children }) {
   const [user, setUser] = useState(null);     // null = checking, false = not auth'd
   const [loading, setLoading] = useState(true);
   const [authError, setAuthError] = useState(false);
+  const authGeneration = useRef(0);
+  const assertCurrent = (generation) => {
+    if (authGeneration.current !== generation) throw new Error('Sign-in session changed');
+  };
 
   const checkAuth = useCallback(async () => {
+    const generation = ++authGeneration.current;
     setLoading(true);
     setAuthError(false);
     offlineQueue.lock();
@@ -21,10 +27,15 @@ export function AuthProvider({ children }) {
       const res = await axios.get(`${API}/api/auth/me`, {
         headers: { Authorization: `Bearer ${token}` }
       });
-      offlineQueue.activate(res.data.businessId, token);
+      assertCurrent(generation);
+      const bound = await bindTerminalSession(res.data, token);
+      assertCurrent(generation);
+      await offlineQueue.activate(res.data.businessId, bound);
+      assertCurrent(generation);
       setUser(res.data);
     } catch (error) {
-      if ([401, 403].includes(error.response?.status)) {
+      if (authGeneration.current !== generation) return;
+      if ([401, 403, 409].includes(error.response?.status)) {
         // The backend actually rejected this token (expired, revoked by a
         // password change or a device revocation, invalid) — it really is
         // a signed-out session.
@@ -39,7 +50,7 @@ export function AuthProvider({ children }) {
         setAuthError(true);
       }
     }
-    setLoading(false);
+    if (authGeneration.current === generation) setLoading(false);
   }, []);
 
   useEffect(() => { checkAuth(); }, [checkAuth]);
@@ -57,6 +68,7 @@ export function AuthProvider({ children }) {
   // shape below makes that explicit so no caller can mistake a challenge for
   // a successful login.
   const login = async (email, password) => {
+    const generation = ++authGeneration.current;
     offlineQueue.lock();
     // A device that previously registered (see platform/*/DeviceIdentityService)
     // identifies itself on login so a revoked terminal is rejected outright —
@@ -64,37 +76,50 @@ export function AuthProvider({ children }) {
     // docs/platform/DEVICE_IDENTITY_MODEL.md. Most sessions (web without an
     // explicit registration, any device before its first registration call)
     // have none, and log in exactly as before this existed.
-    const deviceId = await DeviceIdentityService.getStoredDeviceId();
+    const deviceHeaders = await DeviceIdentityService.getLoginHeaders();
     const res = await axios.post(
       `${API}/api/auth/login`,
       { email, password, deviceToken: isNative() ? undefined : localStorage.getItem('nua_device_token') || undefined },
-      { withCredentials: true, headers: deviceId ? { 'X-Device-Id': deviceId } : {} },
+      { withCredentials: true, headers: deviceHeaders },
     );
+    assertCurrent(generation);
     if (res.data.twoFactorRequired) return { twoFactor: res.data };
+    assertCurrent(generation);
     await SecureStorageService.setToken(res.data.token);
-    offlineQueue.activate(res.data.user.businessId, res.data.token);
+    assertCurrent(generation);
+    const bound = await bindTerminalSession(res.data.user, res.data.token);
+    assertCurrent(generation);
+    await offlineQueue.activate(res.data.user.businessId, bound);
+    assertCurrent(generation);
     setUser(res.data.user);
     return { user: res.data.user };
   };
 
   const completeTwoFactor = async (challengeToken, code, trustDevice) => {
-    const deviceId = await DeviceIdentityService.getStoredDeviceId();
+    const generation = ++authGeneration.current;
+    const deviceHeaders = await DeviceIdentityService.getLoginHeaders();
     const res = await axios.post(
       `${API}/api/auth/2fa/challenge`,
       { challengeToken, code, trustDevice: !isNative() && !!trustDevice },
-      { withCredentials: true, headers: deviceId ? { 'X-Device-Id': deviceId } : {} },
+      { withCredentials: true, headers: deviceHeaders },
     );
+    assertCurrent(generation);
     await SecureStorageService.setToken(res.data.token);
     // Kept alongside the cookie: a tablet running the POS as a home-screen app
     // doesn't always get third-party cookies back, and being asked for a code
     // every shift is what drives staff to write the seed on the wall.
     if (!isNative() && res.data.deviceToken) localStorage.setItem('nua_device_token', res.data.deviceToken);
-    offlineQueue.activate(res.data.user.businessId, res.data.token);
+    assertCurrent(generation);
+    const bound = await bindTerminalSession(res.data.user, res.data.token);
+    assertCurrent(generation);
+    await offlineQueue.activate(res.data.user.businessId, bound);
+    assertCurrent(generation);
     setUser(res.data.user);
     return res.data;
   };
 
   const logout = async () => {
+    authGeneration.current += 1;
     offlineQueue.lock();
     setUser(false);
     // Local sign-out must complete even when an offline server never answers.
