@@ -16,7 +16,7 @@ Verified through source and GitHub Actions, rather than the stale PR description
 | Direct token readers | `d3a384b`, plus backlog update `cb1db77` | Kept Claude's asynchronous call-site migration; adapter still mirrored plaintext |
 | Android debugger connection fixes | Latest series through `469c840` | Latest acceptance log still showed WebView fetch/login failure |
 
-**15 October update:** Claude closed the earlier Android acceptance failure. Run **38492613182** completed successfully, including the critical acceptance job; iOS **38492613224**, Windows **38492613077**, Mongo proofs **38492613086**, and main CI **38492613057** also passed. His script now uses adb reverse, stops/restarts the throwaway backend to prove the outage, restores POS/auth after restart, and exits after successful assertions. These newer fixes were retained during rebase. The proposed mixed-content workaround was removed; production WebView policy was not relaxed. This branch still requires its own CI because storage/queue implementation and final business/client-ID assertions differ.
+**15 October update:** Claude closed the earlier Android acceptance failure. Run **38492613182** completed successfully, including the critical acceptance job; iOS **38492613224**, Windows **38492613077**, Mongo proofs **38492613086**, and main CI **38492613057** also passed. His script now uses adb reverse, stops/restarts the throwaway backend to prove the outage, restores POS/auth after restart, and exits after successful assertions. These newer fixes were retained during rebase. The proposed mixed-content workaround was removed; production WebView policy was not relaxed. This review branch's own final CI also passed, including the modified storage/queue implementation and business/client-ID assertions; exact runs are below.
 
 ## Findings and fixes
 
@@ -33,7 +33,7 @@ Verified through source and GitHub Actions, rather than the stale PR description
 | Native adapter copied bearer tokens to localStorage and accepted legacy fallback on OS errors | OS storage only, purge plaintext copies, fail closed; plaintext-only upgrades require fresh login | Native plugin mocks; native OS behaviour still needs device QA |
 | Logout suppressed deletion failures, could revive an old token next launch, and waited on an unbounded remote request | Clear locally before remote logout; bound the remote request to five seconds; persist non-secret signed-out tombstone before deletion; invalidate memory immediately; surface failures | Tombstone/deletion-failure unit tests and held-response browser regression |
 | Trusted-device bypass token used plaintext localStorage on native shells | Native remembered-device option disabled; browser behaviour retained | Native login source; real biometric/secure trusted-device flow remains deferred |
-| Shared refresh could replace another session or a guest credential | Refresh only automatically injected staff credentials, and only while original token is still active | Source review and existing guest/auth e2e coverage |
+| Shared refresh could revive a signed-out session, replace it with the account in another tab's cookie, or replace a guest credential | Refresh only automatically injected, nonempty active staff credentials; require the refreshed subject and business to match the original token; clear only the still-current failed session | Five refresh regressions cover signed-out, changed subject/business and successful same-actor renewal; guest/auth e2e coverage retained |
 | Secure-storage exception occurred outside AuthContext's try block | Catch it, gate protected screens and retry verification on connectivity recovery | Regression build; offline restart cannot authorise a new session locally |
 | Native queue hook relied on browser connectivity events | Use NetworkService and retain 30-second safety poll | Unit/build; native recovery needs emulator result |
 | API schema discarded `walkInName` and omitted persisted `clientOpId` from transaction responses | Add bounded optional walk-in name to request/response and save it; expose client operation ID | Real backend sale/detail/idempotent-retry regression |
@@ -80,7 +80,7 @@ The critical paths include shell-quote through concurrently, proxy-addr through 
 
 ## Remaining work / release limits
 
-1. Run this branch's Android and iOS CI and confirm new native results; Claude's latest base acceptance is green. iOS still has no equivalent full cash/offline/restart/replay test.
+1. Android's full emulator acceptance and iOS's build/install/launch check passed on this branch. iOS still needs an equivalent full cash/offline/restart/replay test; launch survival does not establish that flow.
 2. Native API origins must be explicitly authorised by the staging backend's `FRONTEND_URL` list (`https://localhost` for Android; `capacitor://localhost` for iOS). The production allowlist was not widened or changed. CORS handling differs when FRONTEND_URL is unset; do not assume a simulator launch proves API access.
 3. Reconcile preserved old queue databases before rollout on existing tills. Review exports may contain customer/order information; restrict handling to authorised support/owners. No automatic claimant or destructive recovery tool is provided.
 4. Device registration occurs after the first login and does not replace that already-issued token; its device claim is present only on a later device-ID login. Also, a single stored device ID can block signing into another business because login correctly rejects a foreign-business registry entry. Both need an explicit pairing/session-binding design, not relaxed ownership checks. Cryptographic terminal attestation, native biometrics, secure remembered-device credentials, offline authorisation after cold restart and at-rest protection of financial caches remain open.
@@ -92,13 +92,13 @@ The critical paths include shell-quote through concurrently, proxy-addr through 
 
 ## Validation
 
-Final results are recorded below after the last code batch. Native CI is reported separately from local/browser checks; no physical-device result is claimed.
+Application-code validation revision: `65ec95003585cf8e03dbd3c80a600fd40803e2a9`. Final results are recorded below after the last code batch. Native CI is reported separately from local/browser checks; no physical-device result is claimed. Subsequent documentation-only commits do not change the tested application.
 
 | Check | Final local result |
 |---|---|
-| `cd backend && python -m pytest tests/inprocess -q` | **947 passed, 0 failed**, 37,945 deprecation warnings, 406.87 seconds |
-| Frontend Jest | **7 suites, 45 tests passed, 0 failed** |
-| Full Playwright suite | **15 passed, 0 failed**, 2.2 minutes after logout-order fix; final cross-tab hardening is being rerun |
+| `cd backend && python -m pytest tests/inprocess -q` | **949 passed, 0 failed, 0 skipped**, 37,974 deprecation warnings, **327.04 seconds**, confirmed by all 949 JUnit cases after the final code batch |
+| Frontend Jest | **8 suites, 50 tests passed, 0 failed** |
+| Full Playwright suite | **15 passed, 0 failed**, 2.2 minutes after the final refresh-cookie batch |
 | Separate bookings service | **35 passed, 0 failed**, 127 warnings |
 | Windows/platform-core Node tests | **19 passed, 0 failed, 0 skipped** |
 | React production build | Success, **0 errors**, existing lint/deprecation warnings |
@@ -109,7 +109,25 @@ Final results are recorded below after the last code batch. Native CI is reporte
 | Capacitor iOS sync | Success, installed plugins recognised |
 | Native plist/config/scripts | plist parse, scheme check and Node syntax checks passed |
 | Git diff whitespace check | Passed |
-| gitleaks and native CI for review branch | Awaiting GitHub Actions results; Claude's reviewed head checks are listed separately |
+| gitleaks for review branch | **Passed** on final application-code revision |
+| Android CI | **Passed**: APK build, startup and full cash/offline/restart/reconnect/exactly-one-sale acceptance |
+| iOS CI | **Passed**: build, simulator install and process launch/survival; financial acceptance not covered |
+| Windows CI | **Passed**: packaging/build and existing host acceptance scope |
+| MongoDB coordination proofs | **Passed** on final application-code revision |
+
+### Final GitHub Actions evidence
+
+All five workflows completed successfully for `65ec95003585cf8e03dbd3c80a600fd40803e2a9`:
+
+| Workflow | Completed result |
+|---|---|
+| Backend, configured lint/type/dependency gates, frontend build/unit, bookings, Playwright and gitleaks | [CI 38608613144](https://github.com/Sam-NUA/NUA/actions/runs/38608613144) — success |
+| APK, emulator startup and critical acceptance | [Android 38608613063](https://github.com/Sam-NUA/NUA/actions/runs/38608613063) — success |
+| Simulator build/install/launch | [iOS 38608613292](https://github.com/Sam-NUA/NUA/actions/runs/38608613292) — success |
+| Windows foundation | [Windows 38608614018](https://github.com/Sam-NUA/NUA/actions/runs/38608614018) — success |
+| Real Mongo transaction coordination | [Mongo 38608613210](https://github.com/Sam-NUA/NUA/actions/runs/38608613210) — success |
+
+Android acceptance uses the real APK/WebView and a throwaway Docker backend/Mongo. It proves one pending cash sale survives a real process restart while offline, then drains to exactly one server transaction after reconnection, with a nonempty `clientOpId` and the correct `businessId`. It does not prove continued authorisation/sales during an offline cold start, hardware integration, every payment type or iOS parity.
 
 The browser download endpoint returned an invalid archive in this environment; a separate scratch-only Chromium binary was used. The default static server also could not enumerate network interfaces in the execution sandbox, so the same serve-handler ran on loopback alongside the test backend. No app assertions were removed or softened. One intermediate browser run failed with a 404 while the build directory was being replaced; the final full run against an unchanged bundle passed. Native OS storage tests use mocks and browser tests use the real FastAPI/mongomock harness; neither proves physical hardware behaviour.
 
