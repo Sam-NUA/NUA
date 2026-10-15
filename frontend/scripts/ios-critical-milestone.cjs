@@ -387,13 +387,25 @@ function decodeJwt(token) {
 }
 
 // SecureStorageService.setToken() (frontend/src/platform/capacitor/
-// SecureStorageService.js) mirrors the real token into plain localStorage
-// under this same key specifically so call sites that still read it
-// directly keep working -- reading it back here captures exactly what the
-// app itself is using right now, not an inference from a side effect.
+// SecureStorageService.js) actively purges the plaintext localStorage
+// mirror on every call -- the real token only ever lives in the iOS
+// Keychain via capacitor-secure-storage-plugin. Reading localStorage here
+// always finds nothing, regardless of whether login actually bound a
+// session. Read the same plugin the app itself reads from (getToken()'s
+// own keys()-then-get() shape) so this captures what the app is really
+// using, not a stale assumption about where it's stored.
 async function captureBoundToken(page) {
-  const token = await page.evalPage(`localStorage.getItem('nua_token')`);
-  if (!token) throw new Error('No token found in localStorage after login');
+  const token = await page.evalPage(`
+    (async function() {
+      const plugins = window.Capacitor && window.Capacitor.Plugins;
+      if (!plugins || !plugins.SecureStoragePlugin) return null;
+      const { value: keys } = await plugins.SecureStoragePlugin.keys();
+      if (!keys.includes('nua_token')) return null;
+      const { value } = await plugins.SecureStoragePlugin.get({ key: 'nua_token' });
+      return value || null;
+    })()
+  `);
+  if (!token) throw new Error('No token found in the real Keychain-backed SecureStoragePlugin after login');
   return { token, claims: decodeJwt(token) };
 }
 
