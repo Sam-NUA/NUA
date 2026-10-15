@@ -256,6 +256,16 @@ async function main() {
       // 120000ms"), which has no real display/window server to render
       // into on this CI runner. isHeadless skips that restart entirely.
       'appium:isHeadless': true,
+      // The actual root cause of "No WEBVIEW context appeared" (a real CI
+      // run's own RemoteDebugger log proved this directly): the app's
+      // WebView genuinely loaded (title "NUA POS", url
+      // "capacitor://localhost") the whole time — Appium's WebKit remote
+      // debugger just never matched it, because it only checks a fixed
+      // bundle-id list (com.apple.WebKit.WebContent, the app's own
+      // `appium:app` CFBundleIdentifier, etc.) and this CODE_SIGNING_
+      // ALLOWED=NO debug build reports itself to the remote debugger as
+      // "process-App" (its Xcode product/scheme name), not "com.nua.pos".
+      'appium:additionalWebviewBundleIds': ['process-App'],
     },
   });
 
@@ -423,10 +433,24 @@ async function main() {
   }
 }
 
+// A real CI run's own log capture lost every one of this script's console.log
+// lines outright (even the PASS/FAIL line), despite the run demonstrably
+// getting deep into the flow (backend index creation, Appium session, real
+// RemoteDebugger output all showed up) — macOS Node's stdout to a piped,
+// non-TTY destination can be non-blocking, so a same-tick process.exit()
+// truncates whatever's still queued. fs.writeSync bypasses that queue
+// entirely (a real, synchronous fd write), and the setTimeout before exit
+// gives any already-queued async writes (every earlier log() call) a turn
+// to flush first.
+function exitWith(code, message) {
+  if (message) { try { require('node:fs').writeSync(2, `${message}\n`); } catch { /* best-effort */ } }
+  setTimeout(() => process.exit(code), 500);
+}
+
 main().then(() => {
-  process.exit(0);
+  exitWith(0);
 }).catch((error) => {
-  console.error(`[ios-milestone] FAIL: ${error.stack || error.message}`);
-  try { console.error(simctl(['spawn', UDID, 'log', 'show', '--last', '2m', '--predicate', `process == "App"`])); } catch { /* best-effort diagnostics */ }
-  process.exit(1);
+  let appLog = '';
+  try { appLog = `\n${simctl(['spawn', UDID, 'log', 'show', '--last', '2m', '--predicate', 'process == "App"'])}`; } catch { /* best-effort diagnostics */ }
+  exitWith(1, `[ios-milestone] FAIL: ${error.stack || error.message}${appLog}`);
 });
