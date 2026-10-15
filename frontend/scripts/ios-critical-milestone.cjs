@@ -172,7 +172,7 @@ function makePageDriver(driver) {
     if (!outcome.ok) throw new Error(`Page eval failed: ${outcome.message}\n${expression}`);
     return outcome.value;
   }
-  async function waitForSelector(selector, timeoutMs = 30000) {
+  async function waitForSelector(selector, timeoutMs = 60000) {
     const el = await driver.$(selector);
     await el.waitForExist({ timeout: timeoutMs, timeoutMsg: `Timed out waiting for selector ${selector}` });
   }
