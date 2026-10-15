@@ -130,8 +130,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install MongoDB Community + mongosh (no Docker on macOS runners)
+        # Homebrew 6.0.0 started refusing to load formulae from a third-party
+        # tap until it's explicitly trusted — a real CI failure confirmed
+        # this directly ("Refusing to load formula mongodb/brew/mongodb-
+        # community@7.0 from untrusted tap mongodb/brew"), not assumed.
         run: |
           brew tap mongodb/brew
+          brew trust mongodb/brew
           brew install mongodb-community@7.0 mongosh
       - name: Start a throwaway mongod with a single-node replica set
         # Same replSet requirement as docker-compose.yml's own mongo/
