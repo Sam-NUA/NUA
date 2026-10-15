@@ -410,6 +410,15 @@ async function captureBoundToken(page) {
 }
 
 async function loginWithPassword(page, email, password) {
+  // Login.jsx defaults `mode` from localStorage's 'nua_login_mode' -- a
+  // device-level preference that survives logout (it's not account state).
+  // Once any earlier login on this device used PIN, the page comes back up
+  // in PIN mode and never renders login-email at all. A real CI run hung
+  // the full 60s waitForSelector timeout on exactly this after the script's
+  // own earlier PIN-login phase. Explicitly switch back to email mode first,
+  // mirroring loginWithPin()'s own switch into PIN mode below.
+  await page.waitForSelector('[data-testid="mode-email"]');
+  await page.click('[data-testid="mode-email"]');
   await page.waitForSelector('[data-testid="login-email"]');
   await page.setValue('[data-testid="login-email"]', email);
   await page.setValue('[data-testid="login-password"]', password);
