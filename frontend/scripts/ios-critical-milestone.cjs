@@ -320,6 +320,22 @@ async function main() {
     `);
     log(`direct fetch() reachability check from inside the WebView: ${JSON.stringify(reachability)}`);
 
+    // capturedErrors below came back empty on a real run despite the UI
+    // still showing "Couldn't reach the server" after a confirmed 200 from
+    // the backend -- Login.jsx's own try/catch handles whatever AuthContext
+    // throws, so it's never an *unhandled* rejection for that listener to
+    // see. Test the actual suspect (SecureStoragePlugin.set(), called
+    // uncaught by setToken() right after the login response) directly and
+    // in isolation, independent of the real login flow, so a real error
+    // message comes back either way instead of another guess.
+    const secureStorageProbe = await page.evalPage(`
+      (window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.SecureStoragePlugin
+        ? window.Capacitor.Plugins.SecureStoragePlugin.set({ key: '__milestone_probe', value: 'x' }).then(() => ({ ok: true }))
+        : Promise.resolve({ ok: false, message: 'SecureStoragePlugin not registered on window.Capacitor.Plugins' })
+      ).catch(e => ({ ok: false, message: (e && e.message) || String(e), name: e && e.name }))
+    `);
+    log(`direct SecureStoragePlugin.set() probe (the suspected real failure behind the login-error text): ${JSON.stringify(secureStorageProbe)}`);
+
     // The backend can return 200 on /api/auth/login while the UI still
     // shows "Couldn't reach the server" -- Login.jsx's catch-all collapses
     // ANY error without an axios `.response` into that one network-sounding
