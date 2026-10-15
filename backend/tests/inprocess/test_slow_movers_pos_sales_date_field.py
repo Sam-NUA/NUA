@@ -34,8 +34,17 @@ def test_a_product_sold_via_real_pos_checkout_is_not_treated_as_a_slow_mover(cli
         "items": [{"productId": product_id, "productName": "Freshly Sold Widget", "quantity": 3}],
     }))
     try:
+        # ai_discount_slow_movers always ranks every *unsold* product ahead
+        # of every *sold* one (weakest = unsold + rows, truncated to
+        # bottomN), regardless of qty -- so with a small bottomN, other
+        # tests' leftover unsold "default"-business products (this suite
+        # shares one in-memory Mongo across the whole run; nothing here
+        # cleans those up) can push a genuinely sold product out of the
+        # response before this test's own assertion ever runs. bottomN this
+        # large guarantees our product is included no matter what the rest
+        # of the suite left behind.
         r = req(client, "POST", "/api/channel-menus/online/ai-discount-slow", headers=owner_headers,
-                json={"discountPercent": 10, "bottomN": 50, "daysWindow": 7})
+                json={"discountPercent": 10, "bottomN": 1000000, "daysWindow": 7})
         assert r.status_code == 200, r.text[:200]
         applied = r.json()["applied"]
         row = next((a for a in applied if a["productId"] == product_id), None)
