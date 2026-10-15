@@ -293,6 +293,34 @@ function dbNameFor(businessId) {
   return `nua-offline-v2-biz-${encodeURIComponent(businessId)}`;
 }
 
+// Same lookup as countPendingInDb, but returns the queued record's own
+// `payload` (the exact body offlineQueue.js's own replay would resend --
+// see enqueueTransaction()) instead of just a count, so the real
+// clientOpId it carries can be captured and matched later, and so this
+// exact payload can be replayed to prove duplicate submission is safe.
+async function getPendingPayloadInDb(evalPage, dbName) {
+  return evalPage(`(async function(){
+    const names = (await indexedDB.databases()).map(d => d.name);
+    if (!names.includes(${JSON.stringify(dbName)})) return null;
+    const db = await new Promise((resolve, reject) => {
+      const req = indexedDB.open(${JSON.stringify(dbName)});
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error);
+    });
+    let rows = [];
+    if (db.objectStoreNames.contains('pending_transactions')) {
+      rows = await new Promise((resolve, reject) => {
+        const tx = db.transaction('pending_transactions', 'readonly');
+        const getReq = tx.objectStore('pending_transactions').getAll();
+        getReq.onsuccess = () => resolve(getReq.result);
+        getReq.onerror = () => reject(getReq.error);
+      });
+    }
+    db.close();
+    return rows[0] ? rows[0].payload : null;
+  })()`);
+}
+
 async function countPendingInDb(evalPage, dbName) {
   return evalPage(`(async function(){
     const names = (await indexedDB.databases()).map(d => d.name);
@@ -345,6 +373,28 @@ async function countPendingTransactions(evalPage) {
     }
     return total;
   })()`);
+}
+
+// Decodes (never verifies -- no secret available here, and none needed:
+// this only reads claims to assert on, the backend itself still enforces
+// everything) a JWT's payload so the real bound token's own claims can be
+// checked directly. A row existing in /api/devices proves a device was
+// registered -- it does NOT by itself prove the CURRENT session actually
+// carries that binding (per real review feedback on an earlier draft).
+function decodeJwt(token) {
+  const payload = token.split('.')[1];
+  return JSON.parse(Buffer.from(payload.replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf8'));
+}
+
+// SecureStorageService.setToken() (frontend/src/platform/capacitor/
+// SecureStorageService.js) mirrors the real token into plain localStorage
+// under this same key specifically so call sites that still read it
+// directly keep working -- reading it back here captures exactly what the
+// app itself is using right now, not an inference from a side effect.
+async function captureBoundToken(page) {
+  const token = await page.evalPage(`localStorage.getItem('nua_token')`);
+  if (!token) throw new Error('No token found in localStorage after login');
+  return { token, claims: decodeJwt(token) };
 }
 
 async function loginWithPassword(page, email, password) {
@@ -488,7 +538,18 @@ async function main() {
     const deviceA = devicesA[0];
     if (deviceA.platform !== 'ios') throw new Error(`Expected the registered device's platform to be "ios", got "${deviceA.platform}"`);
     if (deviceA.status !== 'active') throw new Error(`Expected the registered device to be active, got status "${deviceA.status}"`);
-    log(`first-session device binding confirmed: deviceId=${deviceA.id} platform=${deviceA.platform} status=${deviceA.status}`);
+    log(`a device was registered: deviceId=${deviceA.id} platform=${deviceA.platform} status=${deviceA.status} (registry row alone, not yet proof the live session is bound)`);
+
+    // The registry row above only proves A device exists -- it says nothing
+    // about whether THIS session's own token carries that binding. Decode
+    // the real, currently-stored token the UI is actually using and check
+    // its own claims directly.
+    const boundA1 = await captureBoundToken(page);
+    if (boundA1.claims.sub !== ownerA.user.id) throw new Error(`Bound token's subject ${boundA1.claims.sub} doesn't match owner A ${ownerA.user.id}`);
+    if (boundA1.claims.businessId !== ownerA.user.businessId) throw new Error(`Bound token's businessId ${boundA1.claims.businessId} doesn't match business A ${ownerA.user.businessId}`);
+    if (boundA1.claims.deviceId !== deviceA.id) throw new Error(`Bound token's own deviceId claim is ${boundA1.claims.deviceId}, expected the registered device ${deviceA.id}`);
+    if (!boundA1.claims.sessionId) throw new Error('Bound token is missing a sessionId claim');
+    log(`first-session device binding confirmed on the real, currently-stored token itself: sessionId=${boundA1.claims.sessionId} deviceId=${boundA1.claims.deviceId} businessId=${boundA1.claims.businessId}`);
 
     // ── Phase 2: PIN login reuses the SAME bound device ──────────────────
     log('setting owner A\'s PIN for the PIN-login proof');
@@ -515,6 +576,11 @@ async function main() {
     }
     log('PIN login reused the existing device binding — no duplicate registration');
 
+    const boundA2 = await captureBoundToken(page);
+    if (boundA2.claims.deviceId !== deviceA.id) throw new Error(`PIN login's own bound token carries deviceId ${boundA2.claims.deviceId}, expected ${deviceA.id}`);
+    if (!boundA2.claims.sessionId) throw new Error('PIN login\'s bound token is missing a sessionId claim');
+    log(`PIN login's real bound token also carries the same device binding: sessionId=${boundA2.claims.sessionId} deviceId=${boundA2.claims.deviceId}`);
+
     // ── Phase 3: offline cash sale, real outage, restart, reconnect, sync ─
     await setNetwork(false);
 
@@ -540,6 +606,16 @@ async function main() {
       throw new Error(`Expected exactly 1 queued offline transaction before restart, found ${pendingBeforeRestart}`);
     }
     log('exactly 1 transaction is queued offline, as expected');
+
+    // Captured now, not inferred later from whatever the server happens to
+    // report after sync -- this is the exact idempotency key (and full
+    // payload) offlineQueue.js's own replay would resend, used below to
+    // require an exact match and to prove a duplicate submission is safe.
+    const queuedPayload = await getPendingPayloadInDb(page.evalPage, dbNameFor(ownerA.user.businessId));
+    if (!queuedPayload || !queuedPayload.clientOpId) {
+      throw new Error(`Expected the queued record's payload to carry a nonempty clientOpId, got: ${JSON.stringify(queuedPayload)}`);
+    }
+    log(`captured the queued sale's real idempotency key before restart: clientOpId=${queuedPayload.clientOpId}`);
 
     log('restarting the app process — a real terminate+relaunch, not a reload');
     await driver.execute('mobile: terminateApp', { bundleId: BUNDLE_ID });
@@ -614,6 +690,20 @@ async function main() {
     }
     log(`business B registered its own, separate device: deviceId=${devicesB[0].id} (business A's was ${deviceA.id})`);
 
+    // Reading A's database directly from B's session only proves
+    // preservation (the row wasn't deleted/migrated) -- it says nothing
+    // about whether the real APPLICATION itself would ever expose or
+    // replay it under B. The POS terminal's own offline-queue-banner
+    // (POSTerminal.jsx) is driven by useOfflineQueue's real queuedCount for
+    // whichever business is currently activated -- its absence here is the
+    // app's own UI proving B's session shows no sign of A's record, not an
+    // inference from the storage layer alone.
+    const bannerVisibleUnderB = await page.evalPage(`!!document.querySelector('[data-testid="offline-queue-banner"]')`);
+    if (bannerVisibleUnderB) {
+      throw new Error('The real app\'s own offline-queue-banner is visible under business B -- it should show no sign of business A\'s queued sale');
+    }
+    log('confirmed via the real app\'s own UI: no offline-queue-banner is shown under business B\'s session');
+
     const pendingForBWhileActive = await countPendingInDb(page.evalPage, dbNameFor(ownerB.businessId));
     if (pendingForBWhileActive !== 0) {
       throw new Error(`Expected business B's own queue to be empty, found ${pendingForBWhileActive}`);
@@ -622,7 +712,7 @@ async function main() {
     if (pendingForAWhileBActive !== 1) {
       throw new Error(`Expected business A's queued sale to still exist untouched while B is active, found ${pendingForAWhileBActive}`);
     }
-    log('confirmed: business A\'s pending offline record still exists untouched, and business B\'s own queue is empty, while B is the active session');
+    log('confirmed: business A\'s pending offline record still exists untouched (preservation, not a claim of encrypted/unreadable storage), and business B\'s own queue is empty, while B is the active session');
 
     const devicesVisibleToB = await fetchDevices(ownerB.token);
     if (devicesVisibleToB.some((d) => d.id === deviceA.id)) {
@@ -639,6 +729,12 @@ async function main() {
     page = makePageDriver(driver);
     await waitForOutcomeAfterSubmit(page);
     await navigateToPos(page);
+
+    // This is the live, currently-active bound session -- the one Phase 5
+    // below must prove revocation actually rejects, not the separate
+    // registration-time token (see that phase's own comment).
+    const boundA3 = await captureBoundToken(page);
+    if (boundA3.claims.deviceId !== deviceA.id) throw new Error(`Final bound token carries deviceId ${boundA3.claims.deviceId}, expected ${deviceA.id}`);
 
     log('waiting for the queue to auto-flush now that the backend is back online');
     let synced = false;
@@ -672,33 +768,77 @@ async function main() {
       throw new Error(`Synced transaction total $${txn.total} doesn't match the expected $${productA.price}`);
     }
     if (!txn.clientOpId) throw new Error('Synced transaction is missing its durable idempotency key');
+    if (txn.clientOpId !== queuedPayload.clientOpId) {
+      throw new Error(`Synced transaction's clientOpId ${txn.clientOpId} doesn't match the one captured from the queued record before restart (${queuedPayload.clientOpId})`);
+    }
     if (txn.businessId !== ownerA.user.businessId) throw new Error('Synced transaction belongs to another business');
-    log(`exactly one server-side transaction exists: id=${txn.id} total=$${txn.total} clientOpId=${txn.clientOpId} businessId=${txn.businessId}`);
+    log(`exactly one server-side transaction exists: id=${txn.id} total=$${txn.total} clientOpId=${txn.clientOpId} businessId=${txn.businessId} (matches the pre-restart queued record exactly)`);
+
+    log('proving a duplicate submission of the exact same queued payload is safe (no second transaction)');
+    const replayResult = await fetchJson('/api/transactions', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${ownerA.token}` },
+      body: JSON.stringify(queuedPayload),
+    });
+    if (replayResult.id !== txn.id) {
+      throw new Error(`Replaying the queued payload returned a different transaction (${replayResult.id}) instead of the existing one (${txn.id})`);
+    }
+    const transactionsAfterReplay = await fetchJson('/api/transactions?payment_method=Cash', {
+      headers: { Authorization: `Bearer ${ownerA.token}` },
+    });
+    if (transactionsAfterReplay.length !== 1) {
+      throw new Error(`Expected still exactly 1 transaction after replaying the same clientOpId, found ${transactionsAfterReplay.length}`);
+    }
+    log('confirmed: replaying the exact same queued payload returned the existing transaction, created no duplicate');
 
     // ── Phase 5: owner revocation rejects the bound session AND refresh ──
-    log('revoking owner A\'s own bound device as the owner');
+    // ownerA.token is the SEPARATE session /api/auth/register minted --
+    // never bound to this device, since bind-device was only ever called
+    // for the real UI's own login sessions. Revoking the device with it is
+    // fine (owner role is enough to revoke), but testing *against* it would
+    // prove nothing about this device's binding -- that unbound session
+    // has no device claim to revoke in the first place, so it's expected
+    // (and correct) to keep working after this device is revoked. The
+    // actual proof has to use boundA3, the real session the UI itself is
+    // using right now.
+    log('proving refresh succeeds for the real bound session BEFORE revocation (establishing a real baseline)');
+    const refreshBeforeRevoke = await page.evalPage(`
+      fetch(${JSON.stringify(BACKEND)} + '/api/auth/refresh', { method: 'POST', credentials: 'include' })
+        .then(r => ({ status: r.status }))
+        .catch(e => ({ error: e.message }))
+    `);
+    log(`refresh attempt before revocation: ${JSON.stringify(refreshBeforeRevoke)}`);
+    if (refreshBeforeRevoke.status !== 200) {
+      throw new Error(`Expected refresh to succeed (200) for the bound session before revocation, got ${JSON.stringify(refreshBeforeRevoke)}`);
+    }
+
+    log('revoking owner A\'s own bound device (using the separate registration session, which owner role alone makes valid for this)');
     await revokeDevice(ownerA.token, deviceA.id);
+
+    const registrationSessionStillValid = await fetchJson('/api/auth/me', { headers: { Authorization: `Bearer ${ownerA.token}` } });
+    if (registrationSessionStillValid.id !== ownerA.user.id) throw new Error('The independent, never-bound registration session unexpectedly broke after revocation');
+    log('confirmed: the independent, never-bound registration session remains valid after revocation (revocation is scoped to the device, not the whole account)');
 
     let rejectedAfterRevoke = false;
     try {
-      await fetchJson('/api/auth/me', { headers: { Authorization: `Bearer ${ownerA.token}` } });
+      await fetchJson('/api/auth/me', { headers: { Authorization: `Bearer ${boundA3.token}` } });
     } catch (error) {
       rejectedAfterRevoke = /HTTP 401|HTTP 403/.test(error.message);
       if (!rejectedAfterRevoke) throw error;
     }
-    if (!rejectedAfterRevoke) throw new Error('Expected the already-issued access token to be rejected on its next request after revocation');
-    log('confirmed: the revoked device\'s already-issued access token is rejected on its very next request');
+    if (!rejectedAfterRevoke) throw new Error('Expected the real bound session\'s access token to be rejected on its next request after revocation');
+    log('confirmed: the real bound session\'s access token is rejected on its very next request after revocation');
 
     const refreshAfterRevoke = await page.evalPage(`
       fetch(${JSON.stringify(BACKEND)} + '/api/auth/refresh', { method: 'POST', credentials: 'include' })
         .then(r => ({ status: r.status }))
         .catch(e => ({ error: e.message }))
     `);
-    log(`refresh attempt from inside the WebView after revocation: ${JSON.stringify(refreshAfterRevoke)}`);
-    if (refreshAfterRevoke.status === 200) {
-      throw new Error('Expected a refresh attempt to be rejected after the bound device was revoked, got 200');
+    log(`refresh attempt after revocation: ${JSON.stringify(refreshAfterRevoke)}`);
+    if (refreshAfterRevoke.status !== 401 && refreshAfterRevoke.status !== 403) {
+      throw new Error(`Expected refresh to be specifically rejected (401/403) after the bound device was revoked, got ${JSON.stringify(refreshAfterRevoke)}`);
     }
-    log('confirmed: refresh is also rejected after the bound device was revoked');
+    log('confirmed: refresh is specifically rejected (401/403) for the bound session after the device was revoked');
 
     log('PASS: password login -> device binding -> PIN login reuses binding -> order -> offline -> restart -> blocked-until-reverified -> reconnect -> sync -> exactly one order -> business isolation -> revocation rejects session and refresh, verified for real on a real (simulated) iOS WKWebView.');
   } finally {
