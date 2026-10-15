@@ -8,6 +8,7 @@ const { renderReceipt } = require('./receipt.cjs');
 const { EncryptedStore } = require('./encrypted-store.cjs');
 const { OfflineStore } = require('./offline-store.cjs');
 const { windowsCrypto } = require('./windows-crypto.cjs');
+const { waitForWindowsKey } = require('./crypto-readiness.cjs');
 protocol.registerSchemesAsPrivileged([{ scheme: 'nua', privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true } }]);
 let mainWindow;
 let printing = false;
@@ -57,6 +58,7 @@ async function start() {
   if (process.platform !== 'win32') throw new Error('This host is supported on Windows only');
   const config = JSON.parse(await fs.readFile(path.join(renderer, 'host-config.json'), 'utf8'));
   const origin = apiOrigin(config.apiOrigin);
+  await waitForWindowsKey({ safeStorage, sessionDataPath: app.getPath('sessionData') });
   // The Chromium session itself stays in-memory (below) so nothing Chromium
   // manages on its own survives a restart; the auth token and device id are
   // instead persisted explicitly here, through the same OS-encrypted,
