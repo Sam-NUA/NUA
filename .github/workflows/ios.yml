@@ -261,8 +261,22 @@ jobs:
         # stdout, which is what actually needs to be visible on a failure.
         # Tail it instead; the full file is still on disk if a human needs
         # more than this from the runner itself.
+        #
+        # A plain tail alone proved useless for diagnosing a session-
+        # creation timeout specifically: two real runs both failed around
+        # the 10-minute connectionRetryTimeout ceiling, and the tail
+        # window landed entirely within the ~1-2 seconds this step itself
+        # took to run, with nothing about WebDriverAgent's own xcodebuild
+        # timeline survived long enough to see whether it was still
+        # progressing or genuinely stuck. Grep the whole file for WDA's own
+        # build/launch milestones (cheap and small output either way) in
+        # addition to the tail.
         if: always()
-        run: tail -n 300 "$RUNNER_TEMP/appium.log" || true
+        run: |
+          echo "--- WebDriverAgent build/launch milestones (grepped from the full file) ---"
+          grep -niE "xcodebuild|wda|webdriveragent|build succeeded|build failed" "$RUNNER_TEMP/appium.log" | tail -n 200 || true
+          echo "--- last 300 lines ---"
+          tail -n 300 "$RUNNER_TEMP/appium.log" || true
       - name: Show mongod logs (debugging aid)
         if: always()
         run: tail -n 300 "$RUNNER_TEMP/mongod.log" || true
