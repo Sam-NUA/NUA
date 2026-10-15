@@ -1,5 +1,7 @@
 # Offline sync architecture
 
+> **15 October terminal follow-up:** [TERMINAL_DURABILITY_REVIEW_2026-10-15.md](TERMINAL_DURABILITY_REVIEW_2026-10-15.md) supersedes earlier first-session, device-switching and Windows durability status below. Native sessions now bind before protected operation; Windows checkout uses the shared queue with OS-encrypted host persistence. Native cold-start offline authorisation remains disabled. Refer to the dated report for actual CI results and remaining release limits.
+
 > **14 October 2026 review update:** See [MOBILE_HARDENING_REVIEW_2026-10-14.md](MOBILE_HARDENING_REVIEW_2026-10-14.md) for current fixes, validation and release limits. Earlier status/count/migration claims below are historical. The review removes native plaintext token fallback, quarantines legacy queues, retains rejected records, adds terminal management/export, and fixes scoped stock-transfer writes. Native cold-restart authorisation, hardware, signing and Windows checkout integration remain open.
 
 

@@ -1,5 +1,7 @@
 # Windows touchscreen and desktop
 
+> **15 October terminal follow-up:** [TERMINAL_DURABILITY_REVIEW_2026-10-15.md](TERMINAL_DURABILITY_REVIEW_2026-10-15.md) supersedes earlier first-session, device-switching and Windows durability status below. Native sessions now bind before protected operation; Windows checkout uses the shared queue with OS-encrypted host persistence. Native cold-start offline authorisation remains disabled. Refer to the dated report for actual CI results and remaining release limits.
+
 Started independently by Codex (ChatGPT) on `feat/windows-foundation`
 (PR #21) with its own Phase 0 audit and a real, carefully-sandboxed
 Electron host and offline-queue primitive; taken over and integrated

@@ -1,5 +1,24 @@
 # Multiplatform collaboration — Claude / ChatGPT (Codex) lanes
 
+## Current lanes — reviewed 16 October 2026 (Melbourne)
+
+Codex's draft PR #24 (`fix/terminal-session-durability`, stacked on draft
+PR #23) owns terminal auth/session binding, device adapters, the shared
+financial queue and supported Windows host/acceptance. Its final application
+revision `427b6da` passed all five workflows. Claude's draft PR #25,
+`claude/ios-financial-acceptance` at `dddf413`, starts from that revision
+and owns the extended iOS milestone and frontend dependency remediation.
+The iOS acceptance implementation exists but its latest run fails during
+Appium startup before login; dependency remediation is explicitly unstarted.
+The earlier `1d6e2ed` foundation delta is historical comparison.
+
+Use [the exact handoff](CLAUDE_IOS_DEPENDENCY_HANDOFF_2026-10-15.md) for
+remaining assertions and dependency corrections, and [the terminal report](TERMINAL_DURABILITY_REVIEW_2026-10-15.md)
+for completed changes and CI evidence. Review and test the combined result
+before integration. Do not merge PRs, deploy, touch Railway or modify
+production configuration as part of these lanes. Earlier reconciliation
+history below remains intact.
+
 Two agents worked the multiplatform effort in parallel, each on its own
 branch, with no direct channel to each other — GitHub (branches, commits,
 PR descriptions) plus this file were the coordination mechanism. This

@@ -1,5 +1,15 @@
 # NUA POS — Multiplatform foundation
 
+## Current reviews — 15 October 2026
+
+- [Terminal session and Windows durability report](TERMINAL_DURABILITY_REVIEW_2026-10-15.md): PR #24, `fix/terminal-session-durability`; current contracts, exact validation and launch limits.
+- [Mobile hardening review](MOBILE_HARDENING_REVIEW_2026-10-14.md): stacked parent PR #23; tenant spot check, login/sale/booking/recovery traces and dependency exposure triage.
+- [Claude's remaining iOS/dependency work](CLAUDE_IOS_DEPENDENCY_HANDOFF_2026-10-15.md): reviewed again 16 October; PR #25 preserves the latest session/Windows fixes, with extended iOS acceptance failing during Appium startup and dependency cleanup still unstarted.
+
+These are review branches; nothing here authorises merging or deployment.
+The foundation inventory below is historical. Its original environment limits
+do not supersede the dated reports' actual native CI results.
+
 Working branch: `feat/multiplatform-foundation`, base `main` @ `9963583`
 (see `CURRENT_ARCHITECTURE_AUDIT.md`'s "Baseline verification").
 
