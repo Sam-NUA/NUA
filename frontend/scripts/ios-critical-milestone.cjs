@@ -742,10 +742,22 @@ async function main() {
     log('confirmed: business A\'s device row is not visible to business B\'s own device list either');
 
     // ── Back to A: reconnect, sync, verify exactly one transaction ───────
-    log('logging out of owner B and back into owner A via PIN to resume the offline sale');
+    // Real finding from a CI run: staff_management.py's pin_login() never
+    // calls _set_tokens()/sets a refresh_token cookie at all (only
+    // routes/auth.py's password login does), so a PIN-authenticated
+    // session has no cookie for /auth/refresh to find -- Phase 5 below
+    // would see a pre-revocation refresh attempt fail with 401 "No refresh
+    // token" regardless of revocation, proving nothing. That's a real gap
+    // in pin_login() itself (Codex-owned, routes/staff_management.py) worth
+    // reporting, not something to paper over here. Re-enter via password
+    // instead so Phase 5 actually exercises refresh-cookie lifecycle,
+    // exactly the behaviour it needs a real pre-revocation baseline for;
+    // PIN login's own device-binding/token-claims proof already happened
+    // in Phase 2.
+    log('logging out of owner B and back into owner A via password to resume the offline sale');
     await logoutViaUI(page);
     await page.waitForSelector('[data-testid="login-page"]', 15000);
-    await loginWithPin(page, '1234');
+    await loginWithPassword(page, ownerA.email, ownerA.password);
     await connectWebviewContext(driver);
     page = makePageDriver(driver);
     await waitForOutcomeAfterSubmit(page);
