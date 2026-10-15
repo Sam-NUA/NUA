@@ -270,6 +270,12 @@ async function main() {
   });
 
   try {
+    // W3C WebDriver sessions default their "script" timeout to something
+    // near zero unless explicitly set — a real CI run's very first
+    // executeAsync() call (the login-screen reachability check) failed
+    // immediately: "Timed out waiting for asynchronous script result
+    // after 1 ms". Every evalPage() call below goes through executeAsync.
+    await driver.setTimeout({ script: 60000 });
     await connectWebviewContext(driver);
     const page = makePageDriver(driver);
 
