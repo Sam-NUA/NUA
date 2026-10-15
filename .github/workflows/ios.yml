@@ -146,7 +146,14 @@ jobs:
           set -eu
           mkdir -p "$RUNNER_TEMP/mongo-data"
           mongod --replSet nua-local --bind_ip_all --dbpath "$RUNNER_TEMP/mongo-data" --logpath "$RUNNER_TEMP/mongod.log" --fork
-          timeout 30 sh -c 'until mongosh --quiet --eval "db.adminCommand(\"ping\").ok"; do sleep 1; done'
+          # macOS runners ship no `timeout` binary (it's a GNU coreutils
+          # thing, confirmed missing by a real CI failure: "timeout: command
+          # not found") — poll with a plain bash deadline loop instead.
+          deadline=$(( $(date +%s) + 30 ))
+          until mongosh --quiet --eval 'db.adminCommand("ping").ok'; do
+            [ "$(date +%s)" -lt "$deadline" ] || { echo "mongod never answered a ping within 30s" >&2; exit 1; }
+            sleep 1
+          done
           mongosh --quiet --eval 'try { rs.status() } catch (e) { rs.initiate({_id:"nua-local",members:[{_id:0,host:"localhost:27017"}]}) }; for (let i=0;i<60;i++) { if (db.hello().isWritablePrimary) quit(0); sleep(500); }; quit(1)'
       - uses: actions/setup-python@v5
         with:
@@ -206,7 +213,11 @@ jobs:
         run: |
           set -eu
           nohup appium --base-path / --port 4723 > "$RUNNER_TEMP/appium.log" 2>&1 &
-          timeout 30 sh -c 'until curl -fsS http://localhost:4723/status; do sleep 1; done'
+          deadline=$(( $(date +%s) + 30 ))
+          until curl -fsS http://localhost:4723/status; do
+            [ "$(date +%s)" -lt "$deadline" ] || { echo "Appium server never came up within 30s" >&2; exit 1; }
+            sleep 1
+          done
       - name: Walk the full critical acceptance milestone
         working-directory: ./frontend
         env:
