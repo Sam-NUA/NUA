@@ -112,7 +112,6 @@
     "fake-indexeddb": "^6.2.5",
     "globals": "15.15.0",
     "postcss": "^8.4.49",
-    "serve": "^14.2.6",
     "tailwindcss": "^3.4.17",
     "wait-on": "^9.0.5"
   },
