@@ -293,8 +293,39 @@ async function main() {
     await page.setValue('[data-testid="login-password"]', password);
     await page.click('[data-testid="login-submit"]');
 
+    // Mirrors android-critical-milestone.cjs's own post-submit diagnosis —
+    // that script's real root cause the first time round was a stale
+    // selector (nav-pos vs dock-pos), found only by dumping exactly this.
+    {
+      const deadline = Date.now() + 15000;
+      let outcome = 'timed-out-waiting';
+      while (Date.now() < deadline) {
+        const hasError = await page.evalPage(`!!document.querySelector('[data-testid="login-error"]')`);
+        if (hasError) { outcome = 'login-error'; break; }
+        const hasNav = await page.evalPage(`!!document.querySelector('[data-testid="dock-pos"]')`);
+        if (hasNav) { outcome = 'nav-pos-visible'; break; }
+        const stillOnLogin = await page.evalPage(`!!document.querySelector('[data-testid="login-page"]')`);
+        if (!stillOnLogin) { outcome = 'left-login-page-no-nav-yet'; break; }
+        await wait(500);
+      }
+      const pathname = await page.evalPage('window.location.pathname');
+      const errorText = await page.evalPage(`(document.querySelector('[data-testid="login-error"]') || {}).innerText || null`);
+      log(`post-submit diagnosis: outcome=${outcome} pathname=${pathname} loginErrorText=${JSON.stringify(errorText)}`);
+    }
+
     log('navigating to the POS terminal via the bottom dock');
-    await page.waitForSelector('[data-testid="dock-pos"]', 45000);
+    try {
+      await page.waitForSelector('[data-testid="dock-pos"]', 45000);
+    } catch (error) {
+      const dump = await page.evalPage(`({
+        pathname: window.location.pathname,
+        readyState: document.readyState,
+        bodyTextHead: document.body.innerText.slice(0, 300),
+        testids: [...document.querySelectorAll('[data-testid]')].map(e => e.getAttribute('data-testid')).slice(0, 80),
+      })`).catch((e) => ({ evalPageFailed: e.message }));
+      log(`page dump when dock-pos never appeared: ${JSON.stringify(dump)}`);
+      throw error;
+    }
     await page.click('[data-testid="dock-pos"]');
     await page.waitForSelector('[data-testid="pos-terminal"]', 20000);
     await page.waitForSelector(`[data-testid="product-${product.id}"]`, 20000);
