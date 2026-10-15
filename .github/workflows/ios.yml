@@ -205,9 +205,16 @@ jobs:
           xcrun simctl boot "${{ steps.device.outputs.udid }}" || true
           xcrun simctl bootstatus "${{ steps.device.outputs.udid }}" -b
       - name: Install Appium and the XCUITest driver
+        # A real CI failure ruled out pinning a major here: `appium@2`
+        # installs server 2.19.0, but `appium driver install xcuitest` (no
+        # version pin) always grabs the latest published xcuitest driver,
+        # which now requires server ^3.0.0-rc.2 -- "'xcuitest' cannot be
+        # installed because the server version it requires ... does not
+        # meet the currently installed one (2.19.0)". Installing the
+        # current stable release of both keeps them in sync.
         run: |
           set -eu
-          npm install -g appium@2
+          npm install -g appium@latest
           appium driver install xcuitest
       - name: Start the Appium server
         run: |
