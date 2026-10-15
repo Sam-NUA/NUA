@@ -219,7 +219,7 @@ jobs:
       - name: Start the Appium server
         run: |
           set -eu
-          nohup appium --base-path / --port 4723 > "$RUNNER_TEMP/appium.log" 2>&1 &
+          nohup appium --base-path / --port 4723 --session-override > "$RUNNER_TEMP/appium.log" 2>&1 &
           deadline=$(( $(date +%s) + 30 ))
           until curl -fsS http://localhost:4723/status; do
             [ "$(date +%s)" -lt "$deadline" ] || { echo "Appium server never came up within 30s" >&2; exit 1; }

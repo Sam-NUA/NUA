@@ -238,6 +238,14 @@ async function main() {
       'appium:autoAcceptAlerts': true,
       'appium:newCommandTimeout': 180,
       'appium:webviewConnectTimeout': 30000,
+      // Without this, the XCUITest driver sees the simulator already
+      // booted "headless" (by this workflow's own earlier `xcrun simctl
+      // boot` step) and tries to restart it with a visible Simulator.app
+      // window before starting the session — a real CI run showed that
+      // restart never finishing ("Device did not finish booting within
+      // 120000ms"), which has no real display/window server to render
+      // into on this CI runner. isHeadless skips that restart entirely.
+      'appium:isHeadless': true,
     },
   });
 
