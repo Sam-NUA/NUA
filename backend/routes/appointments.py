@@ -224,7 +224,7 @@ async def update_appointment(appointment_id: str, data: AppointmentUpdate, user:
             new_time = update_data.get("time", existing.get("time"))
             new_staff = update_data.get("staffId", existing.get("staffId"))
             start, end = _window(new_date, new_time, duration)
-            if update_data.get("status", existing["status"]) in ACTIVE_STATUSES and not await _staff_is_free(
+            if not await _staff_is_free(
                 new_staff, start, end, user.get("businessId"), exclude_id=appointment_id, session=session
             ):
                 raise HTTPException(status_code=409, detail="That staff member already has an appointment then")
