@@ -19,6 +19,7 @@ from pydantic import BaseModel
 import uuid
 
 from database import db
+from services import consistency_store
 from deps import require_owner_or_manager
 from middleware.actor_context import tenant_scope_filter, tenant_owns_strict
 
@@ -56,48 +57,51 @@ async def create_transfer(data: StockTransferCreate, user: dict = Depends(requir
     if data.fromLocation == data.toLocation:
         raise HTTPException(status_code=400, detail="Source and destination must differ")
 
-    product = await db.products.find_one({"$and": [{"id": data.productId}, tenant_scope_filter(user.get("businessId"))]}, {"_id": 0})
-    if not product or not tenant_owns_strict(product.get("businessId"), user.get("businessId")):
-        raise HTTPException(status_code=404, detail="Product not found")
+    async def operation(session):
+        product = await db.products.find_one({"$and": [{"id": data.productId}, tenant_scope_filter(user.get("businessId"))]}, {"_id": 0}, session=session)
+        if not product or not tenant_owns_strict(product.get("businessId"), user.get("businessId")):
+            raise HTTPException(status_code=404, detail="Product not found")
 
-    stock_by_loc = product.get("stockByLocation") or {}
-    available = stock_by_loc.get(data.fromLocation, 0)
-    if available < data.quantity:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Only {available} unit(s) of {product.get('name')} at {data.fromLocation}",
+        stock_by_loc = product.get("stockByLocation") or {}
+        available = stock_by_loc.get(data.fromLocation, 0)
+        if available < data.quantity:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Only {available} unit(s) of {product.get('name')} at {data.fromLocation}",
+            )
+
+        # Atomic guard: only decrements if the source still has enough at the
+        # moment of the write, not just when we read it a moment ago — two
+        # transfers requested for the last few units at once can't both succeed.
+        field = f"stockByLocation.{data.fromLocation}"
+        result = await db.products.update_one(
+            {"$and": [{"id": data.productId, field: {"$gte": data.quantity}}, tenant_scope_filter(user.get("businessId"))]},
+            {"$inc": {field: -data.quantity}}, session=session,
         )
+        if result.modified_count == 0:
+            raise HTTPException(status_code=409, detail="Stock changed — retry the transfer")
 
-    # Atomic guard: only decrements if the source still has enough at the
-    # moment of the write, not just when we read it a moment ago — two
-    # transfers requested for the last few units at once can't both succeed.
-    field = f"stockByLocation.{data.fromLocation}"
-    result = await db.products.update_one(
-        {"$and": [{"id": data.productId, field: {"$gte": data.quantity}}, tenant_scope_filter(user.get("businessId"))]},
-        {"$inc": {field: -data.quantity}},
-    )
-    if result.modified_count == 0:
-        raise HTTPException(status_code=409, detail="Stock changed — retry the transfer")
+        now_iso = datetime.now(timezone.utc).isoformat()
+        transfer = {
+            "id": f"XFER-{str(uuid.uuid4())[:8].upper()}",
+            "productId": data.productId,
+            "productName": product.get("name", ""),
+            "fromLocation": data.fromLocation,
+            "toLocation": data.toLocation,
+            "quantity": data.quantity,
+            "status": "in_transit",
+            "notes": data.notes or "",
+            "requestedBy": user.get("id"),
+            "requestedByName": user.get("name"),
+            "requestedAt": now_iso,
+            "receivedAt": None,
+            "businessId": user.get("businessId"),
+        }
+        await db.stock_transfers.insert_one(dict(transfer), session=session)
+        transfer.pop("_id", None)
+        return transfer
 
-    now_iso = datetime.now(timezone.utc).isoformat()
-    transfer = {
-        "id": f"XFER-{str(uuid.uuid4())[:8].upper()}",
-        "productId": data.productId,
-        "productName": product.get("name", ""),
-        "fromLocation": data.fromLocation,
-        "toLocation": data.toLocation,
-        "quantity": data.quantity,
-        "status": "in_transit",
-        "notes": data.notes or "",
-        "requestedBy": user.get("id"),
-        "requestedByName": user.get("name"),
-        "requestedAt": now_iso,
-        "receivedAt": None,
-        "businessId": user.get("businessId"),
-    }
-    await db.stock_transfers.insert_one(dict(transfer))
-    transfer.pop("_id", None)
-    return transfer
+    return await consistency_store.stock_change(operation)
 
 
 @router.get("/stock-transfers", response_model=List[StockTransfer])
@@ -116,38 +120,41 @@ async def list_transfers(status: Optional[str] = None, productId: Optional[str] 
     return [StockTransfer(**r) for r in rows]
 
 
+async def _finish_transfer(transfer_id, status, user):
+    scope = tenant_scope_filter(user.get("businessId"))
+
+    async def operation(session):
+        transfer = await db.stock_transfers.find_one(
+            {"id": transfer_id, **scope}, {"_id": 0}, session=session)
+        if not transfer or not tenant_owns_strict(transfer.get("businessId"), user.get("businessId")):
+            raise HTTPException(404, "Transfer not found")
+        if transfer["status"] != "in_transit":
+            raise HTTPException(400, f"Transfer is already {transfer['status']}")
+        location = transfer['toLocation'] if status == 'received' else transfer['fromLocation']
+        result = await db.products.update_one(
+            {"id": transfer["productId"], **scope},
+            {"$inc": {f"stockByLocation.{location}": transfer["quantity"]}}, session=session)
+        if result.matched_count == 0:
+            raise HTTPException(404, "Product not found")
+        changes = {"status": status}
+        if status == "received":
+            changes["receivedAt"] = datetime.now(timezone.utc).isoformat()
+        changed = await db.stock_transfers.find_one_and_update(
+            {"id": transfer_id, "status": "in_transit", **scope},
+            {"$set": changes}, return_document=True, session=session)
+        if not changed:
+            raise HTTPException(409, "Transfer changed; retry")
+        return StockTransfer(**changed)
+
+    return await consistency_store.stock_change(operation)
+
+
 @router.post("/stock-transfers/{transfer_id}/receive", response_model=StockTransfer)
 async def receive_transfer(transfer_id: str, user: dict = Depends(require_owner_or_manager)):
-    transfer = await db.stock_transfers.find_one({"$and": [{"id": transfer_id}, tenant_scope_filter(user.get("businessId"))]}, {"_id": 0})
-    if not transfer or not tenant_owns_strict(transfer.get("businessId"), user.get("businessId")):
-        raise HTTPException(status_code=404, detail="Transfer not found")
-    if transfer["status"] != "in_transit":
-        raise HTTPException(status_code=400, detail=f"Transfer is already {transfer['status']}")
-
-    field = f"stockByLocation.{transfer['toLocation']}"
-    await db.products.update_one({"id": transfer["productId"]}, {"$inc": {field: transfer["quantity"]}})
-
-    now_iso = datetime.now(timezone.utc).isoformat()
-    await db.stock_transfers.update_one(
-        {"$and": [{"id": transfer_id}, tenant_scope_filter(user.get("businessId"))]}, {"$set": {"status": "received", "receivedAt": now_iso}},
-    )
-    updated = await db.stock_transfers.find_one({"$and": [{"id": transfer_id}, tenant_scope_filter(user.get("businessId"))]}, {"_id": 0})
-    return StockTransfer(**updated)
+    return await _finish_transfer(transfer_id, "received", user)
 
 
 @router.post("/stock-transfers/{transfer_id}/cancel", response_model=StockTransfer)
 async def cancel_transfer(transfer_id: str, user: dict = Depends(require_owner_or_manager)):
-    """Cancels an in-transit transfer and returns the stock to its source —
-    for a shipment that never actually left, or was requested by mistake."""
-    transfer = await db.stock_transfers.find_one({"$and": [{"id": transfer_id}, tenant_scope_filter(user.get("businessId"))]}, {"_id": 0})
-    if not transfer or not tenant_owns_strict(transfer.get("businessId"), user.get("businessId")):
-        raise HTTPException(status_code=404, detail="Transfer not found")
-    if transfer["status"] != "in_transit":
-        raise HTTPException(status_code=400, detail=f"Transfer is already {transfer['status']}")
-
-    field = f"stockByLocation.{transfer['fromLocation']}"
-    await db.products.update_one({"id": transfer["productId"]}, {"$inc": {field: transfer["quantity"]}})
-
-    await db.stock_transfers.update_one({"$and": [{"id": transfer_id}, tenant_scope_filter(user.get("businessId"))]}, {"$set": {"status": "cancelled"}})
-    updated = await db.stock_transfers.find_one({"$and": [{"id": transfer_id}, tenant_scope_filter(user.get("businessId"))]}, {"_id": 0})
-    return StockTransfer(**updated)
+    """Cancel an in-transit transfer and return its stock to the source."""
+    return await _finish_transfer(transfer_id, "cancelled", user)
