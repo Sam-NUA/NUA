@@ -572,6 +572,25 @@ async function main() {
     if (!boundA1.claims.sessionId) throw new Error('Bound token is missing a sessionId claim');
     log(`first-session device binding confirmed on the real, currently-stored token itself: sessionId=${boundA1.claims.sessionId} deviceId=${boundA1.claims.deviceId} businessId=${boundA1.claims.businessId}`);
 
+    // Diagnostic only (never fails the run): Phase 5 saw refresh return 401
+    // "No refresh token" on a real CI run, even right after a fresh password
+    // login whose Set-Cookie was confirmed correct against this exact
+    // backend logic in isolation (TestClient, no WebView involved). Capacitor
+    // apps with iosScheme "capacitor" are documented to need the
+    // @capacitor/cookies plugin for a WKWebView's fetch/XHR to reliably see
+    // Set-Cookie from a cross-scheme (capacitor://->http://) response at all
+    // -- this project has no such plugin installed. Testing refresh this
+    // early, right after the very first login with zero intervening
+    // logout/relogin, tells us whether the cookie never survives the
+    // WKWebView in the first place (a platform/dependency gap, not a
+    // sequencing bug) versus something specific to a later transition.
+    const refreshRightAfterFirstLogin = await page.evalPage(`
+      fetch(${JSON.stringify(BACKEND)} + '/api/auth/refresh', { method: 'POST', credentials: 'include' })
+        .then(r => ({ status: r.status }))
+        .catch(e => ({ error: e.message }))
+    `).catch((e) => ({ error: e.message }));
+    log(`diagnostic: refresh attempt immediately after the very first login, no logout yet: ${JSON.stringify(refreshRightAfterFirstLogin)}`);
+
     // ── Phase 2: PIN login reuses the SAME bound device ──────────────────
     log('setting owner A\'s PIN for the PIN-login proof');
     await setOwnPin(ownerA.token, ownerA.user.id, '1234');
