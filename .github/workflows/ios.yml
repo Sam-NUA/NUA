@@ -125,7 +125,16 @@ jobs:
     timeout-minutes: 35
     env:
       PUBLIC_URL: /
-      REACT_APP_BACKEND_URL: http://localhost:8001
+      # The literal numeric loopback IP, not "localhost" -- a real CI
+      # failure showed the WKWebView's own login POST (axios withCredentials
+      # call in AuthContext.jsx) failing with no HTTP response at all
+      # ("Couldn't reach the server"), while a plain fetch() GET against the
+      # same host had worked moments earlier. iOS's App Transport Security
+      # NSAllowsLocalNetworking exception (Info.plist) is documented against
+      # numeric loopback/link-local addresses and the .local TLD, NOT the
+      # "localhost" hostname string itself -- unlike Android, which doesn't
+      # draw that distinction, so android.yml's equivalent job never hit this.
+      REACT_APP_BACKEND_URL: http://127.0.0.1:8001
       CI: false
     steps:
       - uses: actions/checkout@v4
@@ -228,14 +237,21 @@ jobs:
       - name: Walk the full critical acceptance milestone
         working-directory: ./frontend
         env:
-          MILESTONE_BACKEND_URL: http://localhost:8001
+          MILESTONE_BACKEND_URL: http://127.0.0.1:8001
           SIMULATOR_UDID: ${{ steps.device.outputs.udid }}
           APP_PATH: ${{ runner.temp }}/build/Build/Products/Debug-iphonesimulator/App.app
           APPIUM_PORT: '4723'
         run: node scripts/ios-critical-milestone.cjs
       - name: Show Appium server logs (debugging aid)
+        # Appium's own debug-level RemoteDebugger/XCUITest chatter is
+        # extremely verbose — a full `cat` here reliably produces enough
+        # output to blow past log-retrieval tooling's own size limits on its
+        # own, drowning out the milestone script's own (much sparser)
+        # stdout, which is what actually needs to be visible on a failure.
+        # Tail it instead; the full file is still on disk if a human needs
+        # more than this from the runner itself.
         if: always()
-        run: cat "$RUNNER_TEMP/appium.log" || true
+        run: tail -n 300 "$RUNNER_TEMP/appium.log" || true
       - name: Show mongod logs (debugging aid)
         if: always()
-        run: cat "$RUNNER_TEMP/mongod.log" || true
+        run: tail -n 300 "$RUNNER_TEMP/mongod.log" || true

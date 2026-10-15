@@ -35,7 +35,12 @@ const { execFileSync, spawn } = require('node:child_process');
 const path = require('node:path');
 const { remote } = require('webdriverio');
 
-const BACKEND = process.env.MILESTONE_BACKEND_URL || 'http://localhost:8001';
+// The literal loopback IP, not "localhost" -- see ios.yml's own comment on
+// REACT_APP_BACKEND_URL: iOS App Transport Security's NSAllowsLocalNetworking
+// exception covers numeric loopback/link-local addresses and .local, but not
+// the "localhost" hostname string itself, so the real built app's WKWebView
+// needs this exact value to reach the backend over plain HTTP at all.
+const BACKEND = process.env.MILESTONE_BACKEND_URL || 'http://127.0.0.1:8001';
 const BUNDLE_ID = 'com.nua.pos';
 const UDID = process.env.SIMULATOR_UDID;
 const APP_PATH = process.env.APP_PATH;
