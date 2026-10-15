@@ -31,4 +31,7 @@
   };
   bar.append(status, fullscreen, print);
   document.body.append(bar);
+  const reserveBar = () => document.documentElement.style.setProperty('--nua-host-bar-height', `${Math.ceil(bar.getBoundingClientRect().height)}px`);
+  reserveBar();
+  new ResizeObserver(reserveBar).observe(bar);
 })();

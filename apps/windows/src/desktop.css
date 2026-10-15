@@ -1,8 +1,15 @@
 /* Native host controls sit outside the shared React root. */
-body { padding-bottom: 36px; }
+:root { --nua-host-bar-height: 36px; }
+body { padding-bottom: var(--nua-host-bar-height); }
 #nua-desktop-bar { position: fixed; bottom: 0; left: 0; right: 0; z-index: 2147483647; display: flex; align-items: center; gap: 12px; padding: 4px 12px; background: #18181b; color: #fff; font: 12px system-ui; min-height: 36px; }
 #nua-desktop-bar button { border: 1px solid #a1a1aa; border-radius: 5px; padding: 3px 10px; color: white; background: #27272a; }
 #nua-desktop-bar button:focus-visible { outline: 3px solid #f58c14; }
+/* Body padding cannot move React's fixed dock, drawers or floating actions.
+   Reserve the measured native control bar height for those controls too. */
+.fixed.bottom-0 { bottom: var(--nua-host-bar-height); }
+.fixed.bottom-5 { bottom: calc(1.25rem + var(--nua-host-bar-height)); }
+.fixed.bottom-20 { bottom: calc(5rem + var(--nua-host-bar-height)); }
 html[data-nua-input="touch"] button, html[data-nua-input="touch"] [role="button"], html[data-nua-input="touch"] input, html[data-nua-input="touch"] select { min-height: 44px; }
 html[data-nua-input="touch"] { touch-action: manipulation; }
-html[data-nua-input="touch"] body { padding-bottom: 56px; }
+html[data-nua-input="touch"] { --nua-host-bar-height: 56px; }
+html[data-nua-input="touch"] #nua-desktop-bar { min-height: 56px; }
