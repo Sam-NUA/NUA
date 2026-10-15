@@ -198,6 +198,17 @@ jobs:
           echo "udid=$UDID" >> "$GITHUB_OUTPUT"
       - name: Build for iOS Simulator
         working-directory: ./frontend/ios/App
+        # CODE_SIGNING_ALLOWED=NO (the smoke-test "ios" job above, which
+        # never logs in, uses it fine) leaves the .app with no code
+        # signature at all -- and a real CI run of this job showed
+        # SecureStoragePlugin.set() (the real iOS Keychain write
+        # SecureStorageService.setToken() makes right after login)
+        # failing outright: Keychain Services requires at least a valid
+        # ad-hoc signature to establish the calling process's identity for
+        # its ACL, even on the Simulator. `-` is Xcode's own "sign to run
+        # locally" ad-hoc identity -- no certificate or provisioning
+        # profile needed, same as what Xcode does automatically for any
+        # ordinary Simulator build when CI doesn't override it.
         run: |
           set -eu
           xcodebuild build \
@@ -207,7 +218,7 @@ jobs:
             -sdk iphonesimulator \
             -destination "platform=iOS Simulator,id=${{ steps.device.outputs.udid }}" \
             -derivedDataPath "$RUNNER_TEMP/build" \
-            CODE_SIGNING_ALLOWED=NO
+            CODE_SIGN_IDENTITY=- CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=YES
       - name: Boot the simulator
         run: |
           set -eu
