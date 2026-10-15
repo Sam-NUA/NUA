@@ -40,7 +40,12 @@ async function disconnect() {
 }
 async function launch() {
   host = await _electron.launch({ executablePath: require('electron'), args: [path.resolve(__dirname, '..')] });
-  return host.firstWindow();
+  const window = await host.firstWindow();
+  window.on('requestfailed', request => {
+    // Do not log queries or headers; they may contain application credentials.
+    console.log('Acceptance network failure:', new URL(request.url()).pathname, request.failure()?.errorText);
+  });
+  return window;
 }
 async function signIn(page, address) {
   await page.getByTestId('login-email').fill(address);
@@ -118,6 +123,8 @@ async function signOut(page) {
 })().catch(async error => {
   console.error(error.message); process.exitCode = 1;
   if (page && !page.isClosed()) {
+    console.error('Acceptance credential storage:', await page.evaluate(() => window.nuaDesktop.getToken()
+      .then(value => ({ present: !!value }), error => ({ error: error.message }))).catch(error => ({ error: error.message })));
     console.error('Acceptance screen:', (await page.locator('body').innerText().catch(() => '')).slice(0, 4000));
     await page.screenshot({ path: path.join(process.env.RUNNER_TEMP, 'nua-windows-acceptance.png'), fullPage: true }).catch(() => {});
   }
