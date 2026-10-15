@@ -18,6 +18,13 @@ So **`yarn audit` is the production-relevant audit**, not `npm audit`. The previ
 
 **yarn** (`yarn audit`, the one that matters for the shipped build): 234 vulnerabilities — 6 critical, 126 high, 92 moderate, 10 low, across 1744 resolved dependencies, spanning 23 unique vulnerable module names.
 
+### Update: `webdriverio` added as a devDependency (same day, same pass)
+
+Added to drive the new iOS `critical-acceptance-milestone` CI job (`scripts/ios-critical-milestone.cjs`, via Appium's XCUITest driver) — CI-automation tooling only, invoked by nothing that ships: not the production web bundle, not the Capacitor Android/iOS sync, not the packaged Windows app. Re-running both audits after adding it:
+
+- **npm**: 127 vulnerabilities — 1 critical, 84 high, 37 moderate, 5 low (1881 resolved dependencies). The new modules (`webdriverio`, `webdriver`, `@wdio/config`, `@wdio/utils`, `jsonpath`, `xcode`, and a few more pulled in transitively) fall into the same "devDependency-rooted tooling, never shipped" bucket as the `react-scripts`/`electron-builder`/`@capacitor/cli` clusters documented above — not re-audited module-by-module here since the categorization (CI-only tooling) is self-evident from `webdriverio` only being `require()`d by this one CI script.
+- **yarn** (production-relevant): 182 vulnerabilities — 6 critical, 99 high, 67 moderate, 10 low (1890 resolved dependencies). Counter-intuitively *lower* than before despite more total dependencies — yarn's resolver satisfied some existing shared transitive ranges with newer, already-patched versions once the dependency graph widened. Not a regression.
+
 ## What this pass did (safe fixes only — no CRA/Vite migration, no major bumps)
 
 - Ran `npm audit fix` (no `--force`): reduced npm-side critical count from 4 → 1 (all other npm criticals were in `electron-builder`'s own transitive chain and got a non-breaking bump).
