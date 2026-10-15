@@ -320,6 +320,25 @@ async function main() {
     `);
     log(`direct fetch() reachability check from inside the WebView: ${JSON.stringify(reachability)}`);
 
+    // The backend can return 200 on /api/auth/login while the UI still
+    // shows "Couldn't reach the server" -- Login.jsx's catch-all collapses
+    // ANY error without an axios `.response` into that one network-sounding
+    // message (see its own comment on loginErrorMessage()), which is also
+    // exactly what a non-axios throw after the request -- e.g. from
+    // SecureStorageService.setToken()'s uncaught SecureStoragePlugin.set()
+    // call -- looks like. Capture the real error instead of trusting the
+    // rendered text.
+    await page.evalPage(`(function(){
+      window.__milestoneErrors = [];
+      window.addEventListener('unhandledrejection', (e) => {
+        window.__milestoneErrors.push({ kind: 'unhandledrejection', message: (e.reason && e.reason.message) || String(e.reason) });
+      });
+      window.addEventListener('error', (e) => {
+        window.__milestoneErrors.push({ kind: 'error', message: e.message });
+      });
+      true;
+    })()`);
+
     await page.setValue('[data-testid="login-email"]', email);
     await page.setValue('[data-testid="login-password"]', password);
     await page.click('[data-testid="login-submit"]');
@@ -341,7 +360,8 @@ async function main() {
       }
       const pathname = await page.evalPage('window.location.pathname');
       const errorText = await page.evalPage(`(document.querySelector('[data-testid="login-error"]') || {}).innerText || null`);
-      log(`post-submit diagnosis: outcome=${outcome} pathname=${pathname} loginErrorText=${JSON.stringify(errorText)}`);
+      const capturedErrors = await page.evalPage('window.__milestoneErrors || []');
+      log(`post-submit diagnosis: outcome=${outcome} pathname=${pathname} loginErrorText=${JSON.stringify(errorText)} capturedErrors=${JSON.stringify(capturedErrors)}`);
     }
 
     log('navigating to the POS terminal via the bottom dock');
