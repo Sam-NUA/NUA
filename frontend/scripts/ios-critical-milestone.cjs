@@ -360,6 +360,16 @@ async function loginWithPin(page, pin) {
   await page.waitForSelector('[data-testid="login-pin"]');
   await page.setValue('[data-testid="login-pin"]', pin);
   await page.click('[data-testid="pin-submit"]');
+  // handlePinLogin (Login.jsx) does `await staffMgmtAPI.pinLogin(pin)` then
+  // `await SecureStorageService.setToken(...)` then a full
+  // `window.location.assign('/clock-in')` reload -- all AFTER this click
+  // already returned (the click itself is just the tap; none of that is
+  // awaited by it). A real CI run reconnected the WEBVIEW context and hit
+  // it with executeAsync before the reload had actually started, getting a
+  // context mid-teardown and an opaque WebDriverError back. Give the whole
+  // chain time to actually finish navigating before anything touches the
+  // page again.
+  await wait(3000);
 }
 
 async function logoutViaUI(page) {
