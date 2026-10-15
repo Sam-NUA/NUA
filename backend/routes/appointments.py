@@ -287,7 +287,18 @@ async def list_intake_notes(customerPhone: Optional[str] = None, customerId: Opt
 
 @router.post("/client-intake", response_model=IntakeNote)
 async def create_intake_note(data: IntakeNoteCreate, user: dict = Depends(get_user)):
+    business_id = user.get("businessId")
+    # A client-supplied customerId used to be accepted at face value and
+    # stored unchecked -- a foreign reference silently linked this intake
+    # note to another business's customer instead of a clear rejection
+    # (same class of bug reservations.py's create_reservation already
+    # guards against for its own customerId field).
+    if data.customerId:
+        owned_customer = await db.customers.find_one(
+            {"id": data.customerId, **tenant_scope_filter(business_id)}, {"_id": 0, "id": 1})
+        if not owned_customer:
+            raise HTTPException(status_code=404, detail="Customer not found")
     note = IntakeNote(**data.dict(), staffId=user.get("id"), staffName=user.get("name", ""),
-                       businessId=user.get("businessId"))
+                       businessId=business_id)
     await db.client_intake.insert_one(note.dict())
     return note

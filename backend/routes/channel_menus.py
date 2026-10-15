@@ -246,9 +246,16 @@ async def ai_discount_slow_movers(channel: str, body: dict, user: dict = Depends
     if not (1 <= discount <= 70):
         raise HTTPException(status_code=400, detail="discountPercent must be 1..70")
 
-    cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+    # transactions.create_transaction (the actual POS checkout path) never
+    # sets createdAt -- it only ever writes `timestamp`. Matching on
+    # createdAt silently excluded every POS sale from this aggregation,
+    # making sold products look unsold. Also compare against a real
+    # datetime, not its .isoformat() string: $gte on a string operand
+    # against a datetime-typed field is the latent BSON type-bracketing bug
+    # utils/dates.py's date_range_filter was written specifically to avoid.
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
     pipeline = [
-        {"$match": {"createdAt": {"$gte": cutoff}, **tenant_scope_filter(biz)}},
+        {"$match": {"timestamp": {"$gte": cutoff}, **tenant_scope_filter(biz)}},
         {"$unwind": "$items"},
         {"$group": {"_id": "$items.productId", "qty": {"$sum": "$items.quantity"}, "name": {"$first": "$items.productName"}}},
         {"$sort": {"qty": 1}},
