@@ -263,6 +263,29 @@ def test_stock_insert_failure_aborts_real_source_debit(monkeypatch):
     run(scenario())
 
 
+def test_stock_status_failure_aborts_real_destination_credit(monkeypatch):
+    class BrokenTransfers:
+        def __getattr__(self, name):
+            return getattr(db.stock_transfers, name)
+        async def find_one_and_update(self, *args, **kwargs):
+            product = await db.products.find_one({'id': 'transfer-product'}, session=kwargs['session'])
+            assert product['stockByLocation']['B'] == 5
+            raise RuntimeError('injected status failure')
+    class BrokenDB:
+        stock_transfers = BrokenTransfers()
+        def __getattr__(self, name):
+            return getattr(db, name)
+    async def scenario():
+        user, data = await seed_transfer()
+        transfer = await stock_transfers.create_transfer(data, user)
+        monkeypatch.setattr(stock_transfers, 'db', BrokenDB())
+        with pytest.raises(RuntimeError, match='injected status failure'):
+            await stock_transfers.receive_transfer(transfer['id'], user)
+        assert (await db.products.find_one({'id': data.productId}))['stockByLocation'] == {'A': 15, 'B': 0}
+        assert (await db.stock_transfers.find_one({'id': transfer['id']}))['status'] == 'in_transit'
+    run(scenario())
+
+
 def test_stock_concurrent_source_debits_cannot_oversell():
     async def scenario():
         user, data = await seed_transfer()

@@ -135,6 +135,10 @@ def test_concurrent_appointments_and_reconfirmation_cannot_overlap(client, owner
         with pytest.raises(HTTPException) as exc:
             await appointments.update_appointment(winner.id, AppointmentUpdate(status='confirmed'), user)
         assert exc.value.status_code == 409
+        # Preserve the existing conflict check for rescheduling cancelled records.
+        with pytest.raises(HTTPException) as exc:
+            await appointments.update_appointment(winner.id, AppointmentUpdate(time='10:15'), user)
+        assert exc.value.status_code == 409
         # Adjacent appointments still work; changing one into the occupied slot does not.
         adjacent = await appointments.create_appointment(data.model_copy(update={'time': '10:45'}), user)
         with pytest.raises(HTTPException) as exc:
