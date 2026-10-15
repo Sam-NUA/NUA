@@ -108,7 +108,20 @@ function spawnBackend() {
       MONGO_URL: 'mongodb://localhost:27017/?replicaSet=nua-local',
       DB_NAME: 'nua_restaurant',
       JWT_SECRET: 'dev-only-not-for-production-please-rotate',
-      FRONTEND_URL: 'https://localhost', // matches Capacitor's iosScheme: "https" origin
+      // capacitor.config.json sets iosScheme: "https", which should make the
+      // WKWebView's real origin "https://localhost" (matching Android's own
+      // "https://localhost" under androidScheme: "https") -- but an earlier
+      // RemoteDebugger trace in this same effort once showed the live
+      // WebView title/url as "capacitor://localhost" instead, and a real CI
+      // run saw even a plain fetch() GET fail with a generic WebKit
+      // "Load failed" TypeError (the same opaque error a CORS-origin
+      // mismatch produces, not just App Transport Security). Backend
+      // supports comma-separated origins -- listing both candidates here is
+      // strictly widening an allowlist, never a security loosening relative
+      // to this throwaway, localhost-only CI backend. main() below also logs
+      // window.location.origin directly, so the next real run confirms
+      // which one it actually is.
+      FRONTEND_URL: 'https://localhost,capacitor://localhost',
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -296,6 +309,9 @@ async function main() {
 
     log('waiting for the login screen');
     await page.waitForSelector('[data-testid="login-email"]');
+
+    const origin = await page.evalPage('window.location.origin');
+    log(`WebView's real origin (decides which FRONTEND_URL entry CORS must match): ${origin}`);
 
     const reachability = await page.evalPage(`
       fetch(${JSON.stringify(BACKEND)} + '/api/ready')
