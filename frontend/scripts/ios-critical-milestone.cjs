@@ -141,7 +141,7 @@ async function setNetwork(enabled) {
   await wait(2000); // propagation isn't instant, same margin android-critical-milestone.cjs uses
 }
 
-async function connectWebviewContext(driver, timeoutMs = 30000) {
+async function connectWebviewContext(driver, timeoutMs = 60000) {
   const deadline = Date.now() + timeoutMs;
   let lastContexts = [];
   while (Date.now() < deadline) {
@@ -230,6 +230,16 @@ async function main() {
     port: APPIUM_PORT,
     path: '/',
     logLevel: 'warn',
+    // webdriverio's own defaults (connectionRetryCount: 3, each retry
+    // timing out at 120s) fired three overlapping POST /session requests
+    // in a real CI run, each stepping on the previous one's WebDriverAgent
+    // startup ("Session ID is required but was not set", "WebDriverAgent
+    // is not initialized") — because a cold-cache WDA build alone took
+    // ~80s, and the whole createSession round trip took over 4 minutes
+    // once those collisions piled up. One attempt with a generous timeout
+    // beats three that fight each other.
+    connectionRetryCount: 0,
+    connectionRetryTimeout: 300000,
     capabilities: {
       platformName: 'iOS',
       'appium:automationName': 'XCUITest',
