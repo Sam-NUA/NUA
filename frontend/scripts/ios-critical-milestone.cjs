@@ -239,7 +239,12 @@ async function main() {
     // once those collisions piled up. One attempt with a generous timeout
     // beats three that fight each other.
     connectionRetryCount: 0,
-    connectionRetryTimeout: 300000,
+    // A real CI run timed out right at the 300000ms (5 min) ceiling above
+    // -- cold WebDriverAgent build/launch time varies with CI load and
+    // isn't always the ~80s seen on a faster run. Since connectionRetryCount
+    // is 0 (a single attempt, never a collision), there's no downside to
+    // a generous ceiling here.
+    connectionRetryTimeout: 600000,
     capabilities: {
       platformName: 'iOS',
       'appium:automationName': 'XCUITest',
@@ -248,6 +253,11 @@ async function main() {
       'appium:autoAcceptAlerts': true,
       'appium:newCommandTimeout': 180,
       'appium:webviewConnectTimeout': 30000,
+      // WDA's own internal launch attempts (xcodebuild build-for-testing)
+      // default to 60000ms each -- also raise this so a slow cold build
+      // doesn't get cut off by WDA itself before our outer timeout above
+      // even gets a chance to matter.
+      'appium:wdaLaunchTimeout': 300000,
       // Without this, the XCUITest driver sees the simulator already
       // booted "headless" (by this workflow's own earlier `xcrun simctl
       // boot` step) and tries to restart it with a visible Simulator.app
