@@ -1,5 +1,6 @@
 const mockPost = jest.fn(), mockRegister = jest.fn(), mockGetId = jest.fn(), mockSetToken = jest.fn(), mockRemember = jest.fn();
 let mockToken;
+jest.mock('../nativeRefreshSession', () => ({ commitNativeRefresh: jest.fn(async () => {}) }));
 jest.mock('axios', () => ({ __esModule: true, default: { post: (...a) => mockPost(...a) } }));
 jest.mock('../../platform', () => ({ isNative: () => true,
   DeviceIdentityService: { getStoredDeviceId: (...a) => mockGetId(...a), register: () => mockRegister(), rememberDevice: (...a) => mockRemember(...a) },
@@ -31,4 +32,11 @@ it('does not store a response for another business', async () => {
   mockPost.mockResolvedValueOnce({ data: { token: 'bad', deviceId: 'DEV-A', businessId: 'B' } });
   await expect(bindTerminalSession({ businessId: 'A' }, 'initial')).rejects.toThrow('could not be verified');
   expect(mockSetToken).not.toHaveBeenCalled();
+});
+it('cannot activate a token when the native refresh commitment fails', async () => {
+  mockGetId.mockResolvedValueOnce('DEV-A');
+  mockPost.mockResolvedValueOnce({ data: { token: 'bound', deviceId: 'DEV-A', businessId: 'A' } });
+  require('../nativeRefreshSession').commitNativeRefresh.mockRejectedValueOnce(new Error('Keychain unavailable'));
+  await expect(bindTerminalSession({ businessId: 'A' }, 'initial')).rejects.toThrow('Keychain unavailable');
+  expect(mockRemember).not.toHaveBeenCalled(); expect(mockSetToken).not.toHaveBeenCalled();
 });

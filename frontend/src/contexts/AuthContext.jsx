@@ -4,6 +4,7 @@ import { SecureStorageService, DeviceIdentityService, isNative, NetworkService }
 import { bindTerminalSession } from '../services/terminalSession';
 import api from '../services/api';
 import { getSessionToken } from '../platform/sessionToken';
+import { clearNativeSessionCookies } from '../services/sessionCookies';
 import * as offlineQueue from '../lib/offlineQueue';
 
 const AuthContext = createContext(null);
@@ -14,11 +15,13 @@ export function AuthProvider({ children }) {
   const [loading, setLoading] = useState(true);
   const [authError, setAuthError] = useState(false);
   const authGeneration = useRef(0);
+  const pendingSignOut = useRef(null);
   const assertCurrent = (generation) => {
     if (authGeneration.current !== generation) throw new Error('Sign-in session changed');
   };
 
   const checkAuth = useCallback(async () => {
+    if (pendingSignOut.current) return;
     const generation = ++authGeneration.current;
     setLoading(true);
     setAuthError(false);
@@ -72,6 +75,7 @@ export function AuthProvider({ children }) {
   // shape below makes that explicit so no caller can mistake a challenge for
   // a successful login.
   const login = async (email, password) => {
+    await pendingSignOut.current;
     const generation = ++authGeneration.current;
     offlineQueue.lock();
     // A device that previously registered (see platform/*/DeviceIdentityService)
@@ -100,6 +104,7 @@ export function AuthProvider({ children }) {
   };
 
   const completeTwoFactor = async (challengeToken, code, trustDevice) => {
+    await pendingSignOut.current;
     const generation = ++authGeneration.current;
     const deviceHeaders = await DeviceIdentityService.getLoginHeaders();
     const res = await axios.post(
@@ -122,17 +127,32 @@ export function AuthProvider({ children }) {
     return res.data;
   };
 
-  const logout = async () => {
-    authGeneration.current += 1;
+  const logout = () => {
+    if (pendingSignOut.current) return pendingSignOut.current;
+    const generation = ++authGeneration.current;
     offlineQueue.lock();
     setUser(false);
-    // Local sign-out must complete even when an offline server never answers.
-    // Clear the OS/web credential before attempting cookie/session cleanup.
-    let storageError;
-    try { await SecureStorageService.clearToken(); }
-    catch (error) { storageError = error; setAuthError(true); }
-    try { await axios.post(`${API}/api/auth/logout`, {}, { withCredentials: true, timeout: 5000 }); } catch {}
-    if (storageError) throw storageError;
+    const task = (async () => {
+      // Local sign-out must complete even when an offline server never answers.
+      // Clear the OS/web credential before attempting cookie/session cleanup.
+      let storageError;
+      try { await SecureStorageService.clearToken(); }
+      catch (error) { storageError = error; setAuthError(true); }
+      try {
+        // This endpoint only deletes client cookies; it has no server session
+        // mutation. Native clearing covers both OS and WK jars, works offline,
+        // and avoids a delayed old logout response deleting a new login's cookie.
+        const cleared = await clearNativeSessionCookies(API);
+        if (!cleared && authGeneration.current === generation) {
+          try { await axios.post(`${API}/api/auth/logout`, {}, { withCredentials: true, timeout: 5000 }); } catch {}
+        }
+      } catch (error) { storageError = storageError || error; setAuthError(true); }
+      if (storageError) throw storageError;
+    })();
+    pendingSignOut.current = task;
+    const finished = () => { if (pendingSignOut.current === task) pendingSignOut.current = null; };
+    task.then(finished, finished);
+    return task;
   };
 
   const hasPermission = (page) => {

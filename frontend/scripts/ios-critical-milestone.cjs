@@ -413,11 +413,9 @@ async function captureBoundToken(page) {
 
 async function assertWebviewRefresh(page, expected, label) {
   const result = await page.evalPage(`(async () => {
-    const response = await fetch(${JSON.stringify(BACKEND)} + '/api/auth/refresh', {
-      method: 'POST', credentials: 'include'
-    });
+    const response = await window.Capacitor.nativePromise('NuaRefreshSession', 'refresh', { url: ${JSON.stringify(BACKEND)} });
     if (response.status !== 200) return { status: response.status };
-    const body = await response.json();
+    const body = response.data;
     if (!body.token) return { status: 200, missingToken: true };
     const claims = JSON.parse(atob(body.token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/')));
     const me = await fetch(${JSON.stringify(BACKEND)} + '/api/auth/me', {
@@ -610,14 +608,14 @@ async function main() {
     // ── Phase 2: PIN login reuses the SAME bound device ──────────────────
     log('setting owner A\'s PIN for the PIN-login proof');
     await setOwnPin(ownerA.token, ownerA.user.id, '1234');
-    log('logging out of owner A\'s session via the real UI');
+    log('stopping the backend before native logout to prove local cookie cleanup');
+    await setNetwork(false);
     await logoutViaUI(page);
     await page.waitForSelector('[data-testid="login-page"]', 15000);
-    const afterLogout = await page.evalPage(`fetch(${JSON.stringify(BACKEND)} + '/api/auth/refresh', {
-      method: 'POST', credentials: 'include'
-    }).then(r => r.status)`);
+    await setNetwork(true);
+    const afterLogout = await page.evalPage(`window.Capacitor.nativePromise('NuaRefreshSession', 'refresh', { url: ${JSON.stringify(BACKEND)} }).then(r => r.status)`);
     if (afterLogout !== 401) throw new Error(`Logout must remove the refresh cookie, got ${afterLogout}`);
-    log('logout removed refresh capability from the real native cookie jar');
+    log('offline logout removed refresh capability from the real native cookie jar');
 
     log('logging back in as owner A via PIN');
     await loginWithPin(page, '1234');
@@ -895,7 +893,7 @@ async function main() {
     // using right now.
     log('proving refresh succeeds for the real bound session BEFORE revocation (establishing a real baseline)');
     const refreshBeforeRevoke = await page.evalPage(`
-      fetch(${JSON.stringify(BACKEND)} + '/api/auth/refresh', { method: 'POST', credentials: 'include' })
+      window.Capacitor.nativePromise('NuaRefreshSession', 'refresh', { url: ${JSON.stringify(BACKEND)} })
         .then(r => ({ status: r.status }))
         .catch(e => ({ error: e.message }))
     `);
@@ -922,7 +920,7 @@ async function main() {
     log('confirmed: the real bound session\'s access token is rejected on its very next request after revocation');
 
     const refreshAfterRevoke = await page.evalPage(`
-      fetch(${JSON.stringify(BACKEND)} + '/api/auth/refresh', { method: 'POST', credentials: 'include' })
+      window.Capacitor.nativePromise('NuaRefreshSession', 'refresh', { url: ${JSON.stringify(BACKEND)} })
         .then(r => ({ status: r.status }))
         .catch(e => ({ error: e.message }))
     `);

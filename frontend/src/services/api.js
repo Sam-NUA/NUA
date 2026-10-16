@@ -3,6 +3,7 @@ import axios from 'axios';
 import { SecureStorageService, isNative } from '../platform';
 import { APP_VERSION } from '../version';
 import { tripVersionGate } from '../lib/versionGate';
+import { usesDurableNativeRefresh, refreshNativeSession } from './nativeRefreshSession';
 
 const API_BASE_URL = `${process.env.REACT_APP_BACKEND_URL}/api`;
 
@@ -83,6 +84,9 @@ function sameSessionActor(previous, next) {
 // the user ends up on the login page ~400ms later either way -- but
 // recovers the race when it is.
 async function postRefreshWithColdStartRetry() {
+  // iOS uses the synchronously committed Keychain session, never whichever
+  // old cookie a WK/URLSession synchronization happens to restore first.
+  if (usesDurableNativeRefresh()) return refreshNativeSession(process.env.REACT_APP_BACKEND_URL);
   try {
     return await axios.post(`${API_BASE_URL}/auth/refresh`, {}, { withCredentials: true });
   } catch (error) {

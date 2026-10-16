@@ -8,7 +8,8 @@
       "feat/windows-foundation": false,
       "fix/mobile-isolation-review": false,
       "fix/terminal-session-durability": false,
-      "fix/ios-refresh": false
+      "fix/ios-refresh": false,
+      "fix/native-session-durability": false
     }
   },
   "services": {
