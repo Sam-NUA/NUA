@@ -66,7 +66,10 @@ async def _run_vision_extraction(file_data: str, file_type: str) -> Dict[str, An
         "If cost is not on the menu, estimate at 30–35% of price. Include description only if the menu shows one."
     )
 
-    from emergentintegrations.llm.chat import LlmChat, UserMessage, ImageContent
+    try:
+        from emergentintegrations.llm.chat import LlmChat, UserMessage, ImageContent
+    except ImportError:
+        return {"items": [], "message": "AI menu extraction is not configured on this server."}
     api_key = os.environ.get("EMERGENT_LLM_KEY", "")
     if not api_key:
         return {"items": [], "message": "LLM key not configured"}

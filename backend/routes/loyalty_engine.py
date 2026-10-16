@@ -818,16 +818,18 @@ async def voice_command(data: dict, request: Request, user: dict = Depends(get_u
     """Accepts text or audio (base64), classifies intent, executes."""
     text = (data.get("text") or "").strip()
     audio_b64 = data.get("audioBase64")
+    transcription_error = None
     if audio_b64 and not text:
         try:
             from routes.v15_features import voice_order
             r = await voice_order({"audioBase64": audio_b64, "mime": data.get("mime", "audio/webm")}, request)
             text = r.get("transcript", "") if isinstance(r, dict) else ""
-        except Exception:
-            pass
+        except Exception as e:
+            transcription_error = str(e)[:200]
 
     if not text:
-        raise HTTPException(status_code=400, detail="text or audioBase64 required")
+        detail = f"Could not transcribe audio: {transcription_error}" if transcription_error else "text or audioBase64 required"
+        raise HTTPException(status_code=400, detail=detail)
 
     # Quick intent routing using simple LLM call
     try:

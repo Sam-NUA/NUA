@@ -105,6 +105,12 @@ def test_agent_voice_command(session, auth_headers):
     r = session.post(f"{BASE_URL}/api/agent/voice-command", headers=auth_headers,
                      json={"text": "show today sales"}, timeout=30)
     assert r.status_code in (200, 201, 202), f"{r.status_code} {r.text[:300]}"
+    # A 200 with an "error" body means the route caught its own LLM-call
+    # failure (missing emergentintegrations/litellm, no EMERGENT_LLM_KEY,
+    # etc.) and swallowed it into a "successful" HTTP response — the status
+    # code alone doesn't prove the feature actually worked.
+    body = r.json()
+    assert not body.get("error"), f"voice-command reported a swallowed error: {body.get('error')}"
 
 
 def test_agent_auto_publish_roster(session, auth_headers):
