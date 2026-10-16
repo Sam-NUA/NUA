@@ -52,8 +52,22 @@ function sameSessionActor(previous, next) {
   try {
     const decode = token => JSON.parse(atob(token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/')));
     const a = decode(previous), b = decode(next);
-    return !!a.sub && !!a.businessId && a.sub === b.sub && a.businessId === b.businessId
+    const result = !!a.sub && !!a.businessId && a.sub === b.sub && a.businessId === b.businessId
       && a.deviceId === b.deviceId && a.sessionId === b.sessionId;
+    if (!result) {
+      // TEMPORARY diagnostic (see ios-critical-milestone.cjs's cold-restart
+      // fault-injection test) -- pinpoints exactly which claim differs
+      // between the expired token we refreshed from and the token the
+      // server handed back, since every directly-observable claim has
+      // appeared consistent right up to this mismatch.
+      try {
+        window.__lastSameSessionActorDiagnostic = {
+          sub: [a.sub, b.sub], businessId: [a.businessId, b.businessId],
+          deviceId: [a.deviceId, b.deviceId], sessionId: [a.sessionId, b.sessionId],
+        };
+      } catch { /* best-effort diagnostic only */ }
+    }
+    return result;
   } catch { return false; }
 }
 let refreshFlight = null;
@@ -61,6 +75,7 @@ async function refreshStaffSession(expectedToken) {
   if (!refreshFlight || refreshFlight.token !== expectedToken) {
     const flight = { token: expectedToken };
     flight.promise = (async () => {
+      try { window.__lastSameSessionActorDiagnostic = null; } catch { /* best-effort diagnostic only */ }
       const response = await axios.post(`${API_BASE_URL}/auth/refresh`, {}, { withCredentials: true });
       if (getSessionToken() !== expectedToken) throw new Error('Session changed during refresh');
       const next = response.data?.token;
@@ -137,6 +152,7 @@ api.interceptors.response.use(
             window.__lastRefreshDiagnostic = {
               phase: 'refresh', message: refreshError?.message, status: refreshError?.response?.status,
               invalidRefreshIdentity: !!refreshError?.invalidRefreshIdentity,
+              sameSessionActorMismatch: window.__lastSameSessionActorDiagnostic || null,
             };
           }
         } catch { /* best-effort diagnostic only */ }
