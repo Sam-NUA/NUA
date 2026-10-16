@@ -70,13 +70,34 @@ function sameSessionActor(previous, next) {
     return result;
   } catch { return false; }
 }
+// A real CI run (ios-critical-milestone.cjs's cold-restart fault-injection
+// test) caught this exact race: right after a native terminate+relaunch, the
+// FIRST /auth/refresh call came back 401 "No refresh token" in ~17ms -- too
+// fast to have reached the backend's JWT/DB checks, so the refresh_token
+// cookie itself wasn't on the request. The same cookie worked seconds
+// earlier and nothing logged the user out in between, so it's still on
+// disk; CapacitorHttp's native request layer (a separate cookie jar from
+// WKWebView's own persistent store) just hadn't synced it back in yet at
+// the moment this very first post-launch request fired. One short delay and
+// a single retry costs nothing when the cookie genuinely isn't there --
+// the user ends up on the login page ~400ms later either way -- but
+// recovers the race when it is.
+async function postRefreshWithColdStartRetry() {
+  try {
+    return await axios.post(`${API_BASE_URL}/auth/refresh`, {}, { withCredentials: true });
+  } catch (error) {
+    if (error.response?.status !== 401) throw error;
+    await new Promise(resolve => setTimeout(resolve, 400));
+    return await axios.post(`${API_BASE_URL}/auth/refresh`, {}, { withCredentials: true });
+  }
+}
 let refreshFlight = null;
 async function refreshStaffSession(expectedToken) {
   if (!refreshFlight || refreshFlight.token !== expectedToken) {
     const flight = { token: expectedToken };
     flight.promise = (async () => {
       try { window.__lastSameSessionActorDiagnostic = null; } catch { /* best-effort diagnostic only */ }
-      const response = await axios.post(`${API_BASE_URL}/auth/refresh`, {}, { withCredentials: true });
+      const response = await postRefreshWithColdStartRetry();
       if (getSessionToken() !== expectedToken) throw new Error('Session changed during refresh');
       const next = response.data?.token;
       if (!next || !sameSessionActor(expectedToken, next)) {

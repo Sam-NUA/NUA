@@ -71,11 +71,38 @@ it.each([undefined, 503])('keeps a credential retryable when refresh fails with 
   expect(localStorage.getItem('nua_token')).toBe(previous);
 });
 
-it.each([401, 403])('clears the rejected session when refresh returns %s', async status => {
+it('clears the rejected session when refresh returns 403 (no cold-start retry)', async () => {
   const previous = token('A', 'venue'); localStorage.setItem('nua_token', previous);
-  const rejected = { response: { status } }; mockRefresh.mockRejectedValueOnce(rejected);
+  const rejected = { response: { status: 403 } }; mockRefresh.mockRejectedValueOnce(rejected);
   await expect(mockResponseFailure(errorFor(previous))).rejects.toBe(rejected);
+  expect(mockRefresh).toHaveBeenCalledTimes(1);
   expect(mockClearToken).toHaveBeenCalledTimes(1); expect(mockRetry).not.toHaveBeenCalled();
+});
+
+it('retries once, then clears the session when refresh still returns 401', async () => {
+  // A real CI run caught this: right after a native cold restart,
+  // CapacitorHttp's native cookie jar hadn't synced the still-valid
+  // refresh_token cookie back in yet, so the very first /auth/refresh came
+  // back 401 "No refresh token" -- a transient race, not a real rejection.
+  // One bounded retry recovers it; if the second attempt also 401s, the
+  // session is genuinely gone and clears exactly as before.
+  const previous = token('A', 'venue'); localStorage.setItem('nua_token', previous);
+  const rejected = { response: { status: 401 } };
+  mockRefresh.mockRejectedValueOnce(rejected).mockRejectedValueOnce(rejected);
+  await expect(mockResponseFailure(errorFor(previous))).rejects.toBe(rejected);
+  expect(mockRefresh).toHaveBeenCalledTimes(2);
+  expect(mockClearToken).toHaveBeenCalledTimes(1); expect(mockRetry).not.toHaveBeenCalled();
+});
+
+it('recovers when a cold-start 401 is immediately followed by a working refresh', async () => {
+  const previous = token('A', 'venue'); const next = `${previous}new`;
+  localStorage.setItem('nua_token', previous);
+  mockRefresh.mockRejectedValueOnce({ response: { status: 401 } })
+    .mockResolvedValueOnce({ data: { token: next } });
+  mockRetry.mockResolvedValueOnce({ data: 'ok' });
+  expect(await mockResponseFailure(errorFor(previous))).toEqual({ data: 'ok' });
+  expect(mockRefresh).toHaveBeenCalledTimes(2);
+  expect(mockSetToken).toHaveBeenCalledWith(next); expect(localStorage.getItem('nua_token')).toBe(next);
 });
 
 it('cannot revive credentials when logout finishes during refresh', async () => {
