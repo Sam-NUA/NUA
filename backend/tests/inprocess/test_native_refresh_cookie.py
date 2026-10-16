@@ -67,8 +67,10 @@ def test_native_refresh_cookie_cannot_survive_revocation_or_logout(client, owner
     cookie = client.cookies.get('refresh_token')
     assert req(client, 'POST', '/api/auth/refresh').status_code == 200
     assert req(client, 'POST', f'/api/devices/{device_id}/revoke', headers=owner_headers).status_code == 200
-    client.cookies.clear()
-    client.cookies.set('refresh_token', cookie)
+    # Keep the real host/path-scoped cookie issued by binding. Manually adding
+    # an unscoped test cookie creates a different jar entry that the server's
+    # host-scoped deletion cannot remove, unlike the actual native cookie.
+    assert client.cookies.get('refresh_token') == cookie
     assert req(client, 'POST', '/api/auth/refresh').status_code == 401
     assert req(client, 'POST', '/api/auth/logout').status_code == 200
     assert client.cookies.get('refresh_token') is None
