@@ -103,7 +103,28 @@ api.interceptors.response.use(
         if (newToken !== getSessionToken()) throw new Error('Session changed after refresh');
         original.headers.Authorization = `Bearer ${newToken}`;
         original._sessionToken = newToken;
-        return api(original);
+        try {
+          return await api(original);
+        } catch (retryError) {
+          // TEMPORARY diagnostic (see ios-critical-milestone.cjs's own
+          // cold-restart test) -- a real CI run showed refresh itself
+          // succeed (200, correct actor) but no second backend /auth/me
+          // request ever followed, and checkAuth still ended up on the
+          // login page (a [401,403,409] outcome) rather than the "Unable
+          // to check your session" gate. `return api(original)` used to be
+          // tail-returned unawaited, so a rejection here bypassed this
+          // function's own try/catch entirely and propagated raw -- which
+          // explains a [401,403,409] escaping without this file's own
+          // clearToken logic ever running. Await it explicitly so a retry
+          // failure is visible and handled the same way a refresh failure
+          // already is, and capture exactly what it was.
+          try {
+            window.__lastRefreshDiagnostic = {
+              phase: 'retry', message: retryError?.message, status: retryError?.response?.status,
+            };
+          } catch { /* best-effort diagnostic only */ }
+          throw retryError;
+        }
       } catch (refreshError) {
         // Outages are not sign-out decisions. Preserve the credential and
         // propagate the actual failure so cold-start verification stays locked
@@ -111,6 +132,14 @@ api.interceptors.response.use(
         // a server rejection of a refresh that never reached it.
         const rejected = [401, 403].includes(refreshError.response?.status) || refreshError.invalidRefreshIdentity;
         if (rejected && original._sessionToken === getSessionToken()) await SecureStorageService.clearToken();
+        try {
+          if (!window.__lastRefreshDiagnostic || window.__lastRefreshDiagnostic.phase !== 'retry') {
+            window.__lastRefreshDiagnostic = {
+              phase: 'refresh', message: refreshError?.message, status: refreshError?.response?.status,
+              invalidRefreshIdentity: !!refreshError?.invalidRefreshIdentity,
+            };
+          }
+        } catch { /* best-effort diagnostic only */ }
         return Promise.reject(refreshError.invalidRefreshIdentity ? error : refreshError);
       }
     }

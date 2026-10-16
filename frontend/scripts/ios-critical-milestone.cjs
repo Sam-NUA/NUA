@@ -516,6 +516,7 @@ async function navigateToPos(page) {
       readyState: document.readyState,
       bodyTextHead: document.body.innerText.slice(0, 300),
       testids: [...document.querySelectorAll('[data-testid]')].map(e => e.getAttribute('data-testid')).slice(0, 80),
+      lastRefreshDiagnostic: window.__lastRefreshDiagnostic || null,
     })`).catch((e) => ({ evalPageFailed: e.message }));
     log(`page dump when dock-pos never appeared: ${JSON.stringify(dump)}`);
     throw error;
