@@ -55,6 +55,7 @@
 const { execFileSync, spawn } = require('node:child_process');
 const path = require('node:path');
 const { remote } = require('webdriverio');
+const { randomBytes } = require('node:crypto');
 
 // The literal loopback IP, not "localhost" -- iOS App Transport Security's
 // NSAllowsLocalNetworking exception covers numeric loopback/link-local
@@ -66,6 +67,7 @@ const APP_PATH = process.env.APP_PATH;
 const APPIUM_PORT = Number(process.env.APPIUM_PORT || 4723);
 const BACKEND_DIR = path.join(__dirname, '..', '..', 'backend');
 const DB_NAME = 'nua_restaurant';
+const TEST_JWT_SECRET = randomBytes(48).toString('hex');
 const MONGO_URL = 'mongodb://localhost:27017/?replicaSet=nua-local';
 
 if (!UDID) throw new Error('SIMULATOR_UDID env var is required');
@@ -181,7 +183,7 @@ function spawnBackend() {
       ...process.env,
       MONGO_URL: `${MONGO_URL}`,
       DB_NAME,
-      JWT_SECRET: 'dev-only-not-for-production-please-rotate',
+      JWT_SECRET: TEST_JWT_SECRET,
       // capacitor.config.json's iosScheme is "capacitor" on this branch
       // (fixed from the earlier unsupported "https" -- see
       // MOBILE_HARDENING_REVIEW_2026-10-14.md), so the WKWebView's real
@@ -409,6 +411,36 @@ async function captureBoundToken(page) {
   return { token, claims: decodeJwt(token) };
 }
 
+async function assertWebviewRefresh(page, expected, label) {
+  const result = await page.evalPage(`(async () => {
+    const response = await fetch(${JSON.stringify(BACKEND)} + '/api/auth/refresh', {
+      method: 'POST', credentials: 'include'
+    });
+    if (response.status !== 200) return { status: response.status };
+    const body = await response.json();
+    if (!body.token) return { status: 200, missingToken: true };
+    const claims = JSON.parse(atob(body.token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/')));
+    const me = await fetch(${JSON.stringify(BACKEND)} + '/api/auth/me', {
+      headers: { Authorization: 'Bearer ' + body.token }
+    });
+    const cookies = await window.Capacitor.nativePromise('CapacitorCookies', 'getCookies', {
+      url: ${JSON.stringify(BACKEND)}
+    });
+    return { status: response.status, meStatus: me.status, claims,
+      exposedRefreshCookie: Object.prototype.hasOwnProperty.call(cookies, 'refresh_token') ||
+        document.cookie.includes('refresh_token=') };
+  })()`);
+  if (result.status !== 200 || result.meStatus !== 200 || result.missingToken || result.exposedRefreshCookie) {
+    throw new Error(`${label}: usable HttpOnly-cookie refresh required, got ${JSON.stringify(result)}`);
+  }
+  for (const key of ['sub', 'businessId', 'deviceId', 'sessionId']) {
+    if (!expected[key] || result.claims[key] !== expected[key]) {
+      throw new Error(`${label}: refreshed ${key} changed`);
+    }
+  }
+  log(`${label}: refresh 200, bearer /me 200, same account/business/device/session, HttpOnly cookie hidden`);
+}
+
 async function loginWithPassword(page, email, password) {
   // Login.jsx defaults `mode` from localStorage's 'nua_login_mode' -- a
   // device-level preference that survives logout (it's not account state).
@@ -572,24 +604,7 @@ async function main() {
     if (!boundA1.claims.sessionId) throw new Error('Bound token is missing a sessionId claim');
     log(`first-session device binding confirmed on the real, currently-stored token itself: sessionId=${boundA1.claims.sessionId} deviceId=${boundA1.claims.deviceId} businessId=${boundA1.claims.businessId}`);
 
-    // Diagnostic only (never fails the run): Phase 5 saw refresh return 401
-    // "No refresh token" on a real CI run, even right after a fresh password
-    // login whose Set-Cookie was confirmed correct against this exact
-    // backend logic in isolation (TestClient, no WebView involved). Capacitor
-    // apps with iosScheme "capacitor" are documented to need the
-    // @capacitor/cookies plugin for a WKWebView's fetch/XHR to reliably see
-    // Set-Cookie from a cross-scheme (capacitor://->http://) response at all
-    // -- this project has no such plugin installed. Testing refresh this
-    // early, right after the very first login with zero intervening
-    // logout/relogin, tells us whether the cookie never survives the
-    // WKWebView in the first place (a platform/dependency gap, not a
-    // sequencing bug) versus something specific to a later transition.
-    const refreshRightAfterFirstLogin = await page.evalPage(`
-      fetch(${JSON.stringify(BACKEND)} + '/api/auth/refresh', { method: 'POST', credentials: 'include' })
-        .then(r => ({ status: r.status }))
-        .catch(e => ({ error: e.message }))
-    `).catch((e) => ({ error: e.message }));
-    log(`diagnostic: refresh attempt immediately after the very first login, no logout yet: ${JSON.stringify(refreshRightAfterFirstLogin)}`);
+    await assertWebviewRefresh(page, boundA1.claims, 'password login');
 
     // ── Phase 2: PIN login reuses the SAME bound device ──────────────────
     log('setting owner A\'s PIN for the PIN-login proof');
@@ -597,6 +612,11 @@ async function main() {
     log('logging out of owner A\'s session via the real UI');
     await logoutViaUI(page);
     await page.waitForSelector('[data-testid="login-page"]', 15000);
+    const afterLogout = await page.evalPage(`fetch(${JSON.stringify(BACKEND)} + '/api/auth/refresh', {
+      method: 'POST', credentials: 'include'
+    }).then(r => r.status)`);
+    if (afterLogout !== 401) throw new Error(`Logout must remove the refresh cookie, got ${afterLogout}`);
+    log('logout removed refresh capability from the real native cookie jar');
 
     log('logging back in as owner A via PIN');
     await loginWithPin(page, '1234');
@@ -620,6 +640,35 @@ async function main() {
     if (boundA2.claims.deviceId !== deviceA.id) throw new Error(`PIN login's own bound token carries deviceId ${boundA2.claims.deviceId}, expected ${deviceA.id}`);
     if (!boundA2.claims.sessionId) throw new Error('PIN login\'s bound token is missing a sessionId claim');
     log(`PIN login's real bound token also carries the same device binding: sessionId=${boundA2.claims.sessionId} deviceId=${boundA2.claims.deviceId}`);
+    await assertWebviewRefresh(page, boundA2.claims, 'PIN login');
+
+    // Fault injection only: expire this throwaway backend's already-issued
+    // access token while preserving its genuine HttpOnly refresh cookie.
+    // A real process restart must use the app's shared 401 handler, not an
+    // injected success or an unverified local profile, to recover access.
+    const expiredAccess = execFileSync('python', ['-c',
+      "import sys,json,time,jwt; d=json.load(sys.stdin); p=d['claims']; p['exp']=time.time()-60; print(jwt.encode(p,d['secret'],algorithm='HS256'))"
+    ], { input: JSON.stringify({ claims: boundA2.claims, secret: TEST_JWT_SECRET }), encoding: 'utf8' }).trim();
+    await page.evalPage(`window.Capacitor.nativePromise('SecureStoragePlugin', 'set', {
+      key: 'nua_token', value: ${JSON.stringify(expiredAccess)}
+    })`);
+    log('restarting with an expired access token and the real existing refresh cookie');
+    await driver.execute('mobile: terminateApp', { bundleId: BUNDLE_ID });
+    await wait(2000);
+    await driver.execute('mobile: launchApp', { bundleId: BUNDLE_ID });
+    await connectWebviewContext(driver);
+    page = makePageDriver(driver);
+    await waitForOutcomeAfterSubmit(page);
+    await navigateToPos(page);
+    const recoveredPin = await captureBoundToken(page);
+    if (recoveredPin.token === expiredAccess || recoveredPin.claims.exp <= Date.now() / 1000) {
+      throw new Error('Cold restart did not replace the expired access token');
+    }
+    for (const key of ['sub', 'businessId', 'deviceId', 'sessionId']) {
+      if (recoveredPin.claims[key] !== boundA2.claims[key]) throw new Error(`Cold refresh changed ${key}`);
+    }
+    await assertWebviewRefresh(page, recoveredPin.claims, 'expired-access cold restart');
+    log('expired access recovered through the real app after process restart; native refresh cookie survived');
 
     // ── Phase 3: offline cash sale, real outage, restart, reconnect, sync ─
     await setNetwork(false);
@@ -761,18 +810,8 @@ async function main() {
     log('confirmed: business A\'s device row is not visible to business B\'s own device list either');
 
     // ── Back to A: reconnect, sync, verify exactly one transaction ───────
-    // Real finding from a CI run: staff_management.py's pin_login() never
-    // calls _set_tokens()/sets a refresh_token cookie at all (only
-    // routes/auth.py's password login does), so a PIN-authenticated
-    // session has no cookie for /auth/refresh to find -- Phase 5 below
-    // would see a pre-revocation refresh attempt fail with 401 "No refresh
-    // token" regardless of revocation, proving nothing. That's a real gap
-    // in pin_login() itself (Codex-owned, routes/staff_management.py) worth
-    // reporting, not something to paper over here. Re-enter via password
-    // instead so Phase 5 actually exercises refresh-cookie lifecycle,
-    // exactly the behaviour it needs a real pre-revocation baseline for;
-    // PIN login's own device-binding/token-claims proof already happened
-    // in Phase 2.
+    // Password re-entry exercises the other login path after the real PIN
+    // refresh and cold-start recovery already proved above.
     log('logging out of owner B and back into owner A via password to resume the offline sale');
     await logoutViaUI(page);
     await page.waitForSelector('[data-testid="login-page"]', 15000);
@@ -860,27 +899,8 @@ async function main() {
         .catch(e => ({ error: e.message }))
     `);
     log(`refresh attempt before revocation: ${JSON.stringify(refreshBeforeRevoke)}`);
-    // A real CI run got {"status":401} here, and the diagnostic right after
-    // the very first login (zero intervening logout) got the identical
-    // 401 -- proven independent of revocation, of login method, and of any
-    // sequencing in this script. Reproducing the exact backend sequence
-    // locally against the real route code (register -> login -> refresh,
-    // Origin: capacitor://localhost, via TestClient/mongomock, no WebView
-    // involved) returns 200 and a usable refresh_token cookie every time --
-    // the backend's cookie-setting logic is not the problem. The remaining
-    // explanation is a real WKWebView/Capacitor platform gap: this
-    // project's capacitor.config.json sets iosScheme "capacitor", and
-    // Capacitor's own docs describe exactly this case needing the
-    // @capacitor/cookies plugin for a WKWebView's fetch/XHR to reliably see
-    // Set-Cookie from a cross-scheme (capacitor://->http://) response at
-    // all -- no such plugin is installed in this project. Codex's own
-    // review of this phase said an already-missing refresh cookie "cannot
-    // count as proof" either way, so when there is no working baseline,
-    // report that finding plainly instead of forcing a before/after
-    // revocation comparison this platform cannot currently support.
-    const refreshWorksAtAllOnThisPlatform = refreshBeforeRevoke.status === 200;
-    if (!refreshWorksAtAllOnThisPlatform) {
-      log(`FINDING (real, not a script bug): refresh via the httpOnly cookie does not work at all on this real iOS build, confirmed both right after the very first login (${JSON.stringify(refreshRightAfterFirstLogin)}) and again here before any revocation (${JSON.stringify(refreshBeforeRevoke)}) -- independently proven correct at the backend level outside the WebView. Most likely cause: no @capacitor/cookies plugin for this project's custom iosScheme ("capacitor"). Skipping the refresh/revocation comparison below -- there is no working baseline to compare against -- while still proving bearer-token revocation, which does not depend on cookies.`);
+    if (refreshBeforeRevoke.status !== 200) {
+      throw new Error(`Expected pre-revocation refresh 200, got ${JSON.stringify(refreshBeforeRevoke)}`);
     }
 
     log('revoking owner A\'s own bound device (using the separate registration session, which owner role alone makes valid for this)');
@@ -900,22 +920,17 @@ async function main() {
     if (!rejectedAfterRevoke) throw new Error('Expected the real bound session\'s access token to be rejected on its next request after revocation');
     log('confirmed: the real bound session\'s access token is rejected on its very next request after revocation');
 
-    if (refreshWorksAtAllOnThisPlatform) {
-      const refreshAfterRevoke = await page.evalPage(`
-        fetch(${JSON.stringify(BACKEND)} + '/api/auth/refresh', { method: 'POST', credentials: 'include' })
-          .then(r => ({ status: r.status }))
-          .catch(e => ({ error: e.message }))
-      `);
-      log(`refresh attempt after revocation: ${JSON.stringify(refreshAfterRevoke)}`);
-      if (refreshAfterRevoke.status !== 401 && refreshAfterRevoke.status !== 403) {
-        throw new Error(`Expected refresh to be specifically rejected (401/403) after the bound device was revoked, got ${JSON.stringify(refreshAfterRevoke)}`);
-      }
-      log('confirmed: refresh is specifically rejected (401/403) for the bound session after the device was revoked');
-    } else {
-      log('SKIPPED (see FINDING above): refresh-after-revocation comparison -- refresh never worked on this platform to begin with, so revocation\'s own effect on it cannot be demonstrated here.');
+    const refreshAfterRevoke = await page.evalPage(`
+      fetch(${JSON.stringify(BACKEND)} + '/api/auth/refresh', { method: 'POST', credentials: 'include' })
+        .then(r => ({ status: r.status }))
+        .catch(e => ({ error: e.message }))
+    `);
+    log(`refresh attempt after revocation: ${JSON.stringify(refreshAfterRevoke)}`);
+    if (refreshAfterRevoke.status !== 401 && refreshAfterRevoke.status !== 403) {
+      throw new Error(`Expected refresh rejection 401/403 after revocation, got ${JSON.stringify(refreshAfterRevoke)}`);
     }
-
-    log(`PASS: password login -> device binding -> PIN login reuses binding -> order -> offline -> restart -> blocked-until-reverified -> reconnect -> sync -> exactly one order -> business isolation -> revocation rejects the bound session, verified for real on a real (simulated) iOS WKWebView.${refreshWorksAtAllOnThisPlatform ? ' Refresh/revocation interaction also verified.' : ' Refresh-cookie behavior could NOT be verified on this platform -- see the FINDING logged above.'}`);
+    log('confirmed: refresh is specifically rejected after device revocation');
+    log('PASS: password/PIN refresh, expired-access cold restart, offline sale recovery, tenant isolation, exact replay and bearer/refresh revocation all verified on the real iOS Simulator.');
   } finally {
     try { await driver.deleteSession(); } catch { /* best-effort cleanup */ }
     if (backendProc) { try { backendProc.kill('SIGTERM'); } catch { /* already gone */ } }

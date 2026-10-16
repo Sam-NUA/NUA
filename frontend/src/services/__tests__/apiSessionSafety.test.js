@@ -44,4 +44,58 @@ it('refreshes and retries the same verified actor', async () => {
   mockRefresh.mockResolvedValueOnce({ data: { token: next } }); mockRetry.mockResolvedValueOnce({ data: 'ok' });
   expect(await mockResponseFailure(errorFor(previous))).toEqual({ data: 'ok' });
   expect(mockSetToken).toHaveBeenCalledWith(next); expect(localStorage.getItem('nua_token')).toBe(next);
+  expect(mockRetry).toHaveBeenCalledWith(expect.objectContaining({ _sessionToken: next,
+    headers: { Authorization: `Bearer ${next}` } }));
+});
+
+it('shares refresh and storage persistence across simultaneous expired requests', async () => {
+  const previous = token('A', 'venue'); const next = `${previous}new`;
+  localStorage.setItem('nua_token', previous);
+  let finish;
+  mockRefresh.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+  mockRetry.mockResolvedValue({ data: 'ok' });
+  const requests = [mockResponseFailure(errorFor(previous)), mockResponseFailure(errorFor(previous))];
+  finish({ data: { token: next } });
+  expect(await Promise.all(requests)).toEqual([{ data: 'ok' }, { data: 'ok' }]);
+  expect(mockRefresh).toHaveBeenCalledTimes(1);
+  expect(mockSetToken).toHaveBeenCalledTimes(1);
+  expect(mockRetry).toHaveBeenCalledTimes(2);
+});
+
+it.each([undefined, 503])('keeps a credential retryable when refresh fails with status %s', async status => {
+  const previous = token('A', 'venue'); localStorage.setItem('nua_token', previous);
+  const unavailable = status ? { response: { status } } : new Error('offline');
+  mockRefresh.mockRejectedValueOnce(unavailable);
+  await expect(mockResponseFailure(errorFor(previous))).rejects.toBe(unavailable);
+  expect(mockClearToken).not.toHaveBeenCalled(); expect(mockRetry).not.toHaveBeenCalled();
+  expect(localStorage.getItem('nua_token')).toBe(previous);
+});
+
+it.each([401, 403])('clears the rejected session when refresh returns %s', async status => {
+  const previous = token('A', 'venue'); localStorage.setItem('nua_token', previous);
+  const rejected = { response: { status } }; mockRefresh.mockRejectedValueOnce(rejected);
+  await expect(mockResponseFailure(errorFor(previous))).rejects.toBe(rejected);
+  expect(mockClearToken).toHaveBeenCalledTimes(1); expect(mockRetry).not.toHaveBeenCalled();
+});
+
+it('cannot revive credentials when logout finishes during refresh', async () => {
+  const previous = token('A', 'venue'); localStorage.setItem('nua_token', previous);
+  let finish;
+  mockRefresh.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+  const request = mockResponseFailure(errorFor(previous));
+  localStorage.removeItem('nua_token'); finish({ data: { token: `${previous}new` } });
+  await expect(request).rejects.toThrow('Session changed');
+  expect(mockSetToken).not.toHaveBeenCalled(); expect(mockRetry).not.toHaveBeenCalled();
+});
+
+it('does not overwrite a new account after an old refresh response arrives', async () => {
+  const previous = token('A', 'venue'); const other = token('B', 'other');
+  localStorage.setItem('nua_token', previous);
+  let finish;
+  mockRefresh.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+  const request = mockResponseFailure(errorFor(previous));
+  localStorage.setItem('nua_token', other); finish({ data: { token: `${previous}new` } });
+  await expect(request).rejects.toThrow('Session changed');
+  expect(mockSetToken).not.toHaveBeenCalled(); expect(mockClearToken).not.toHaveBeenCalled();
+  expect(localStorage.getItem('nua_token')).toBe(other);
 });

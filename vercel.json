@@ -7,7 +7,8 @@
       "codex/launch-review-corrections": false,
       "feat/windows-foundation": false,
       "fix/mobile-isolation-review": false,
-      "fix/terminal-session-durability": false
+      "fix/terminal-session-durability": false,
+      "fix/ios-refresh": false
     }
   },
   "services": {

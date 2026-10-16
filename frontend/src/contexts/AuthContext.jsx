@@ -2,6 +2,8 @@ import React, { createContext, useContext, useState, useEffect, useCallback, use
 import axios from 'axios';
 import { SecureStorageService, DeviceIdentityService, isNative, NetworkService } from '../platform';
 import { bindTerminalSession } from '../services/terminalSession';
+import api from '../services/api';
+import { getSessionToken } from '../platform/sessionToken';
 import * as offlineQueue from '../lib/offlineQueue';
 
 const AuthContext = createContext(null);
@@ -22,12 +24,14 @@ export function AuthProvider({ children }) {
     setAuthError(false);
     offlineQueue.lock();
     try {
-      const token = await SecureStorageService.getToken();
+      let token = await SecureStorageService.getToken();
       if (!token) { offlineQueue.lock(); setUser(false); setLoading(false); return; }
-      const res = await axios.get(`${API}/api/auth/me`, {
-        headers: { Authorization: `Bearer ${token}` }
-      });
+      const res = await api.get('/auth/me');
       assertCurrent(generation);
+      // The shared client may have refreshed an expired token. Bind the exact
+      // credential used by the successful verification, never the stale one.
+      token = res.config?._sessionToken;
+      if (!token || token !== getSessionToken()) throw new Error('Session changed during verification');
       const bound = await bindTerminalSession(res.data, token);
       assertCurrent(generation);
       await offlineQueue.activate(res.data.businessId, bound);

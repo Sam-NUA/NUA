@@ -19,7 +19,7 @@ export async function bindTerminalSession(user, token) {
     deviceId = device.id;
   }
   const result = await axios.post(`${process.env.REACT_APP_BACKEND_URL}/api/auth/bind-device`, { deviceId }, {
-    adapter: 'fetch', withCredentials: false, headers: { Authorization: `Bearer ${token}` },
+    adapter: 'fetch', withCredentials: true, headers: { Authorization: `Bearer ${token}` },
   });
   current();
   if (!result.data.token || result.data.businessId !== user.businessId || result.data.deviceId !== deviceId) {

@@ -13,7 +13,7 @@ it('registers then binds before returning a usable native token', async () => {
   mockPost.mockResolvedValueOnce({ data: { token: 'bound', deviceId: 'DEV-A', businessId: 'A' } });
   expect(await bindTerminalSession({ businessId: 'A' }, 'initial')).toBe('bound');
   expect(mockGetId).toHaveBeenCalledWith('A'); expect(mockRemember).toHaveBeenCalledWith('A', 'DEV-A'); expect(mockSetToken).toHaveBeenCalledWith('bound');
-  expect(mockPost.mock.calls[0][2]).toMatchObject({ adapter: 'fetch', withCredentials: false });
+  expect(mockPost.mock.calls[0][2]).toMatchObject({ adapter: 'fetch', withCredentials: true });
 });
 it('does not replace a known revoked terminal when binding fails', async () => {
   mockGetId.mockResolvedValueOnce('DEV-A'); mockPost.mockRejectedValueOnce({ response: { status: 403 } });

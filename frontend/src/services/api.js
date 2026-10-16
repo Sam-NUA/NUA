@@ -56,7 +56,31 @@ function sameSessionActor(previous, next) {
       && a.deviceId === b.deviceId && a.sessionId === b.sessionId;
   } catch { return false; }
 }
-let refreshPromise = null;
+let refreshFlight = null;
+async function refreshStaffSession(expectedToken) {
+  if (!refreshFlight || refreshFlight.token !== expectedToken) {
+    const flight = { token: expectedToken };
+    flight.promise = (async () => {
+      const response = await axios.post(`${API_BASE_URL}/auth/refresh`, {}, { withCredentials: true });
+      if (getSessionToken() !== expectedToken) throw new Error('Session changed during refresh');
+      const next = response.data?.token;
+      if (!next || !sameSessionActor(expectedToken, next)) {
+        const error = new Error('Refresh changed account, business or terminal session');
+        error.invalidRefreshIdentity = true;
+        throw error;
+      }
+      // Persist once for every group of simultaneous 401s. Concurrent writes
+      // to OS storage can otherwise invalidate one another's generation guard.
+      await SecureStorageService.setToken(next);
+      if (window.nuaDesktop) {
+        await window.nuaDesktop.activateOffline(JSON.parse(atob(next.split('.')[1].replace(/-/g, '+').replace(/_/g, '/'))).businessId);
+      }
+      return next;
+    })().finally(() => { if (refreshFlight === flight) refreshFlight = null; });
+    refreshFlight = flight;
+  }
+  return refreshFlight.promise;
+}
 api.interceptors.response.use(
   (response) => response,
   async (error) => {
@@ -75,31 +99,19 @@ api.interceptors.response.use(
     if (error.response?.status === 401 && original && original._usesStaffSession && original._sessionToken && original._sessionToken === getSessionToken() && !original._skipAuthRefresh && !original._retriedAfterRefresh && !isAuthEndpoint) {
       original._retriedAfterRefresh = true;
       try {
-        if (!refreshPromise) {
-          refreshPromise = axios
-            .post(`${API_BASE_URL}/auth/refresh`, {}, { withCredentials: true })
-            .finally(() => { refreshPromise = null; });
-        }
-        const r = await refreshPromise;
-        const newToken = r.data?.token;
-        if (newToken && original._sessionToken === getSessionToken()) {
-          if (!sameSessionActor(original._sessionToken, newToken)) {
-            throw new Error('Refresh changed account or business');
-          }
-          await SecureStorageService.setToken(newToken);
-          if (window.nuaDesktop) {
-            await window.nuaDesktop.activateOffline(JSON.parse(atob(newToken.split('.')[1].replace(/-/g, '+').replace(/_/g, '/'))).businessId);
-          }
-          original.headers.Authorization = `Bearer ${newToken}`;
-          return api(original);
-        }
-      } catch {
-        // Refresh token is itself missing/expired — the session is genuinely
-        // over, not just the access token. Fall through to the rejection
-        // below; AuthContext's next checkAuth (or a protected-route guard)
-        // is what actually navigates to /login, this just stops pretending
-        // storage still holds something usable.
-        if (original._sessionToken === getSessionToken()) await SecureStorageService.clearToken();
+        const newToken = await refreshStaffSession(original._sessionToken);
+        if (newToken !== getSessionToken()) throw new Error('Session changed after refresh');
+        original.headers.Authorization = `Bearer ${newToken}`;
+        original._sessionToken = newToken;
+        return api(original);
+      } catch (refreshError) {
+        // Outages are not sign-out decisions. Preserve the credential and
+        // propagate the actual failure so cold-start verification stays locked
+        // and retryable, instead of treating the original expired-token 401 as
+        // a server rejection of a refresh that never reached it.
+        const rejected = [401, 403].includes(refreshError.response?.status) || refreshError.invalidRefreshIdentity;
+        if (rejected && original._sessionToken === getSessionToken()) await SecureStorageService.clearToken();
+        return Promise.reject(refreshError.invalidRefreshIdentity ? error : refreshError);
       }
     }
     return Promise.reject(error);
