@@ -218,7 +218,7 @@ async def public_categories(business: Optional[str] = None):
         channels = c.get("channels") or ["dine-in", "pickup", "delivery"]
         if any(ch in channels for ch in ("pickup", "delivery", "online")):
             rows.append({k: c.get(k) for k in ("id", "name", "icon", "color", "prepTime", "sortOrder")})
-    rows.sort(key=lambda x: x.get("sortOrder", 99))
+    rows.sort(key=lambda x: x["sortOrder"] if x.get("sortOrder") is not None else 99)
     return rows
 
 
