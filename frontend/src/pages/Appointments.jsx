@@ -51,7 +51,7 @@ export default function Appointments() {
       setStaff((st.data || []).filter(u => u.status === 'active'));
     }).catch(() => toast.error('Failed to load appointments')).finally(() => setLoading(false));
   };
-  useEffect(load, [date]);  
+  useEffect(load, [date]);
 
   useEffect(() => {
     if (!form.staffId || !form.serviceId || !form.date) { setSlots([]); return; }

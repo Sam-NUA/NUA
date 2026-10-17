@@ -12,7 +12,7 @@ export async function confirm(message) {
 }
 
 export async function prompt(message, defaultValue = '') {
-   
+
   return window.prompt(message, defaultValue);
 }
 

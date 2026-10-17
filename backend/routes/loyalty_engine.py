@@ -101,7 +101,7 @@ async def earn_points(data: dict, user: dict = Depends(get_user)):
         raise HTTPException(status_code=404, detail="Customer not found")
     # Idempotency: skip if we already credited this transaction
     if transaction_id:
-        existing = await db.loyalty_ledger.find_one({"transactionId": transaction_id, "type": "earn"})
+        existing = await db.loyalty_ledger.find_one({"transactionId": transaction_id, "type": "earn", **tenant_scope_filter(user.get("businessId"))})
         if existing:
             return {"earned": existing["points"], "skipped": True, "reason": "already credited"}
     cfg = await get_config(user.get("businessId"))
@@ -208,7 +208,7 @@ async def get_ledger(customer_id: str, user: dict = Depends(get_user)):
     customer = await db.customers.find_one({**tenant_scope_filter(user.get("businessId")), "id": customer_id}, {"_id": 0, "businessId": 1})
     if not customer or not tenant_owns(customer.get("businessId"), user.get("businessId")):
         raise HTTPException(status_code=404, detail="Customer not found")
-    entries = await db.loyalty_ledger.find({"customerId": customer_id}, {"_id": 0}).sort("createdAt", -1).to_list(100)
+    entries = await db.loyalty_ledger.find({"customerId": customer_id, **tenant_scope_filter(user.get("businessId"))}, {"_id": 0}).sort("createdAt", -1).to_list(100)
     return entries
 
 
@@ -471,7 +471,10 @@ async def resolve_fraud_flag(flag_id: str, data: dict, user: dict = Depends(requ
             await db.customers.update_one({**tenant_scope_filter(user.get("businessId")), "id": flag["customerId"]}, {"$set": {"loyaltyLocked": True}})
             action_taken = "Loyalty account locked — redemption blocked until unlocked"
         elif flag["type"] == "voucher_sharing" and flag.get("voucherId"):
-            await db.vouchers.update_one({"id": flag["voucherId"]}, {"$set": {
+            voucher_scope = {"id": flag["voucherId"], **tenant_scope_filter(user.get("businessId"))}
+            if not await db.vouchers.find_one(voucher_scope, {"_id": 0, "id": 1}):
+                raise HTTPException(status_code=404, detail="Voucher not found")
+            await db.vouchers.update_one(voucher_scope, {"$set": {
                 "status": "revoked",
                 "revokedAt": datetime.now(timezone.utc).isoformat(),
                 "revokedBy": user.get("email"),
@@ -575,7 +578,7 @@ async def _expire_inactive_points(cfg: dict, business_id: Optional[str] = None) 
     expired = []
     for c in customers:
         last = await db.loyalty_ledger.find_one(
-            {"customerId": c["id"]}, {"_id": 0, "createdAt": 1}, sort=[("createdAt", -1)]
+            {"customerId": c["id"], **tenant_scope_filter(business_id)}, {"_id": 0, "createdAt": 1}, sort=[("createdAt", -1)]
         )
         last_activity = (last or {}).get("createdAt")
         if not last_activity or last_activity >= cutoff:
@@ -586,7 +589,7 @@ async def _expire_inactive_points(cfg: dict, business_id: Optional[str] = None) 
         await db.customers.update_one({**tenant_scope_filter(business_id), "id": c["id"]}, {"$inc": {"points": -pts}})
         await db.loyalty_ledger.insert_one({
             "id": f"LP-{str(uuid.uuid4())[:8].upper()}",
-            "customerId": c["id"], "type": "expire", "points": -pts,
+            "customerId": c["id"], "type": "expire", "points": -pts, "businessId": business_id,
             "createdAt": datetime.now(timezone.utc).isoformat(),
         })
         expired.append({"customerId": c["id"], "points": pts})
@@ -613,7 +616,7 @@ async def _warn_expiring_points(cfg: dict, business_id: Optional[str] = None) ->
     warned = []
     for c in customers:
         last = await db.loyalty_ledger.find_one(
-            {"customerId": c["id"]}, {"_id": 0, "createdAt": 1}, sort=[("createdAt", -1)]
+            {"customerId": c["id"], **tenant_scope_filter(business_id)}, {"_id": 0, "createdAt": 1}, sort=[("createdAt", -1)]
         )
         last_activity = (last or {}).get("createdAt")
         # In the warning window: inactive long enough to be within

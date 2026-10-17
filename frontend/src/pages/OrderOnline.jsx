@@ -98,7 +98,7 @@ export default function OrderOnline() {
       setVoucherError(t('orderOnline.voucherRecheckPrompt'));
       return null;
     });
-     
+
   }, [cart]);
 
   const applyVoucher = async () => {

@@ -456,7 +456,7 @@ function BASPanel() {
     catch (e) { toast({ title: 'Failed', description: e?.response?.data?.detail, variant: 'destructive' }); }
     setLoading(false);
   };
-  useEffect(() => { load(); }, []);   
+  useEffect(() => { load(); }, []);
   const dl = async () => {
     try {
       const r = await inventoryAPI.basCsv({ fy, quarter });

@@ -583,7 +583,7 @@ const POSTerminal = () => {
     // Intentionally only depend on cart contents + orderType — avoids feedback loop with appliedDiscounts.
     // orderType is included so switching dine-in <-> takeaway immediately drops/re-adds
     // channel-restricted promos (e.g. a dine-in-only Happy Hour) instead of leaving a stale one applied.
-  }, [cart, orderType]);   
+  }, [cart, orderType]);
 
   // Push live cart to the customer-facing display (debounced ~400ms) — also
   // carries split-payment progress while a split is in flight, so a guest

@@ -78,7 +78,7 @@ export default function CommandBar() {
     if (products === null) {
       productsAPI.getAll().then(r => setProducts(r.data || [])).catch(() => setProducts([]));
     }
-  }, [open]);  
+  }, [open]);
 
   const results = useMemo(() => {
     const q = query.trim().toLowerCase();

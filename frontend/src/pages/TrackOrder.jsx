@@ -87,7 +87,7 @@ export default function TrackOrder() {
     };
     poll();
     return () => { cancelled = true; };
-     
+
   }, [sessionId, data?.id]);
 
   // For delivery the flow includes out_for_delivery; for pickup/dine-in it skips that.

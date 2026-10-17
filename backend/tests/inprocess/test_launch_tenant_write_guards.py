@@ -63,3 +63,32 @@ def test_event_ticket_claims_cannot_be_negative_or_oversell_capacity(client, own
         assert stored['ticketsBooked'] == 1
     finally:
         client.portal.call(db.events.delete_one, {'id': event['id']})
+
+
+def test_loyalty_ledger_and_fraud_action_are_scoped_even_with_foreign_references(client, owner_headers):
+    from database import db
+    business = req(client, 'GET', '/api/auth/me', headers=owner_headers).json()['businessId']
+    customer_id = 'launch-ledger-customer'
+    client.portal.call(db.customers.insert_one, {'id': customer_id, 'businessId': business, 'name': 'Owned', 'points': 0})
+    client.portal.call(db.loyalty_ledger.insert_one, {'id': 'launch-foreign-ledger', 'businessId': 'FOREIGN',
+        'customerId': customer_id, 'transactionId': 'launch-collision', 'type': 'earn', 'points': 999})
+    client.portal.call(db.vouchers.insert_one, {'id': 'launch-foreign-voucher', 'businessId': 'FOREIGN', 'status': 'active'})
+    client.portal.call(db.loyalty_fraud_flags.insert_one, {'id': 'launch-owned-flag', 'businessId': business,
+        'type': 'voucher_sharing', 'status': 'open', 'voucherId': 'launch-foreign-voucher'})
+    try:
+        ledger = req(client, 'GET', f'/api/loyalty/ledger/{customer_id}', headers=owner_headers)
+        assert ledger.status_code == 200 and ledger.json() == []
+        earned = req(client, 'POST', '/api/loyalty/earn', headers=owner_headers,
+            json={'customerId': customer_id, 'transactionId': 'launch-collision',
+                  'items': [{'quantity': 1, 'price': 5, 'category': 'Coffee'}]})
+        assert earned.status_code == 200 and earned.json()['earned'] == 5
+        denied = req(client, 'PUT', '/api/loyalty/reports/fraud-flags/launch-owned-flag',
+            headers=owner_headers, json={'status': 'confirmed_abuse'})
+        assert denied.status_code == 404
+        assert client.portal.call(db.vouchers.find_one, {'id': 'launch-foreign-voucher'})['status'] == 'active'
+        assert client.portal.call(db.loyalty_fraud_flags.find_one, {'id': 'launch-owned-flag'})['status'] == 'open'
+    finally:
+        client.portal.call(db.customers.delete_many, {'id': customer_id})
+        client.portal.call(db.loyalty_ledger.delete_many, {'customerId': customer_id})
+        client.portal.call(db.vouchers.delete_one, {'id': 'launch-foreign-voucher'})
+        client.portal.call(db.loyalty_fraud_flags.delete_one, {'id': 'launch-owned-flag'})

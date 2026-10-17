@@ -35,6 +35,7 @@ one integration path for that source; do not separately merge overlapping #26,
 | Low-stock expression failed on legacy missing/null stock counters. | `$ifNull` treats missing stock as zero while requiring an explicit positive reorder threshold and tenant scope. |
 | Event updates accepted arbitrary ownership/id/counter fields; ticket increments were a read/write race. | Whitelist editable event fields and atomically enforce active status, positive quantity and remaining capacity. Concurrency test proves a one-seat event only accepts one request. |
 | Staff roster writes accepted foreign/nonexistent staff references. | Verify the staff member within the actor's business before create/update. Foreign/missing references return 404. |
+| Loyalty ledger retries/history/activity reads and fraud voucher action relied on related ids without scoping the actual ledger/voucher query. | Added business filters on every identified read/write, stamped expiry ledger entries, and reject foreign voucher references before resolving a flag. A negative test seeds colliding customer/transaction references across businesses. |
 | Refund kitchen-effect metadata update used only a generated id. | Include the actor's strict tenant filter on the write, retaining the preceding ownership check. |
 
 The first post-adapter full run found one genuine test-double incompatibility:

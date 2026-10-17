@@ -29,7 +29,7 @@ const Budgets = () => {
       setAccounts(a.data);
       if (b.data.length && !selectedBudget) setSelectedBudget(b.data[0].id);
     } catch { toast.error('Could not load budgets'); }
-     
+
   }, []);
   useEffect(() => { load(); }, [load]);
 
