@@ -9,6 +9,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from '../components/
 import { useTheme } from '../contexts/ThemeContext';
 import { itemsSystemAPI, productsAPI } from '../services/api';
 import { toast } from 'sonner';
+import { FileService } from '../platform';
 
 export default function PaymentLinks() {
   const { theme } = useTheme();
@@ -36,17 +37,12 @@ export default function PaymentLinks() {
 
   const copyLink = (url) => { navigator.clipboard.writeText(url); toast.success('Link copied to clipboard'); };
 
-  const downloadQR = () => {
+  const downloadQR = async () => {
     const svg = document.getElementById('qr-code-svg');
     if (!svg) return;
     const svgData = new XMLSerializer().serializeToString(svg);
     const blob = new Blob([svgData], { type: 'image/svg+xml' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `${qrLink?.productName || 'payment-link'}-qr.svg`;
-    a.click();
-    URL.revokeObjectURL(url);
+    await FileService.downloadFile(blob, `${qrLink?.productName || 'payment-link'}-qr.svg`);
     toast.success('QR code downloaded');
   };
 

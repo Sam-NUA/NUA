@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { ScanLine, X } from 'lucide-react';
 import { Button } from '../ui/button';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '../ui/dialog';
+import { ScannerService } from '../../platform';
 
 /**
  * Scan a promo/voucher QR or barcode with the device camera and hand the
@@ -13,7 +14,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from '../ui/dialog';
  * staff still have the manual code input as a fallback.
  */
 export default function ScanVoucherButton({ onDetected }) {
-  const [supported] = useState(() => typeof window !== 'undefined' && 'BarcodeDetector' in window);
+  const [supported] = useState(() => ScannerService.isCameraScanAvailable());
   const [open, setOpen] = useState(false);
   const [error, setError] = useState('');
   const videoRef = useRef(null);

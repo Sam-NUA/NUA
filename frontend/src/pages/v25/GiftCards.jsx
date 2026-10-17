@@ -12,6 +12,7 @@ import { useTheme } from '../../contexts/ThemeContext';
 import { useAuth } from '../../contexts/AuthContext';
 import { useToast } from '../../hooks/use-toast';
 import { Gift, Search, Plus, Ban, RotateCcw, Send, PlusCircle, Pencil, Save, History } from 'lucide-react';
+import { DialogService } from '../../platform';
 
 const STATUS_STYLE = {
   active: 'bg-emerald-100 text-emerald-700',
@@ -132,7 +133,7 @@ export default function GiftCards() {
   };
 
   const doStop = async () => {
-    if (!window.confirm(`Stop card ${detail.code}? This blocks it from being redeemed until reactivated.`)) return;
+    if (!await DialogService.confirm(`Stop card ${detail.code}? This blocks it from being redeemed until reactivated.`)) return;
     try {
       await v26API.stopGiftCard(detail.code);
       toast({ title: 'Card stopped' });

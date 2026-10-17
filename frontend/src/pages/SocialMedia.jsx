@@ -12,6 +12,7 @@ import { useTheme } from '../contexts/ThemeContext';
 import { socialAPI, productsAPI, promotionsAPI } from '../services/api';
 import ImageLibrary from '../components/ImageLibrary';
 import { SocialCalendar } from '../components/social/SocialCalendar';
+import { DialogService } from '../platform';
 
 const PLATFORM_ICON = {
   instagram: Instagram,
@@ -109,7 +110,7 @@ const SocialMedia = () => {
   };
 
   const handleDisconnect = async (id) => {
-    if (!window.confirm('Disconnect this account?')) return;
+    if (!await DialogService.confirm('Disconnect this account?')) return;
     try { await socialAPI.disconnectAccount(id); toast.success('Disconnected'); reload(); }
     catch { toast.error('Failed to disconnect'); }
   };
@@ -180,7 +181,7 @@ const SocialMedia = () => {
   };
 
   const handleDeletePost = async (id) => {
-    if (!window.confirm('Delete this post?')) return;
+    if (!await DialogService.confirm('Delete this post?')) return;
     try { await socialAPI.deletePost(id); toast.success('Deleted'); reload(); }
     catch { toast.error('Failed'); }
   };

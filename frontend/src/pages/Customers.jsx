@@ -406,7 +406,7 @@ const Customers = () => {
         {renderCustomerDialog()}
 
         {/* Unified Wallet + Journey + Loyalty + AI Recs */}
-        <CustomerWalletPanel customer={profile} theme={theme} onRefresh={() => fetchAll?.()} />
+        <CustomerWalletPanel customer={profile} theme={theme} onRefresh={() => { fetchProfile(selectedCustomer); fetchCustomers(); }} />
 
         {/* Digital Wallet Dialog */}
         <GuestWalletDialog open={walletDialog} onOpenChange={setWalletDialog} customer={profile} />

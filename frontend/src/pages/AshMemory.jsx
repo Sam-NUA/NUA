@@ -9,9 +9,10 @@ import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from '.
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '../components/ui/dialog';
 import { toast } from 'sonner';
 import { BookMarked, RefreshCw, Plus, Trash2, Search } from 'lucide-react';
+import { DialogService, SecureStorageService } from '../platform';
 
 const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
-const H = () => ({ Authorization: `Bearer ${localStorage.getItem('nua_token')}` });
+const H = async () => ({ Authorization: `Bearer ${await SecureStorageService.getToken()}` });
 
 const KIND_TONE = {
   preference: 'bg-indigo-500', pattern: 'bg-emerald-500',
@@ -32,8 +33,8 @@ export default function AshMemory() {
     setRefreshing(true);
     try {
       const [m, s] = await Promise.all([
-        axios.get(`${API}/nua/memory?limit=200`, { headers: H() }),
-        axios.get(`${API}/nua/memory/scopes`, { headers: H() }),
+        axios.get(`${API}/nua/memory?limit=200`, { headers: await H() }),
+        axios.get(`${API}/nua/memory/scopes`, { headers: await H() }),
       ]);
       setMemories(m.data);
       setScopes(s.data);
@@ -46,7 +47,7 @@ export default function AshMemory() {
   const saveMemory = async () => {
     if (!form.text.trim()) return;
     try {
-      await axios.post(`${API}/nua/memory`, form, { headers: H() });
+      await axios.post(`${API}/nua/memory`, form, { headers: await H() });
       toast.success('Remembered');
       setAddOpen(false);
       setForm({ text: '', scope: 'global', kind: 'preference', confidence: 1 });
@@ -55,9 +56,9 @@ export default function AshMemory() {
   };
 
   const deleteMemory = async (id) => {
-    if (!window.confirm('Ask NUA to forget this? This cannot be undone.')) return;
+    if (!await DialogService.confirm('Ask NUA to forget this? This cannot be undone.')) return;
     try {
-      await axios.delete(`${API}/nua/memory/${id}`, { headers: H() });
+      await axios.delete(`${API}/nua/memory/${id}`, { headers: await H() });
       setMemories(ms => ms.filter(m => m.id !== id));
       toast('Forgotten');
     } catch { toast.error('Failed'); }

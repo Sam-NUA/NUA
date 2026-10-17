@@ -108,11 +108,11 @@ async def _ai_eta_explanation(order: dict, eta: dict) -> str:
         f"Your {order.get('channel','order')} is being prepared. "
         f"Estimated ready in ~{eta['etaMinutes']} minutes."
     )
-    if not os.environ.get("EMERGENT_LLM_KEY"): return fallback
+    if not os.environ.get("OPENAI_API_KEY"): return fallback
     try:
-        from emergentintegrations.llm.chat import LlmChat, UserMessage
+        from services.ai_provider import LlmChat, UserMessage
         chat = LlmChat(
-            api_key=os.environ["EMERGENT_LLM_KEY"],
+            api_key=os.environ["OPENAI_API_KEY"],
             session_id=f"eta-{uuid.uuid4().hex[:6]}",
             system_message=(
                 "You are a friendly restaurant assistant writing a single-sentence "
@@ -177,10 +177,10 @@ async def _resolve_business_id(business: Optional[str]) -> str:
     if business:
         biz = await db.businesses.find_one(
             {"$or": [{"id": business}, {"slug": business}]}, {"_id": 0, "id": 1})
-        if not biz:
+        if not biz or str(biz["id"]).startswith(("nb_", "nl_")):
             raise HTTPException(status_code=404, detail="Business not found")
         return biz["id"]
-    candidates = await db.businesses.find({}, {"_id": 0, "id": 1}).to_list(2)
+    candidates = await db.businesses.find({"id": {"$not": {"$regex": "^(nb_|nl_)"}}}, {"_id": 0, "id": 1}).to_list(2)
     if len(candidates) != 1:
         raise HTTPException(status_code=400, detail="Specify a valid business (?business=<slug-or-id>)")
     return candidates[0]["id"]
@@ -218,7 +218,7 @@ async def public_categories(business: Optional[str] = None):
         channels = c.get("channels") or ["dine-in", "pickup", "delivery"]
         if any(ch in channels for ch in ("pickup", "delivery", "online")):
             rows.append({k: c.get(k) for k in ("id", "name", "icon", "color", "prepTime", "sortOrder")})
-    rows.sort(key=lambda x: x.get("sortOrder", 99))
+    rows.sort(key=lambda x: x["sortOrder"] if x.get("sortOrder") is not None else 99)
     return rows
 
 
@@ -237,7 +237,7 @@ async def public_products(business: Optional[str] = None):
         # This is a storefront anyone on the internet can hit, so it hands back
         # the menu and nothing behind it — no unit cost, no on-hand count, no
         # SKU. Those are the same fields /products strips for guests.
-        {"_id": 0, "cost": 0, "stock": 0, "sku": 0},
+        {"_id": 0, "cost": 0, "stock": 0, "stockByLocation": 0, "sku": 0},
     ).to_list(500)
     return products
 
@@ -378,13 +378,13 @@ async def create_online_order_checkout(data: dict, http_request: Request):
     # case (found running this endpoint end to end via Playwright). Matches
     # routes/integrations.py's _create_stripe_session, which already does
     # this the right way round.
-    from emergentintegrations.payments.stripe.checkout import StripeCheckout, CheckoutSessionRequest
+    from services.stripe_checkout import StripeCheckout, CheckoutSessionRequest
 
     # A double-click or a client retry must not create two live Stripe
     # sessions for the same order — order_id is already a stable resource
     # identity (unlike a freshly-generated one), so this needs no new
     # client-supplied key at all. See services/payment_idempotency.py.
-    from services.payment_idempotency import claim_or_wait, record_result
+    from services.payment_idempotency import claim_or_wait, record_result, provider_request_key
     prior_result = await claim_or_wait("stripe_online_order", order_id)
     if prior_result is not None:
         return {"configured": True, **prior_result}
@@ -406,6 +406,7 @@ async def create_online_order_checkout(data: dict, http_request: Request):
         success_url=success_url,
         cancel_url=cancel_url,
         metadata={"orderId": order_id, "source": "nua_pos", "kind": "online_order"},
+        idempotency_key=await provider_request_key("stripe_online_order", order_id),
     )
     session = await stripe_checkout.create_checkout_session(checkout_request)
 

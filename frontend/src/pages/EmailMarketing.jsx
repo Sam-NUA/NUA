@@ -11,9 +11,10 @@ import { useTheme } from '../contexts/ThemeContext';
 import { toast } from 'sonner';
 import { advancedAPI } from '../services/api';
 import axios from 'axios';
+import { SecureStorageService } from '../platform';
 
 const API = process.env.REACT_APP_BACKEND_URL;
-const authHeader = () => ({ Authorization: `Bearer ${localStorage.getItem('nua_token')}` });
+const authHeader = async () => ({ Authorization: `Bearer ${await SecureStorageService.getToken()}` });
 
 const EMPTY_FORM = {
   name: '', subject: '', body: '', targetTier: '',
@@ -54,7 +55,7 @@ export default function EmailMarketing() {
     try {
       const [camp, stats, segs] = await Promise.all([
         advancedAPI.getCampaigns(),
-        axios.get(`${API}/api/members/stats`, { headers: authHeader() }).catch(() => ({ data: null })),
+        axios.get(`${API}/api/members/stats`, { headers: await authHeader() }).catch(() => ({ data: null })),
         advancedAPI.getSegments().catch(() => ({ data: [] })),
       ]);
       setCampaigns(camp.data);

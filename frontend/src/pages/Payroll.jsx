@@ -9,6 +9,7 @@ import { useTheme } from '../contexts/ThemeContext';
 import { finalizeAPI } from '../services/api';
 import { toast } from 'sonner';
 import { DollarSign, Users, FileText, Calculator, Send, Download, Shield, Calendar, TrendingUp, AlertTriangle, ChevronDown, ChevronRight } from 'lucide-react';
+import { FileService } from '../platform';
 
 const monday = () => {
   const d = new Date();
@@ -81,10 +82,7 @@ export default function Payroll() {
     setDownloadingPayslip(key);
     try {
       const r = await finalizeAPI.payslipPdf(runId, staffId);
-      const url = window.URL.createObjectURL(new Blob([r.data], { type: 'application/pdf' }));
-      const a = document.createElement('a');
-      a.href = url; a.download = `payslip-${staffName || staffId}-${runId}.pdf`; a.click();
-      URL.revokeObjectURL(url);
+      await FileService.downloadFile(new Blob([r.data], { type: 'application/pdf' }), `payslip-${staffName || staffId}-${runId}.pdf`);
     } catch { toast.error('Payslip download failed'); }
     finally { setDownloadingPayslip(null); }
   };

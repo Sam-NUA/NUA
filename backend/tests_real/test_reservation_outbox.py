@@ -9,6 +9,7 @@ import pytest
 from fastapi import HTTPException
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+os.environ.setdefault('JWT_SECRET', 'isolated-replica-test-secret-not-for-production')
 os.environ['DB_NAME'] = 'nua_reservation_test_' + uuid.uuid4().hex
 os.environ['MONGO_URL'] = os.environ.get('TEST_MONGO_URL', 'mongodb://127.0.0.1:27018/?replicaSet=nua-test')
 os.environ.update({'NUA_BOOKINGS_API_URL': 'https://bookings.example.test',
@@ -30,7 +31,11 @@ def run(coro):
 def clean():
     run(client.drop_database(db.name))
     async def prepare():
-        for name in ('reservations', 'booking_sync_outbox', 'booking_capacity_locks', 'businesses', 'customers', 'transactions', 'loyalty_ledger'):
+        for name in ('reservations', 'booking_sync_outbox', 'booking_capacity_locks', 'businesses',
+                     'customers', 'transactions', 'loyalty_ledger', 'products', 'stock_transfers',
+                     'appointments', 'appointment_calendars', 'services', 'auth_users', 'product_accounts',
+                     'loyalty_product_members', 'loyalty_product_rewards', 'loyalty_product_ledger',
+                     'loyalty_product_redemptions'):
             await db.create_collection(name)
         await db.transactions.create_index(
             [("businessId", 1), ("clientOpId", 1)], unique=True,
@@ -207,4 +212,242 @@ def test_pos_commit_then_lost_response_is_replay_safe(monkeypatch):
         assert (await db.customers.find_one({"businessId": "business-a"}))["points"] == 70
         assert await db.transactions.count_documents({}) == 1
         assert await db.loyalty_ledger.count_documents({}) == 1
+    run(scenario())
+
+
+# Real replica-set proofs: inprocess's transaction double is never loaded here.
+from routes import stock_transfers, appointments
+from models.appointment import AppointmentCreate, AppointmentUpdate
+from services import consistency_store
+
+
+async def seed_transfer():
+    await db.products.insert_one({'id': 'transfer-product', 'name': 'Widget',
+                                 'businessId': 'business-a', 'stockByLocation': {'A': 20, 'B': 0}})
+    user = {'id': 'owner', 'businessId': 'business-a', 'name': 'Owner'}
+    data = stock_transfers.StockTransferCreate(productId='transfer-product', fromLocation='A', toLocation='B', quantity=5)
+    return user, data
+
+
+def test_stock_receive_cancel_contention_commits_one_outcome():
+    async def scenario():
+        user, data = await seed_transfer()
+        transfer = await stock_transfers.create_transfer(data, user)
+        async def attempt(i):
+            try:
+                fn = stock_transfers.receive_transfer if i % 2 else stock_transfers.cancel_transfer
+                return await fn(transfer['id'], user)
+            except HTTPException as exc:
+                assert exc.status_code == 400
+        results = await asyncio.gather(*(attempt(i) for i in range(8)))
+        assert sum(r is not None for r in results) == 1
+        row = await db.stock_transfers.find_one({'id': transfer['id']})
+        stock = (await db.products.find_one({'id': data.productId}))['stockByLocation']
+        assert stock == ({'A': 15, 'B': 5} if row['status'] == 'received' else {'A': 20, 'B': 0})
+    run(scenario())
+
+
+def test_stock_insert_failure_aborts_real_source_debit(monkeypatch):
+    class BrokenTransfers:
+        async def insert_one(self, *args, **kwargs):
+            product = await db.products.find_one({'id': 'transfer-product'}, session=kwargs['session'])
+            assert product['stockByLocation']['A'] == 15
+            raise RuntimeError('injected transfer failure')
+    class BrokenDB:
+        stock_transfers = BrokenTransfers()
+        def __getattr__(self, name):
+            return getattr(db, name)
+    async def scenario():
+        user, data = await seed_transfer()
+        monkeypatch.setattr(stock_transfers, 'db', BrokenDB())
+        with pytest.raises(RuntimeError, match='injected'):
+            await stock_transfers.create_transfer(data, user)
+        assert (await db.products.find_one({'id': data.productId}))['stockByLocation']['A'] == 20
+        assert await db.stock_transfers.count_documents({}) == 0
+    run(scenario())
+
+
+def test_stock_status_failure_aborts_real_destination_credit(monkeypatch):
+    class BrokenTransfers:
+        def __getattr__(self, name):
+            return getattr(db.stock_transfers, name)
+        async def find_one_and_update(self, *args, **kwargs):
+            product = await db.products.find_one({'id': 'transfer-product'}, session=kwargs['session'])
+            assert product['stockByLocation']['B'] == 5
+            raise RuntimeError('injected status failure')
+    class BrokenDB:
+        stock_transfers = BrokenTransfers()
+        def __getattr__(self, name):
+            return getattr(db, name)
+    async def scenario():
+        user, data = await seed_transfer()
+        transfer = await stock_transfers.create_transfer(data, user)
+        monkeypatch.setattr(stock_transfers, 'db', BrokenDB())
+        with pytest.raises(RuntimeError, match='injected status failure'):
+            await stock_transfers.receive_transfer(transfer['id'], user)
+        assert (await db.products.find_one({'id': data.productId}))['stockByLocation'] == {'A': 15, 'B': 0}
+        assert (await db.stock_transfers.find_one({'id': transfer['id']}))['status'] == 'in_transit'
+    run(scenario())
+
+
+def test_stock_concurrent_source_debits_cannot_oversell():
+    async def scenario():
+        user, data = await seed_transfer()
+        data.quantity = 15
+        async def attempt():
+            try:
+                return await stock_transfers.create_transfer(data, user)
+            except HTTPException as exc:
+                assert exc.status_code in (400, 409)
+        results = await asyncio.gather(*(attempt() for _ in range(8)))
+        assert sum(r is not None for r in results) == 1
+        assert (await db.products.find_one({'id': data.productId}))['stockByLocation']['A'] == 5
+        assert await db.stock_transfers.count_documents({}) == 1
+    run(scenario())
+
+
+async def seed_appointment(business_id='business-a'):
+    await db.services.insert_one({'id': 'service-' + business_id, 'businessId': business_id,
+                                 'name': 'Service', 'durationMinutes': 60, 'price': 50})
+    await db.auth_users.insert_one({'id': 'staff-' + business_id, 'businessId': business_id, 'name': 'Staff'})
+    user = {'id': 'staff-' + business_id, 'businessId': business_id}
+    data = AppointmentCreate(customerName='Client', staffId=user['id'], serviceId='service-' + business_id,
+                             date='2027-04-10', time='10:00')
+    return user, data
+
+
+def test_appointment_concurrent_check_insert_has_one_winner():
+    async def scenario():
+        user, data = await seed_appointment()
+        async def attempt():
+            try:
+                return await appointments.create_appointment(data, user)
+            except HTTPException as exc:
+                assert exc.status_code == 409
+        results = await asyncio.gather(*(attempt() for _ in range(8)))
+        assert sum(r is not None for r in results) == 1
+        assert await db.appointments.count_documents({}) == 1
+        assert await db.appointment_calendars.count_documents({}) == 1
+        other, other_data = await seed_appointment('business-b')
+        await appointments.create_appointment(other_data, other)
+        assert await db.appointments.count_documents({'businessId': 'business-b'}) == 1
+    run(scenario())
+
+
+def test_appointment_concurrent_reschedules_and_reactivation_are_fenced():
+    async def scenario():
+        user, data = await seed_appointment()
+        first = await appointments.create_appointment(data, user)
+        second = await appointments.create_appointment(data.model_copy(update={'time': '11:00'}), user)
+        async def attempt(appointment_id):
+            try:
+                return await appointments.update_appointment(appointment_id, AppointmentUpdate(time='12:00'), user)
+            except HTTPException as exc:
+                assert exc.status_code == 409
+        results = await asyncio.gather(attempt(first.id), attempt(second.id))
+        assert sum(r is not None for r in results) == 1
+        await appointments.cancel_appointment(first.id, user)
+        row = await db.appointments.find_one({'id': first.id})
+        await appointments.create_appointment(data.model_copy(update={'time': row['time']}), user)
+        with pytest.raises(HTTPException) as exc:
+            await appointments.update_appointment(first.id, AppointmentUpdate(status='confirmed'), user)
+        assert exc.value.status_code == 409
+    run(scenario())
+
+
+def test_appointment_no_show_retries_tally_customer_once():
+    async def scenario():
+        user, data = await seed_appointment()
+        await db.customers.insert_one({'id': 'no-show-customer', 'businessId': 'business-a'})
+        data.customerId = 'no-show-customer'
+        appointment = await appointments.create_appointment(data, user)
+        await asyncio.gather(*(appointments.no_show_appointment(appointment.id, fee=25, user=user) for _ in range(8)))
+        assert (await db.customers.find_one({'id': data.customerId}))['noShowCount'] == 1
+    run(scenario())
+
+
+def test_consistency_store_does_not_fall_back_if_sessions_fail(monkeypatch):
+    async def unavailable():
+        raise RuntimeError('sessions unavailable')
+    async def scenario():
+        user, data = await seed_transfer()
+        monkeypatch.setattr(consistency_store.client, 'start_session', unavailable)
+        with pytest.raises(RuntimeError, match='sessions unavailable'):
+            await stock_transfers.create_transfer(data, user)
+        assert (await db.products.find_one({'id': data.productId}))['stockByLocation']['A'] == 20
+        assert await db.stock_transfers.count_documents({}) == 0
+    run(scenario())
+
+
+# Standalone Loyalty uses the same isolated replica set and real transactions.
+def loyalty_setup():
+    from types import SimpleNamespace
+    from services import loyalty_product as product
+    from routes.loyalty_product import Program, Join, Adjustment, Reward
+    async def scenario():
+        os.environ['LOYALTY_PRODUCT_SIGNUP_ENABLED'] = 'true'
+        user = await product.signup(SimpleNamespace(name='Owner', venueName='Club',
+            email=uuid.uuid4().hex+'@example.com', password='real-test-password'))
+        bid = user['businessId']
+        account = await product.account_for(bid)
+        await product.configure(bid, Program(**{**account['program'], 'published': True}))
+        email = uuid.uuid4().hex+'@example.com'
+        await product.join(bid, Join(name='Member', email=email, password='real-member-password', acceptTerms=True))
+        mid = product.member_id(bid, email)
+        await product.mutate_points(bid, mid, Adjustment(requestId=uuid.uuid4(), points=100, reason='Receipt test'), user['id'])
+        rid = str(uuid.uuid4())
+        await product.save_reward(bid, rid, Reward(name='Coffee', points=100))
+        return product, bid, mid, rid
+    return run(scenario())
+
+
+def test_loyalty_real_concurrent_claims_cannot_overspend():
+    product, bid, mid, rid = loyalty_setup()
+    from routes.loyalty_product import Claim
+    async def scenario():
+        async def claim():
+            try:
+                return await product.mutate_points(bid, mid, Claim(requestId=uuid.uuid4(), expectedPoints=100), mid, reward_id=rid)
+            except HTTPException as exc:
+                assert exc.status_code == 409
+                return None
+        results = await asyncio.gather(*(claim() for _ in range(8)))
+        assert sum(r is not None for r in results) == 1
+        assert (await product.member_for(bid, mid))['points'] == 0
+        assert await db.loyalty_product_redemptions.count_documents({'businessId':bid}) == 1
+        assert await db.loyalty_product_ledger.count_documents({'businessId':bid}) == 2
+    run(scenario())
+
+
+def test_loyalty_real_replay_and_concurrent_refund_are_exactly_once():
+    product, bid, mid, rid = loyalty_setup()
+    from routes.loyalty_product import Claim
+    async def scenario():
+        data = Claim(requestId=uuid.uuid4(), expectedPoints=100)
+        results = await asyncio.gather(*(product.mutate_points(bid, mid, data, mid, reward_id=rid) for _ in range(4)))
+        assert all(r == results[0] for r in results)
+        receipt = results[0]['redemptionId']
+        await asyncio.gather(*(product.resolve_redemption(bid, receipt, 'cancel', 'owner') for _ in range(4)))
+        member = await product.member_for(bid, mid)
+        assert member['points'] == 100 and member['earnedPoints'] == 100
+        assert await db.loyalty_product_ledger.count_documents({'businessId':bid}) == 3
+    run(scenario())
+
+
+def test_loyalty_transaction_failure_rolls_back_points_and_receipt(monkeypatch):
+    product, bid, mid, rid = loyalty_setup()
+    from routes.loyalty_product import Claim
+    original = product.transaction
+    async def failing(operation):
+        async def write_then_fail(session):
+            await operation(session)
+            raise RuntimeError('injected failure before commit')
+        return await original(write_then_fail)
+    monkeypatch.setattr(product, 'transaction', failing)
+    async def scenario():
+        with pytest.raises(RuntimeError):
+            await product.mutate_points(bid, mid, Claim(requestId=uuid.uuid4(), expectedPoints=100), mid, reward_id=rid)
+        assert (await product.member_for(bid, mid))['points'] == 100
+        assert await db.loyalty_product_redemptions.count_documents({'businessId':bid}) == 0
+        assert await db.loyalty_product_ledger.count_documents({'businessId':bid}) == 1
     run(scenario())

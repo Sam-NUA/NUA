@@ -9,12 +9,8 @@ wired into routes/integrations.py's _create_stripe_session, routes/
 crypto_payments.py's _create_crypto_session (shared by both the staff POS
 checkout and routes/bill_split.py's guest checkout), and routes/
 online_orders.py's create_online_order_checkout. Crypto is the path
-actually exercisable end to end in this sandbox — the same fixed test env
-lacks the `emergentintegrations` package Stripe's SDK wrapper needs (see
-test_payment_integrity.py's own note on this), so Stripe checkout-session
-creation is exercised here via a lightweight fake module installed into
-sys.modules, mirroring the shape of the real emergentintegrations.payments.
-stripe.checkout API used in routes/integrations.py.
+exercised with mocked HTTP/SDK boundaries. The public Stripe adapter itself
+is covered separately in test_public_provider_adapters.py.
 """
 import asyncio
 import sys
@@ -55,8 +51,8 @@ def _mock_coinbase_client(handler):
 
 
 def _install_fake_stripe_sdk(monkeypatch, *, delay_seconds=0.0):
-    """Installs a minimal fake of emergentintegrations.payments.stripe.checkout
-    (not present in this sandbox) so _create_stripe_session's inline import
+    """Installs a minimal fake of services.stripe_checkout
+    (mocked at the provider boundary) so _create_stripe_session's inline import
     succeeds. call_log records every real "create session" call — used to
     prove a repeated/concurrent request only calls out once."""
     call_log = []
@@ -82,20 +78,10 @@ def _install_fake_stripe_sdk(monkeypatch, *, delay_seconds=0.0):
             sid = f"cs_test_fake_{len(call_log)}"
             return _Session(sid, f"https://checkout.stripe.com/fake/{sid}")
 
-    fake_checkout_mod = types.ModuleType("emergentintegrations.payments.stripe.checkout")
+    fake_checkout_mod = types.ModuleType("services.stripe_checkout")
     fake_checkout_mod.StripeCheckout = StripeCheckout
     fake_checkout_mod.CheckoutSessionRequest = CheckoutSessionRequest
-    fake_stripe_mod = types.ModuleType("emergentintegrations.payments.stripe")
-    fake_stripe_mod.checkout = fake_checkout_mod
-    fake_payments_mod = types.ModuleType("emergentintegrations.payments")
-    fake_payments_mod.stripe = fake_stripe_mod
-    fake_pkg = types.ModuleType("emergentintegrations")
-    fake_pkg.payments = fake_payments_mod
-
-    monkeypatch.setitem(sys.modules, "emergentintegrations", fake_pkg)
-    monkeypatch.setitem(sys.modules, "emergentintegrations.payments", fake_payments_mod)
-    monkeypatch.setitem(sys.modules, "emergentintegrations.payments.stripe", fake_stripe_mod)
-    monkeypatch.setitem(sys.modules, "emergentintegrations.payments.stripe.checkout", fake_checkout_mod)
+    monkeypatch.setitem(sys.modules, "services.stripe_checkout", fake_checkout_mod)
     monkeypatch.setenv("STRIPE_API_KEY", "sk_test_fake_checkout_idempotency")
     return call_log
 
@@ -193,6 +179,7 @@ def test_a_stale_stripe_idempotency_claim_is_not_reused_forever(client, owner_he
         second = req(client, "POST", "/api/stripe/checkout", headers=owner_headers, json=payload)
         assert second.status_code == 200, second.text[:200]
         assert len(call_log) == 2, "a stale claim must not suppress a genuinely new checkout attempt"
+        assert call_log[0].idempotency_key != call_log[1].idempotency_key
         assert second.json()["sessionId"] != first.json()["sessionId"]
     finally:
         _run(db.payment_transactions.delete_many({"sessionId": {"$regex": "^cs_test_fake_"}}))
@@ -246,7 +233,7 @@ def test_a_failed_provider_call_does_not_permanently_stick_the_claim(client, own
     orig_create = None
 
     import sys
-    fake_checkout_mod = sys.modules["emergentintegrations.payments.stripe.checkout"]
+    fake_checkout_mod = sys.modules["services.stripe_checkout"]
     orig_create = fake_checkout_mod.StripeCheckout.create_checkout_session
 
     call_count = {"n": 0}

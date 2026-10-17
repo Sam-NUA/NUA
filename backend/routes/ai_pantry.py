@@ -9,8 +9,8 @@ from datetime import datetime
 router = APIRouter()
 
 async def _get_ai_chat():
-    from emergentintegrations.llm.chat import LlmChat
-    key = os.environ.get("EMERGENT_LLM_KEY")
+    from services.ai_provider import LlmChat
+    key = os.environ.get("OPENAI_API_KEY")
     if not key:
         raise HTTPException(status_code=500, detail="AI not configured")
     chat = LlmChat(api_key=key, session_id=f"pantry-{uuid.uuid4()}", system_message=(
@@ -85,7 +85,7 @@ Generate a JSON response with this EXACT structure:
   "summary": "brief summary of ordering priorities"
 }}"""
 
-    from emergentintegrations.llm.chat import UserMessage
+    from services.ai_provider import UserMessage
     chat = await _get_ai_chat()
     response = await chat.send_message(UserMessage(text=prompt))
 
@@ -149,9 +149,9 @@ async def parse_invoice(data: dict, user: dict = Depends(require_owner_or_manage
         "Best-guess parsing — do not invent items."
     )
 
-    from emergentintegrations.llm.chat import LlmChat, UserMessage
+    from services.ai_provider import LlmChat, UserMessage
     chat = LlmChat(
-        api_key=os.environ.get("EMERGENT_LLM_KEY"),
+        api_key=os.environ.get("OPENAI_API_KEY"),
         session_id=f"invoice-{uuid.uuid4().hex[:6]}",
         system_message=sys_msg,
     ).with_model("openai", "gpt-5.2")
@@ -159,7 +159,7 @@ async def parse_invoice(data: dict, user: dict = Depends(require_owner_or_manage
     msg_args = {"text": invoice_text or "Parse the attached invoice image."}
     if image_b64:
         try:
-            from emergentintegrations.llm.chat import ImageContent
+            from services.ai_provider import ImageContent
             msg_args["file_contents"] = [ImageContent(image_base64=image_b64)]
         except Exception:
             pass

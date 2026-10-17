@@ -8,6 +8,7 @@ import { v25API, v26API, customersAPI } from '../../services/api';
 import { useTheme } from '../../contexts/ThemeContext';
 import { useToast } from '../../hooks/use-toast';
 import { Star, Plus, Pencil, Trash2, Users, Pause, Play, X, Check, UserPlus, Tag } from 'lucide-react';
+import { DialogService } from '../../platform';
 
 /**
  * Subscription Memberships console — owners can:
@@ -126,10 +127,10 @@ export default function Subscriptions() {
   const deletePlan = async (plan) => {
     const members_on_plan = members.filter(m => m.planId === plan.id && m.status === 'active');
     if (members_on_plan.length > 0) {
-      const proceed = window.confirm(`${members_on_plan.length} active member(s) are on this plan. Delete anyway?`);
+      const proceed = await DialogService.confirm(`${members_on_plan.length} active member(s) are on this plan. Delete anyway?`);
       if (!proceed) return;
     } else {
-      if (!window.confirm(`Delete plan "${plan.name}"?`)) return;
+      if (!await DialogService.confirm(`Delete plan "${plan.name}"?`)) return;
     }
     setBusy(true);
     try {
@@ -179,7 +180,7 @@ export default function Subscriptions() {
     } finally { setBusy(false); }
   };
   const cancelMember = async (m) => {
-    if (!window.confirm(`Cancel ${customersById[m.customerId]?.name || 'this member'}'s subscription?`)) return;
+    if (!await DialogService.confirm(`Cancel ${customersById[m.customerId]?.name || 'this member'}'s subscription?`)) return;
     setBusy(true);
     try {
       await v25API.cancelSubMember(m.id);

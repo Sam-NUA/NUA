@@ -5,9 +5,10 @@ import { Badge } from '../components/ui/badge';
 import { Button } from '../components/ui/button';
 import { Building2, Trophy, TrendingUp } from 'lucide-react';
 import { toast } from 'sonner';
+import { SecureStorageService } from '../platform';
 
 const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
-const H = () => ({ Authorization: `Bearer ${localStorage.getItem('nua_token')}` });
+const H = async () => ({ Authorization: `Bearer ${await SecureStorageService.getToken()}` });
 
 export default function HQDashboard() {
   const [rollup, setRollup] = useState(null);
@@ -18,9 +19,9 @@ export default function HQDashboard() {
   const load = useCallback(async () => {
     try {
       const [r, l, b] = await Promise.all([
-        axios.get(`${API}/hq/kpi-roll-up?days=${days}`, { headers: H() }),
-        axios.get(`${API}/hq/leaderboard`, { headers: H() }),
-        axios.get(`${API}/hq/brands`, { headers: H() }),
+        axios.get(`${API}/hq/kpi-roll-up?days=${days}`, { headers: await H() }),
+        axios.get(`${API}/hq/leaderboard`, { headers: await H() }),
+        axios.get(`${API}/hq/brands`, { headers: await H() }),
       ]);
       setRollup(r.data); setLeaderboard(l.data); setBrands(b.data);
     } catch { toast.error('Failed to load HQ dashboard'); }

@@ -25,21 +25,23 @@ import POSHeaderBar from '../components/pos/POSHeaderBar';
 import ScanVoucherButton from '../components/pos/ScanVoucherButton';
 import TableNumberField from '../components/pos/TableNumberField';
 import { CourseHeader, SendToKitchenBar, ReadyBanner, SeatPicker } from '../components/pos/CourseControls';
+import SensitiveActionReauthDialog from '../components/security/SensitiveActionReauthDialog';
 import { validateTable } from '../lib/tableNumber';
 import { readableTextColor } from '../lib/contrast';
 import { groupCartByCourse, showCourseUI, courseKeys, courseLabel, lineCourse,
          readyCourses, seatOptions, seatsEnabled } from '../lib/coursing';
 import { CategoryIcon } from './Categories';
-import { createTransactionResilient, courseActionResilient, cacheCatalogue, getCachedCatalogue, isNetworkFailure } from '../lib/offlineQueue';
+import { captureScope, assertScope, createTransactionResilient, courseActionResilient, cacheCatalogue, getCachedCatalogue, isNetworkFailure } from '../lib/offlineQueue';
 import { subscribeTickets, streamHealthy } from '../lib/ticketStream';
 import useOfflineQueue from '../hooks/useOfflineQueue';
+import { DialogService, ClipboardService } from '../platform';
 import { WifiOff } from 'lucide-react';
 
 // SwipeableCartItem and CustomerCombobox now live in components/pos/.
 
 const POSTerminal = () => {
   const { theme } = useTheme();
-  const { queuedCount, refresh: refreshOfflineQueue } = useOfflineQueue();
+  const { queuedCount, reviewCount, refresh: refreshOfflineQueue } = useOfflineQueue();
   const { user, hasPermission } = useAuth();
   const { cart, addToCart, removeFromCart, updateQuantity, updateCartItemModifiers, clearCart, calculateTotal, selectedCustomer, setSelectedCustomer, currentUser, currentLocation, appliedDiscounts, addDiscount, removeDiscount, appliedGiftCards, addGiftCard, removeGiftCard, pendingGiftActivations, storeCreditApplied, setStoreCreditApplied } = usePOS();
   const { toast } = useToast();
@@ -69,6 +71,7 @@ const POSTerminal = () => {
   const [showCompVoidQuick, setShowCompVoidQuick] = useState(false);
   const [compVoidForm, setCompVoidForm] = useState({ type: 'comp', reason: '', amount: '', printVoid: false });
   const [compVoidBusy, setCompVoidBusy] = useState(false);
+  const [showCompVoidReauth, setShowCompVoidReauth] = useState(false);
   const [tablesDialogMode, setTablesDialogMode] = useState('view'); // view | move | merge | split
   const [movingTab, setMovingTab] = useState(null);
   const [moveTargetTable, setMoveTargetTable] = useState('');
@@ -251,7 +254,7 @@ const POSTerminal = () => {
 
   const resumeHeldCheckout = async (tab) => {
     if (cart.length > 0) {
-      const proceed = window.confirm('This will replace the current cart with the held sale. Continue?');
+      const proceed = await DialogService.confirm('This will replace the current cart with the held sale. Continue?');
       if (!proceed) return;
     }
     clearCart();
@@ -263,7 +266,7 @@ const POSTerminal = () => {
   };
 
   const cancelHeldCheckout = async (tab) => {
-    const proceed = window.confirm(
+    const proceed = await DialogService.confirm(
       `Cancel this held sale? If the guest still completes the ${tab.checkoutProvider === 'crypto' ? 'crypto' : 'Stripe'} `
       + `payment from a re-opened link, it will still ring up automatically — this only clears the hold on this screen.`
     );
@@ -417,12 +420,12 @@ const POSTerminal = () => {
       };
       const r = kitchenOrder
         ? await courseActionResilient('addRound', { orderId: kitchenOrder.id, payload },
-            () => coursingAPI.addRound(kitchenOrder.id, payload))
+            config => coursingAPI.addRound(kitchenOrder.id, payload, config))
         : await courseActionResilient('sendToKitchen', { payload },
-            () => coursingAPI.sendToKitchen(payload));
+            config => coursingAPI.sendToKitchen(payload, config));
       if (r.queuedOffline) {
-        toast({ title: 'Saved offline',
-                description: 'The kitchen gets this order as soon as the connection is back.' });
+        refreshOfflineQueue();
+        toast({ title: 'Kitchen action needs review', description: 'Saved locally. Check the kitchen ticket before repeating this action; it may already have reached the server.', variant: 'destructive' });
         setSentQty(prev => {
           const next = { ...prev };
           outgoing.forEach(i => { next[i.id] = (next[i.id] || 0) + i.quantity; });
@@ -453,10 +456,10 @@ const POSTerminal = () => {
     setCoursingBusy(true);
     try {
       const r = await courseActionResilient(kind, { orderId: kitchenOrder.id, course: courseKey },
-        () => fn(kitchenOrder.id, courseKey));
+        config => fn(kitchenOrder.id, courseKey, config));
       if (r.queuedOffline) {
         toast({ title: `${courseLabel(courseKey, coursingConfig)} queued`,
-                description: 'Offline — the kitchen is told the moment the connection returns.' });
+                description: 'Saved for review. Check the kitchen ticket before repeating this action.' });
         return;
       }
       setKitchenOrder(r.data);
@@ -494,10 +497,10 @@ const POSTerminal = () => {
         }],
       };
       const r = await courseActionResilient('void', { orderId: kitchenOrder.id, payload: voidPayload },
-        () => coursingAPI.voidItems(kitchenOrder.id, voidPayload));
+        config => coursingAPI.voidItems(kitchenOrder.id, voidPayload, config));
       if (r.queuedOffline) {
         toast({ title: 'Void queued',
-                description: 'Offline — the station is told the moment the connection returns.' });
+                description: 'Saved for review. Check the kitchen ticket before repeating this action.' });
         return;
       }
       if (r.data?.order) setKitchenOrder(r.data.order);
@@ -580,7 +583,7 @@ const POSTerminal = () => {
     // Intentionally only depend on cart contents + orderType — avoids feedback loop with appliedDiscounts.
     // orderType is included so switching dine-in <-> takeaway immediately drops/re-adds
     // channel-restricted promos (e.g. a dine-in-only Happy Hour) instead of leaving a stale one applied.
-  }, [cart, orderType]);  // eslint-disable-line
+  }, [cart, orderType]);
 
   // Push live cart to the customer-facing display (debounced ~400ms) — also
   // carries split-payment progress while a split is in flight, so a guest
@@ -763,6 +766,7 @@ const POSTerminal = () => {
 
   const fetchData = async () => {
     try {
+      const scope = captureScope();
       // Run all initial fetches in parallel for max speed
       const [productsRes, promotionsRes, customersRes, catsRes, modsRes, loyaltyRes, labelsRes, trainingRes] = await Promise.allSettled([
         productsAPI.getAll(),
@@ -774,6 +778,7 @@ const POSTerminal = () => {
         v15API.getLabels(localStorage.getItem('nua_lang') || 'en'),
         advancedAPI.getTrainingMode(),
       ]);
+      assertScope(scope);
       const buildCategoryList = (raw) => {
         const active = (raw || [])
           .filter(c => c.active !== false)
@@ -799,10 +804,10 @@ const POSTerminal = () => {
       // a silent substitution, and the actual re-fetch (not just the cache
       // write) resumes the moment the network genuinely returns.
       if (productsRes.status === 'fulfilled' && catsRes.status === 'fulfilled') {
-        cacheCatalogue(productsRes.value.data || [], catsRes.value.data || []).catch(() => {});
+        cacheCatalogue(productsRes.value.data || [], catsRes.value.data || [], scope).catch(() => {});
         setOfflineMenu(null);
       } else if (productsRes.status === 'rejected' && isNetworkFailure(productsRes.reason)) {
-        const cached = await getCachedCatalogue();
+        const cached = await getCachedCatalogue(scope);
         if (cached.products.length) {
           setProducts(cached.products);
           setCategories(buildCategoryList(cached.categories));
@@ -926,9 +931,16 @@ const POSTerminal = () => {
 
   const jumpToDiscounts = () => { setCartTab('cart'); setShowDiscountPicker(true); };
 
-  const handleQuickCompVoid = async () => {
+  const handleQuickCompVoid = () => {
     if (!compVoidForm.reason.trim()) { toast({ title: 'Reason required', variant: 'destructive' }); return; }
     if (!compVoidForm.amount || parseFloat(compVoidForm.amount) <= 0) { toast({ title: 'Amount must be greater than 0', variant: 'destructive' }); return; }
+    setShowCompVoidReauth(true);
+  };
+
+  // Directive Phase 5 — same sensitive-action gate as CompVoid.jsx's
+  // standalone page, for this quick-dialog path to the same backend call.
+  const doQuickCompVoid = async () => {
+    setShowCompVoidReauth(false);
     setCompVoidBusy(true);
     try {
       await itemsSystemAPI.createCompVoid({
@@ -1518,7 +1530,7 @@ const POSTerminal = () => {
   };
 
   const copyToClipboard = (text) => {
-    navigator.clipboard.writeText(text);
+    ClipboardService.copyText(text);
     toast({ title: "Copied!", description: "UPI ID copied to clipboard" });
   };
 
@@ -1556,10 +1568,10 @@ const POSTerminal = () => {
           <div data-testid="pos-title">
             <POSHeaderBar themeColor={theme.primary} />
           </div>
-          {queuedCount > 0 && (
+          {(queuedCount > 0 || reviewCount > 0) && (
             <div className="mb-3 flex items-center gap-2 px-3 py-2 rounded-lg bg-amber-50 border border-amber-200 text-amber-700 text-xs font-medium" data-testid="offline-queue-banner">
               <WifiOff size={14} />
-              {queuedCount} sale{queuedCount === 1 ? '' : 's'} saved offline — syncing when back online…
+              {reviewCount > 0 ? `${reviewCount} offline record(s) need owner review in Settings → Devices & printing.` : `${queuedCount} cash sale(s) saved offline — syncing when back online…`}
             </div>
           )}
           {/* A sale sent to Stripe/Crypto checkout that came back without
@@ -2762,6 +2774,12 @@ const POSTerminal = () => {
           </div>
         </DialogContent>
       </Dialog>
+      <SensitiveActionReauthDialog
+        open={showCompVoidReauth}
+        label={`record this ${compVoidForm.type === 'comp' ? 'comp' : 'void'}`}
+        onVerified={doQuickCompVoid}
+        onCancel={() => setShowCompVoidReauth(false)}
+      />
 
     </div>
   );

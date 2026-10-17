@@ -1,5 +1,7 @@
 // Printer service for LAN/Network receipt printing
 // Uses ESC/POS commands for thermal printers
+import { PrintService } from '../platform';
+import { trackEvent } from '../lib/telemetry';
 
 class PrinterService {
   constructor() {
@@ -169,25 +171,57 @@ class PrinterService {
       }
     } catch (error) {
       console.error('Error printing receipt:', error);
+      trackEvent('printer_failure', { path: 'network', message: String(error?.message || error).slice(0, 200) });
       // Fallback to browser print
       this.printBrowser(transaction, printerConfig);
       return false;
     }
   }
 
-  // Fallback browser print
+  // Fallback browser/native print — see docs/platform/ADR-001's
+  // PrintService: network ESC/POS (above) stays the primary path on every
+  // platform; this only ever runs as its fallback.
+  //
+  // On Electron (Windows), PrintService.printReceipt exists and is used
+  // instead of printHtml: it builds and escapes the receipt natively from
+  // these structured fields (apps/windows/src/receipt.cjs) rather than
+  // interpolating transaction data into an HTML string, closing the
+  // unescaped-receipt-HTML gap the Windows audit flagged for this exact
+  // call site. Web/Capacitor have no printReceipt method, so they take
+  // the unchanged printHtml(html) path below — feature-detected, not a
+  // platform check, so this never needs to know which platforms exist.
   printBrowser(transaction, printerConfig = {}) {
-    const printWindow = window.open('', '_blank');
+    if (typeof PrintService.printReceipt === 'function') {
+      PrintService.printReceipt(this.buildStructuredReceipt(transaction, printerConfig));
+      return;
+    }
     const html = this.generateHTMLReceipt(transaction, printerConfig);
-    
-    printWindow.document.write(html);
-    printWindow.document.close();
-    printWindow.focus();
-    
-    setTimeout(() => {
-      printWindow.print();
-      printWindow.close();
-    }, 250);
+    PrintService.printHtml(html);
+  }
+
+  // Structured, schema-bounded receipt for native print paths that escape
+  // server-side (see apps/windows/src/receipt.cjs) rather than taking raw
+  // HTML — modifiers have no separate line in this schema, so they're
+  // appended to the item name instead of dropped.
+  buildStructuredReceipt(transaction, printerConfig = {}) {
+    const isOnlineOrder = transaction.orderType === 'online';
+    const showFooter = isOnlineOrder
+      ? printerConfig.footerOnline !== false
+      : printerConfig.footerInPerson !== false;
+    return {
+      businessName: 'NUA',
+      receiptId: String(transaction.id),
+      items: transaction.items.map(item => {
+        const mods = (item.modifiers || []).map(m => m.optionName).join(', ');
+        return {
+          name: mods ? `${item.productName} (${mods})` : item.productName,
+          quantity: item.quantity,
+          totalCents: Math.round(item.price * item.quantity * 100),
+        };
+      }),
+      totalCents: Math.round(transaction.total * 100),
+      footer: showFooter ? 'Thank you for your business! Please come again' : '',
+    };
   }
 
   // Generate HTML receipt for browser printing

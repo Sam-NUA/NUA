@@ -9,6 +9,7 @@ import { useTheme } from '../contexts/ThemeContext';
 import { useAuth } from '../contexts/AuthContext';
 import { identityAPI } from '../services/api';
 import { toast } from 'sonner';
+import { DialogService } from '../platform';
 
 const ADDONS = [
   { flag: 'bookings_guests.enabled', label: 'Bookings & Guests', desc: 'Notes, tags, allergies, and seating preference per customer.', icon: CalendarCheck },
@@ -77,7 +78,7 @@ export default function IdentitySettings() {
   };
 
   const runMigration = async () => {
-    if (!window.confirm('Migrate legacy combined Loyalty & CRM data into the identity layer? Safe to re-run — already-migrated rows are enriched, not duplicated.')) return;
+    if (!await DialogService.confirm('Migrate legacy combined Loyalty & CRM data into the identity layer? Safe to re-run — already-migrated rows are enriched, not duplicated.')) return;
     setMigrating(true);
     try {
       const r = await identityAPI.migrateLegacyCrm();

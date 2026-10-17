@@ -117,10 +117,10 @@ async def _has_roster_override_today(staff_id: str, business_id: Optional[str] =
     ) is not None
 
 
-def _issue_staff_token(user: dict) -> str:
+def _issue_staff_token(user: dict, device_id: Optional[str] = None) -> str:
     # Share issue-time/revocation semantics with password sign-in.
     from routes.auth import create_access_token
-    return create_access_token(user["id"], user["email"], user["role"], user.get("businessId"))
+    return create_access_token(user["id"], user["email"], user["role"], user.get("businessId"), device_id, str(uuid.uuid4()))
 
 
 async def _require_pin_eligible(user: dict) -> None:
@@ -131,11 +131,11 @@ async def _require_pin_eligible(user: dict) -> None:
         raise HTTPException(status_code=403, detail="Two-factor authentication required. Use email sign-in and your authenticator.")
 
 
-async def _pin_login_result(user: dict) -> dict:
+async def _pin_login_result(user: dict, device_id: Optional[str] = None) -> dict:
     from routes.auth import public_user, effective_permissions
     safe_user = public_user(user)
     safe_user["permissions"] = await effective_permissions(user)
-    return {"user": safe_user, "token": _issue_staff_token(user)}
+    return {"user": safe_user, "token": _issue_staff_token(user, device_id)}
 
 
 
@@ -180,8 +180,13 @@ async def _clear_pin_lockout(pin: str) -> None:
     await db.login_attempts.delete_one({"identifier": f"pin:{pin}"})
 
 
+async def _resolve_device_id_for_pin(request: Request, business_id: str) -> Optional[str]:
+    from routes.auth import _resolve_device_id
+    return await _resolve_device_id(request, business_id)
+
+
 @router.post("/auth/pin-login")
-async def pin_login(data: dict):
+async def pin_login(data: dict, request: Request = None):
     """Login with 2-4 digit PIN code.
 
     Owners/managers can always sign in — they're the ones who approve
@@ -200,17 +205,18 @@ async def pin_login(data: dict):
         raise HTTPException(status_code=401, detail="Invalid PIN")
     await _clear_pin_lockout(pin)
     await _require_pin_eligible(user)
+    device_id = await _resolve_device_id_for_pin(request, user.get("businessId"))
 
     if user["role"] not in ("owner", "manager"):
         if (not await _is_rostered_now(user["id"], business_id=user.get("businessId"))
                 and not await _has_roster_override_today(user["id"], user.get("businessId"))):
             return {"needsApproval": True, "staffId": user["id"], "staffName": user["name"]}
 
-    return await _pin_login_result(user)
+    return await _pin_login_result(user, device_id)
 
 
 @router.post("/auth/pin-login/approve")
-async def approve_pin_login(data: dict):
+async def approve_pin_login(data: dict, request: Request = None):
     """A manager/owner authorizes a non-rostered staff member's login right
     there at the terminal, by entering their own PIN alongside the staff
     member's. Records a roster_overrides row for today (audit trail, and
@@ -240,6 +246,7 @@ async def approve_pin_login(data: dict):
     await _require_pin_eligible(staff)
     await _require_pin_eligible(manager)
 
+    device_id = await _resolve_device_id_for_pin(request, staff.get("businessId"))
     today_iso = datetime.now(timezone.utc).date().isoformat()
     await db.roster_overrides.update_one(
         {"staffId": staff["id"], "date": today_iso,
@@ -261,7 +268,42 @@ async def approve_pin_login(data: dict):
     except Exception:
         pass
 
-    return await _pin_login_result(staff)
+    return await _pin_login_result(staff, device_id)
+
+
+@router.post("/auth/verify-sensitive-action")
+async def verify_sensitive_action(data: dict, user: dict = Depends(get_user)):
+    """Directive Phase 5 — biometric reauthentication for sensitive actions
+    (refunds, voids, sensitive settings). No biometric hardware/plugin is
+    integrated on any platform yet — BiometricService reports 'unsupported'
+    everywhere (frontend/src/platform/*/BiometricService.js) — so this is
+    the real, server-verified step every platform actually uses today:
+    re-enter a PIN right before the action, checked here rather than
+    trusted client-side. Mirrors approve_pin_login's existing shape —
+    accepts either the acting user's own PIN, or any owner/manager's PIN
+    from the SAME business (so a lower-privilege staff member's refund
+    can be manager-approved, same as an off-roster login already is).
+    Returns a boolean, never a token — this cannot be used to switch
+    sessions, only to gate one action already in progress.
+    """
+    pin = str(data.get("pin", ""))
+    if not pin or len(pin) < 2 or len(pin) > 4:
+        raise HTTPException(status_code=400, detail="PIN must be 2-4 digits")
+    await _check_pin_lockout(pin)
+    candidate = await _unique_pin_user(pin)
+    if not candidate:
+        await _record_pin_failure(pin)
+        raise HTTPException(status_code=401, detail="Invalid PIN")
+    await _clear_pin_lockout(pin)
+    # Tenant isolation: a PIN from another business can never approve a
+    # sensitive action here, however privileged its owner is in their own
+    # business — checked independently of the role check below.
+    if candidate.get("businessId") != user.get("businessId"):
+        raise HTTPException(status_code=403, detail="PIN does not belong to this business")
+    if candidate["id"] != user["id"] and candidate.get("role") not in ("owner", "manager"):
+        raise HTTPException(status_code=403, detail="Only the acting staff member or a manager/owner can approve this")
+    return {"verified": True, "approvedBy": candidate.get("name"), "approvedById": candidate["id"]}
+
 
 @router.post("/auth/staff/{staff_id}/set-pin")
 async def set_staff_pin(staff_id: str, data: dict, user: dict = Depends(require_owner)):
@@ -430,8 +472,15 @@ async def get_roster( week_start: str = None, user: dict = Depends(get_user)):
     shifts = await db.roster_shifts.find(query, {"_id": 0}).sort("date", 1).to_list(5000)
     return shifts
 
+async def _require_roster_staff(staff_id, business_id):
+    if not staff_id or not await db.auth_users.find_one(
+            {"id": staff_id, **tenant_scope_filter(business_id)}, {"_id": 0, "id": 1}):
+        raise HTTPException(status_code=404, detail="Staff member not found")
+
+
 @router.post("/staff/roster")
 async def create_roster_shift(data: dict, user: dict = Depends(require_owner_or_manager)):
+    await _require_roster_staff(data.get("staffId"), user.get("businessId"))
     conflict = await _blackout_conflict(
         data.get("staffId"), data.get("date"), data.get("weekStart"), user.get("businessId"))
     if conflict and not data.get("overrideBlackout"):
@@ -463,6 +512,7 @@ async def update_roster_shift(shift_id: str, data: dict, user: dict = Depends(re
     if not existing:
         raise HTTPException(status_code=404, detail="Shift not found")
     staff_id = data.get("staffId", existing.get("staffId"))
+    await _require_roster_staff(staff_id, user.get("businessId"))
     day = data.get("date", existing.get("date"))
     week_start = data.get("weekStart", existing.get("weekStart"))
     conflict = await _blackout_conflict(staff_id, day, week_start, user.get("businessId"))

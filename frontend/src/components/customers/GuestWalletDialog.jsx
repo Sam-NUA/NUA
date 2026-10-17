@@ -6,6 +6,7 @@ import { Button } from '../ui/button';
 import { finalizeAPI, customersAPI } from '../../services/api';
 import { toast } from 'sonner';
 import { Wallet, Download, Copy, Loader2, Smartphone, ExternalLink } from 'lucide-react';
+import { FileService } from '../../platform';
 
 /**
  * Guest Digital Wallet — QR + barcode for POS scan-to-add and Apple/Google
@@ -37,16 +38,11 @@ export default function GuestWalletDialog({ open, onOpenChange, customer }) {
     } catch { toast.error('Copy failed'); }
   };
 
-  const downloadPass = () => {
+  const downloadPass = async () => {
     if (!wallet) return;
     const passText = `NUA Digital Wallet\nName: ${wallet.name}\nTier: ${wallet.tier}\nPoints: ${wallet.points}\nCredit: $${(wallet.storeCredit || 0).toFixed(2)}\nBarcode: ${wallet.barcode}\nToken: ${wallet.qrToken}\n`;
     const blob = new Blob([passText], { type: 'text/plain' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `nua-wallet-${wallet.barcode}.txt`;
-    a.click();
-    URL.revokeObjectURL(url);
+    await FileService.downloadFile(blob, `nua-wallet-${wallet.barcode}.txt`);
   };
 
   const downloadPkpass = () => {
@@ -61,13 +57,8 @@ export default function GuestWalletDialog({ open, onOpenChange, customer }) {
         const signed = r.headers.get('X-Pkpass-Signed') === 'true';
         return r.blob().then(b => ({ b, signed }));
       })
-      .then(({ b, signed }) => {
-        const url = URL.createObjectURL(b);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = `nua-${customer.id}.pkpass`;
-        a.click();
-        URL.revokeObjectURL(url);
+      .then(async ({ b, signed }) => {
+        await FileService.downloadFile(b, `nua-${customer.id}.pkpass`);
         toast.success(signed ? 'Apple Wallet pass downloaded' : 'Pass downloaded (unsigned — configure certs to enable iOS)');
       })
       .catch(() => toast.error('Failed to download Apple Wallet pass'));

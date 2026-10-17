@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">NUA POS</string>
+    <string name="title_activity_main">NUA POS</string>
+    <string name="package_name">com.nua.pos</string>
+    <string name="custom_url_scheme">com.nua.pos</string>
+</resources>

@@ -13,9 +13,10 @@ import { toast } from 'sonner';
 import {
   Beaker, Wine, RefreshCw, Plus, Package, Droplet, AlertTriangle, ClipboardCheck, Trash2,
 } from 'lucide-react';
+import { SecureStorageService } from '../platform';
 
 const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
-const H = () => ({ Authorization: `Bearer ${localStorage.getItem('nua_token')}` });
+const H = async () => ({ Authorization: `Bearer ${await SecureStorageService.getToken()}` });
 
 const UOM_OPTIONS = ['ml', 'l', 'g', 'kg', 'ea'];
 const WASTE_REASONS = ['spillage', 'corked', 'over_pour', 'kicked', 'expired', 'other'];
@@ -48,7 +49,7 @@ export default function MeasuredStock() {
   const loadContainers = useCallback(async () => {
     setRefreshing(true);
     try {
-      const r = await axios.get(`${API}/measured-inventory/open-containers/all`, { headers: H() });
+      const r = await axios.get(`${API}/measured-inventory/open-containers/all`, { headers: await H() });
       setContainers(r.data);
     } catch { toast.error('Failed to load open containers'); }
     finally { setRefreshing(false); }
@@ -56,7 +57,7 @@ export default function MeasuredStock() {
 
   const loadProducts = useCallback(async () => {
     try {
-      const r = await axios.get(`${API}/products`, { headers: H() });
+      const r = await axios.get(`${API}/products`, { headers: await H() });
       setProducts(r.data);
     } catch { /* ignore */ }
   }, []);
@@ -66,7 +67,7 @@ export default function MeasuredStock() {
   const loadSummary = useCallback(async (pid) => {
     if (!pid) return setSummary(null);
     try {
-      const r = await axios.get(`${API}/measured-inventory/product/${pid}/summary`, { headers: H() });
+      const r = await axios.get(`${API}/measured-inventory/product/${pid}/summary`, { headers: await H() });
       setSummary(r.data);
     } catch { toast.error('Failed to load product summary'); }
   }, []);
@@ -80,7 +81,7 @@ export default function MeasuredStock() {
         productId: selectedProductId,
         uom: newSU.uom, totalMeasure: parseFloat(newSU.totalMeasure),
         costPerUnit: parseFloat(newSU.costPerUnit), label: newSU.label || null,
-      }, { headers: H() });
+      }, { headers: await H() });
       toast.success('Stock unit added');
       setNewSU({ uom: 'ml', totalMeasure: 750, costPerUnit: 20, label: '' });
       loadSummary(selectedProductId);
@@ -94,7 +95,7 @@ export default function MeasuredStock() {
         productId: selectedProductId,
         stockUnitId: newSV.stockUnitId, uom: newSV.uom,
         deductAmount: parseFloat(newSV.deductAmount), label: newSV.label || null,
-      }, { headers: H() });
+      }, { headers: await H() });
       toast.success('Sell variant added');
       setNewSV({ stockUnitId: '', uom: 'ml', deductAmount: 150, label: '' });
       loadSummary(selectedProductId);
@@ -103,7 +104,7 @@ export default function MeasuredStock() {
 
   const openContainer = async (stockUnitId) => {
     try {
-      await axios.post(`${API}/measured-inventory/stock-units/${stockUnitId}/open`, {}, { headers: H() });
+      await axios.post(`${API}/measured-inventory/stock-units/${stockUnitId}/open`, {}, { headers: await H() });
       toast.success('Opened new container');
       loadContainers();
       loadSummary(selectedProductId);
@@ -120,7 +121,7 @@ export default function MeasuredStock() {
         uom: wastageForm.uom,
         reason: wastageForm.reason,
         note: wastageForm.note || null,
-      }, { headers: H() });
+      }, { headers: await H() });
       toast.success('Wastage logged');
       setWastageOpen(false);
       setWastageForm({ amount: 0, uom: 'ml', reason: 'over_pour', note: '' });
@@ -134,7 +135,7 @@ export default function MeasuredStock() {
       const r = await axios.post(
         `${API}/measured-inventory/stocktake/${reconcileTarget.stockUnitId}/reconcile`,
         { countedRemaining: parseFloat(reconcileForm.countedRemaining), uom: reconcileForm.uom },
-        { headers: H() },
+        { headers: await H() },
       );
       setReconcileResult(r.data);
       loadContainers();

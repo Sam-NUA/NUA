@@ -8,9 +8,10 @@ import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from '.
 import { toast } from 'sonner';
 import { useAuth } from '../contexts/AuthContext';
 import { ShieldCheck, RefreshCw, Search, Lock, Zap, Eye, Sparkles, TrendingUp, Flag, Undo2, History } from 'lucide-react';
+import { DialogService, SecureStorageService } from '../platform';
 
 const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
-const H = () => ({ Authorization: `Bearer ${localStorage.getItem('nua_token')}` });
+const H = async () => ({ Authorization: `Bearer ${await SecureStorageService.getToken()}` });
 
 const RISK_BG = { low: 'bg-emerald-500', medium: 'bg-amber-500', high: 'bg-rose-500', critical: 'bg-rose-700' };
 const RISK_ORDER = { low: 0, medium: 1, high: 2, critical: 3 };
@@ -50,9 +51,9 @@ export default function AshPermissions() {
     setRefreshing(true);
     try {
       const [toolsRes, suggRes, execRes] = await Promise.allSettled([
-        axios.get(`${API}/nua/tools`, { headers: H() }),
-        axios.get(`${API}/nua/trust/suggestions`, { headers: H() }),
-        axios.get(`${API}/nua/tools/auto-executions`, { headers: H(), params: { limit: 30 } }),
+        axios.get(`${API}/nua/tools`, { headers: await H() }),
+        axios.get(`${API}/nua/trust/suggestions`, { headers: await H() }),
+        axios.get(`${API}/nua/tools/auto-executions`, { headers: await H(), params: { limit: 30 } }),
       ]);
       if (toolsRes.status === 'fulfilled') setTools(toolsRes.value.data);
       else toast.error('Failed to load tools');
@@ -66,7 +67,7 @@ export default function AshPermissions() {
     try {
       const { data } = await axios.post(`${API}/nua/tools/executions/${auditId}/flag`,
         { reason: 'Flagged from the auto-execution review feed', undo },
-        { headers: H() });
+        { headers: await H() });
       toast.success(`${data.label || toolName} demoted back to Approval${data.undo?.undone ? ' — action undone' : ''}`);
       setExecutions(rows => rows.map(r => r.auditId === auditId ? { ...r, flagged: true } : r));
       load();
@@ -81,7 +82,7 @@ export default function AshPermissions() {
 
   const setPermission = async (toolName, permission) => {
     try {
-      await axios.put(`${API}/nua/tools/${toolName}/permission`, { permission }, { headers: H() });
+      await axios.put(`${API}/nua/tools/${toolName}/permission`, { permission }, { headers: await H() });
       setTools(ts => ts.map(t => t.name === toolName ? { ...t, effectivePermission: permission } : t));
       toast.success(`${toolName} \u2192 ${permission}`);
     } catch { toast.error('Failed'); }
@@ -90,7 +91,7 @@ export default function AshPermissions() {
   const promoteTool = async (toolName) => {
     setPromoting(s => new Set(s).add(toolName));
     try {
-      await axios.post(`${API}/nua/tools/${toolName}/promote`, {}, { headers: H() });
+      await axios.post(`${API}/nua/tools/${toolName}/promote`, {}, { headers: await H() });
       toast.success(`${toolName} promoted to Auto \u2014 earned it with a clean streak`);
       setSuggestions(s => s.filter(x => x.toolName !== toolName));
       load();
@@ -123,10 +124,10 @@ export default function AshPermissions() {
   const batchSet = async (moduleName, permission) => {
     const targets = tools.filter(t => t.module === moduleName);
     if (!targets.length) return;
-    if (!window.confirm(`Set all ${targets.length} ${moduleName} tools to "${permission}"?`)) return;
+    if (!await DialogService.confirm(`Set all ${targets.length} ${moduleName} tools to "${permission}"?`)) return;
     for (const t of targets) {
       try {
-        await axios.put(`${API}/nua/tools/${t.name}/permission`, { permission }, { headers: H() });
+        await axios.put(`${API}/nua/tools/${t.name}/permission`, { permission }, { headers: await H() });
       } catch { /* skip */ }
     }
     toast.success(`${moduleName} \u2192 ${permission}`);

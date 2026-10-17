@@ -8,6 +8,7 @@ import { Badge } from '../components/ui/badge';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '../components/ui/dialog';
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from '../components/ui/select';
 import { CreditCard, PlusCircle, Pencil, Trash2, Wifi, History } from 'lucide-react';
+import SensitiveActionReauthDialog from '../components/security/SensitiveActionReauthDialog';
 
 const PROVIDERS = ['tyro', 'linkly', 'smartpay', 'windcave', 'westpac', 'anz', 'nab', 'cba', 'square'];
 const CONNECTION_TYPES = ['tcp', 'serial', 'cloud', 'usb'];
@@ -29,6 +30,9 @@ export default function EFTPOSTerminals() {
   const [history, setHistory] = useState(null);
   const [testHistory, setTestHistory] = useState(null);
   const [loadingHistory, setLoadingHistory] = useState(false);
+  // Directive Phase 5 — removing a live payment terminal's configuration
+  // is a sensitive, irreversible settings change.
+  const [pendingRemove, setPendingRemove] = useState(null); // terminal | null
 
   const load = useCallback(async () => {
     try { setTerminals((await eftposAPI.listTerminals()).data); }
@@ -59,8 +63,15 @@ export default function EFTPOSTerminals() {
     } catch (e) { toast.error(e.response?.data?.detail || 'Failed to save terminal'); }
   };
 
-  const remove = async (t) => {
+  const remove = (t) => {
     if (!window.confirm(`Remove terminal "${t.name}"? This cannot be undone.`)) return;
+    setPendingRemove(t);
+  };
+
+  const doRemove = async () => {
+    const t = pendingRemove;
+    setPendingRemove(null);
+    if (!t) return;
     try { await eftposAPI.deleteTerminal(t.id); toast.success('Terminal removed'); load(); }
     catch (e) { toast.error(e.response?.data?.detail || 'Failed to remove terminal'); }
   };
@@ -234,6 +245,12 @@ export default function EFTPOSTerminals() {
           )}
         </DialogContent>
       </Dialog>
+      <SensitiveActionReauthDialog
+        open={!!pendingRemove}
+        label={`remove terminal "${pendingRemove?.name || ''}"`}
+        onVerified={doRemove}
+        onCancel={() => setPendingRemove(null)}
+      />
     </div>
   );
 }

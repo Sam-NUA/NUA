@@ -3,9 +3,9 @@
 # NUVA POS — Android APK Build Script
 # ============================================================
 # Prerequisites (on your local machine):
-#   1. Node.js >= 18
+#   1. Node.js >= 22.19
 #   2. Android Studio with SDK installed
-#   3. Java JDK 17+
+#   3. Java JDK 21+
 #   4. ANDROID_HOME environment variable set
 #
 # Usage:
@@ -21,11 +21,12 @@ echo "========================================"
 
 # Step 1: Install dependencies
 echo "[1/6] Installing dependencies..."
-yarn install
+npm ci
 
 # Step 2: Build the React app for production
 echo "[2/6] Building React app..."
-REACT_APP_BACKEND_URL="https://your-production-api.com" npx craco build
+: "${REACT_APP_BACKEND_URL:?Set the target HTTPS API origin before building}"
+PUBLIC_URL=/ npm run build
 
 # Step 3: Add Android platform (if not already added)
 if [ ! -d "android" ]; then

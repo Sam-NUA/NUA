@@ -1,9 +1,10 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import axios from 'axios';
 import { Bell, Sparkles, ChefHat, Award, Users, ShieldCheck, X, Check } from 'lucide-react';
+import { SecureStorageService } from '../platform';
 
 const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
-const H = () => ({ Authorization: `Bearer ${localStorage.getItem('nua_token')}` });
+const H = async () => ({ Authorization: `Bearer ${await SecureStorageService.getToken()}` });
 
 const KIND_ICON = {
   loyalty: Award, kitchen: ChefHat, approval: ShieldCheck,
@@ -26,14 +27,14 @@ export default function NotificationBell() {
 
   const fetchCount = useCallback(async () => {
     try {
-      const r = await axios.get(`${API}/notifications/unread-count`, { headers: H() });
+      const r = await axios.get(`${API}/notifications/unread-count`, { headers: await H() });
       setCount(r.data.count || 0);
     } catch { /* silent */ }
   }, []);
 
   const fetchItems = useCallback(async () => {
     try {
-      const r = await axios.get(`${API}/notifications?limit=25`, { headers: H() });
+      const r = await axios.get(`${API}/notifications?limit=25`, { headers: await H() });
       setItems(r.data);
     } catch { /* silent */ }
   }, []);
@@ -48,7 +49,7 @@ export default function NotificationBell() {
 
   const markRead = async (id) => {
     try {
-      await axios.post(`${API}/notifications/${id}/read`, {}, { headers: H() });
+      await axios.post(`${API}/notifications/${id}/read`, {}, { headers: await H() });
       setItems(items.map(n => n.id === id ? { ...n, readAt: new Date().toISOString() } : n));
       fetchCount();
     } catch { /* silent */ }
@@ -56,7 +57,7 @@ export default function NotificationBell() {
 
   const markAllRead = async () => {
     try {
-      await axios.post(`${API}/notifications/read-all`, {}, { headers: H() });
+      await axios.post(`${API}/notifications/read-all`, {}, { headers: await H() });
       fetchItems(); fetchCount();
     } catch { /* silent */ }
   };

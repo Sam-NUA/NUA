@@ -51,6 +51,12 @@ async def test_transaction(operation):
     return await operation(None)
 
 reservation_store._transaction = test_transaction
+from services import booking_product
+booking_product.transaction = test_transaction
+from services import loyalty_product
+loyalty_product.transaction = test_transaction
+os.environ.setdefault("LOYALTY_PRODUCT_SIGNUP_ENABLED", "true")
+os.environ.setdefault("BOOKING_PRODUCT_SIGNUP_ENABLED", "true")
 
 import uvicorn
 import server

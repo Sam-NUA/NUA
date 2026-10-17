@@ -38,7 +38,7 @@ export default function OnboardingWizard() {
 
   useEffect(() => {
     if (business) setDetails({ name: business.name || '', address: business.address || '', phone: business.phone || '' });
-  }, [business?.id]); // eslint-disable-line
+  }, [business?.id]);
 
   // A license may already exist for this tenant (e.g. set up earlier via
   // the License page directly) — don't force a second, blocked ABN step

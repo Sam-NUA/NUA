@@ -8,6 +8,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from '../components/
 import { useTheme } from '../contexts/ThemeContext';
 import { reservationFeaturesAPI } from '../services/api';
 import { toast } from 'sonner';
+import { DialogService } from '../platform';
 
 export default function Clubmember() {
   const { theme } = useTheme();
@@ -43,7 +44,7 @@ export default function Clubmember() {
   };
 
   const handleDelete = async (id) => {
-    if (!window.confirm('Delete this offer?')) return;
+    if (!await DialogService.confirm('Delete this offer?')) return;
     try { await reservationFeaturesAPI.deleteClubOffer(id); toast.success('Deleted'); fetchData(); } catch {}
   };
 

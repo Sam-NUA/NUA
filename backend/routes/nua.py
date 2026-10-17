@@ -161,8 +161,8 @@ OPEN INSIGHTS:
 """
     reply = None
     try:
-        from emergentintegrations.llm.chat import LlmChat, UserMessage
-        key = os.environ.get("EMERGENT_LLM_KEY")
+        from services.ai_provider import LlmChat, UserMessage
+        key = os.environ.get("OPENAI_API_KEY")
         if key:
             chat_client = LlmChat(api_key=key, session_id=session_id, system_message=system_prompt)\
                 .with_model("openai", "gpt-5.2")
@@ -353,9 +353,9 @@ async def draft_campaign(body: dict, user: dict = Depends(require_owner_or_manag
 
     parsed: Optional[dict] = None
     try:
-        from emergentintegrations.llm.chat import LlmChat, UserMessage
+        from services.ai_provider import LlmChat, UserMessage
         import os as _os
-        key = _os.environ.get("EMERGENT_LLM_KEY")
+        key = _os.environ.get("OPENAI_API_KEY")
         if key:
             chat = LlmChat(api_key=key,
                             session_id=f"ash-marketing-{_uuid.uuid4()}",

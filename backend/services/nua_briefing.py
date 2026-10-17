@@ -97,8 +97,8 @@ async def generate_briefing(business_id: Optional[str] = None) -> Dict[str, Any]
 Start with "Good morning". End with ONE specific recommendation."""
     narrative = None
     try:
-        from emergentintegrations.llm.chat import LlmChat, UserMessage
-        key = os.environ.get("EMERGENT_LLM_KEY")
+        from services.ai_provider import LlmChat, UserMessage
+        key = os.environ.get("OPENAI_API_KEY")
         if key:
             chat = LlmChat(api_key=key, session_id=f"ash-briefing-{uuid.uuid4()}",
                             system_message="You are Ash, NUA's hospitality operating agent. Warm, concrete, brief.")\

@@ -14,6 +14,7 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } f
 import { useTheme } from '../contexts/ThemeContext';
 import { itemsSystemAPI, productsAPI } from '../services/api';
 import { toast } from 'sonner';
+import { DialogService } from '../platform';
 
 // Whitelist of icons the owner can pick (kept lean so bundle stays small).
 export const CATEGORY_ICON_MAP = {
@@ -128,12 +129,12 @@ export default function Categories() {
   };
 
   const handleDelete = async (id) => {
-    if (!window.confirm('Delete this category? Items in it will become uncategorized.')) return;
+    if (!await DialogService.confirm('Delete this category? Items in it will become uncategorized.')) return;
     try { await itemsSystemAPI.deleteCategory(id); toast.success('Deleted'); fetchData(); } catch {}
   };
 
   const handleCleanup = async () => {
-    if (!window.confirm('Remove demo categories (Beverages/Food/Bakery/Alcohol/Desserts) that have no products?')) return;
+    if (!await DialogService.confirm('Remove demo categories (Beverages/Food/Bakery/Alcohol/Desserts) that have no products?')) return;
     setCleaning(true);
     try {
       const r = await itemsSystemAPI.cleanupLegacyCategories();

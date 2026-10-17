@@ -5,9 +5,10 @@ import { Button } from './ui/button';
 import { Input } from './ui/input';
 import { Badge } from './ui/badge';
 import { useAuth } from '../contexts/AuthContext';
+import { SecureStorageService } from '../platform';
 
 const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
-const H = () => ({ Authorization: `Bearer ${localStorage.getItem('nua_token')}` });
+const H = async () => ({ Authorization: `Bearer ${await SecureStorageService.getToken()}` });
 
 const SESSION_KEY_BASE = 'nua-ash-chat-session';
 const userScope = () => {
@@ -73,7 +74,7 @@ export default function AshChat() {
   const scrollRef = useRef(null);
 
   useEffect(() => {
-    axios.get(`${API}/nua/personas`, { headers: H() }).then(r => setPersonas(r.data)).catch(() => {});
+    H().then(h => axios.get(`${API}/nua/personas`, { headers: h }).then(r => setPersonas(r.data)).catch(() => {}));
   }, []);
 
   useEffect(() => {
@@ -100,7 +101,7 @@ export default function AshChat() {
     setMsgs(m => [...m, { role: 'user', text: trimmed, ts: Date.now(), persona }]);
     setInput('');
     try {
-      const r = await axios.post(`${API}/nua/agent`, { message: trimmed, sessionId, persona }, { headers: H() });
+      const r = await axios.post(`${API}/nua/agent`, { message: trimmed, sessionId, persona }, { headers: await H() });
       if (!sessionId) {
         setSessionId(r.data.sessionId);
         localStorage.setItem(SESSION_KEY(), r.data.sessionId);

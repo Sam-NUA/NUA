@@ -1,0 +1,273 @@
+name: iOS build (foundation)
+on:
+  pull_request:
+    paths: ['frontend/**', '.github/workflows/ios.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  # IOS_IPADOS_ARCHITECTURE.md's "hard blocker" section: Xcode only runs on
+  # macOS, categorically, not as a network-policy restriction the way
+  # Android's dl.google.com block is — confirmed directly in that pass
+  # (`which xcodebuild pod swift swiftc` all empty on this repo's own Linux
+  # dev sandbox). That doc explicitly leaves this "ready to attempt the
+  # moment a macOS build environment is available" — this workflow is that
+  # attempt, on GitHub's own macos-latest runner, mirroring how android.yml
+  # gets past the dev sandbox's own Android SDK/KVM gaps.
+  ios:
+    runs-on: macos-latest
+    timeout-minutes: 30
+    env:
+      PUBLIC_URL: /
+      # Same reasoning as android.yml: a real absolute origin baked into
+      # the build, matching what a real release build would ship with.
+      # Nothing in this job ever calls it — see the simulator-smoke-test
+      # step below, which only boots and launches the app.
+      REACT_APP_BACKEND_URL: https://native-smoke.example.invalid
+      CI: false
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          # @capacitor/cli 8.5.3 hard-requires Node >=22, same as android.yml.
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install frontend dependencies
+        working-directory: ./frontend
+        run: npm ci
+      - name: Build shared React app
+        working-directory: ./frontend
+        run: npm run build
+      - name: Sync Capacitor iOS project
+        working-directory: ./frontend
+        run: npx cap sync ios
+      - name: Resolve Swift Package dependencies
+        # CapApp-SPM/Package.swift pulls capacitor-swift-pm from GitHub at
+        # build time (no committed Package.resolved) — resolve it as its
+        # own step so a real dependency-resolution failure is distinguished
+        # from a compile failure in the next step's logs.
+        working-directory: ./frontend/ios/App
+        run: xcodebuild -resolvePackageDependencies -project App.xcodeproj
+      - name: Pick an available iOS Simulator device
+        id: device
+        run: |
+          set -eu
+          UDID=$(xcrun simctl list devices available | grep -m1 -E '^ *iPhone' | grep -Eo '[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}')
+          if [ -z "$UDID" ]; then echo "No available iPhone simulator found on this runner image" >&2; xcrun simctl list devices; exit 1; fi
+          echo "udid=$UDID" >> "$GITHUB_OUTPUT"
+      - name: Build for iOS Simulator
+        working-directory: ./frontend/ios/App
+        run: |
+          set -eu
+          xcodebuild build \
+            -project App.xcodeproj \
+            -scheme App \
+            -configuration Debug \
+            -sdk iphonesimulator \
+            -destination "platform=iOS Simulator,id=${{ steps.device.outputs.udid }}" \
+            -derivedDataPath "$RUNNER_TEMP/build" \
+            CODE_SIGNING_ALLOWED=NO
+      # Scope matches android.yml's emulator-smoke-test job: boot + install +
+      # launch, verify the process survives and nothing crashes on launch —
+      # not the full critical acceptance milestone (order -> offline ->
+      # restart -> reconnect -> sync), and never a call to the real backend
+      # above, which would be exactly the live-financial-transaction risk
+      # this effort has avoided throughout.
+      - name: Boot the simulator
+        run: |
+          set -eu
+          xcrun simctl boot "${{ steps.device.outputs.udid }}" || true
+          xcrun simctl bootstatus "${{ steps.device.outputs.udid }}" -b
+      - name: Install the built app
+        run: xcrun simctl install "${{ steps.device.outputs.udid }}" "$RUNNER_TEMP/build/Build/Products/Debug-iphonesimulator/App.app"
+      - name: Launch and verify it survives
+        run: |
+          set -eu
+          xcrun simctl launch "${{ steps.device.outputs.udid }}" com.nua.pos
+          sleep 5
+          if ! xcrun simctl spawn "${{ steps.device.outputs.udid }}" launchctl list | grep -q com.nua.pos; then
+            echo "App process is not running 5s after launch (crashed or exited)" >&2
+            exit 1
+          fi
+          echo "App launched and survived 5s on a real (simulated) iOS runtime."
+
+  # The job above proves the real .app boots; this one proves the financial/
+  # offline/device-binding flow docs/platform/CLAUDE_IOS_DEPENDENCY_HANDOFF_
+  # 2026-10-15.md calls for, against this branch's new terminal-session-
+  # binding contract (backend/routes/auth.py's /auth/bind-device,
+  # services/device_auth.py's validate_session_device/is_device_revoked_or_
+  # missing, frontend/src/services/terminalSession.js). It stands up its own
+  # throwaway backend+Mongo (never production, never a real financial
+  # transaction) and builds its own app against that.
+  #
+  # No Docker on GitHub's macOS runners (confirmed: macOS runner images
+  # don't support containers/service containers at all, unlike ubuntu-latest
+  # — so docker-compose.yml/docker-compose.ci-milestone.yml, which
+  # android.yml's equivalent job uses directly, can't be reused here).
+  # MongoDB and the backend are started as plain local processes instead:
+  # Homebrew's own mongodb-community tap for Mongo (still needs the same
+  # single-node replica set the backend's transactions require — see
+  # docker-compose.yml's own mongo/mongo-init services for why), and the
+  # milestone script itself owns the backend's uvicorn process (so it can
+  # kill/respawn it to simulate a real dropped connection).
+  #
+  # Automation tier: Capacitor's iOS WKWebView has no Chrome DevTools
+  # Protocol bridge the way Android's WebView does — WebKit speaks its own
+  # Remote Inspector protocol instead, with no drop-in CDP-compatible Node
+  # client. Appium's XCUITest driver already wraps that protocol (via
+  # WebDriverAgent) behind WebdriverIO's standard element API, so the
+  # milestone script drives the real app through that instead of hand-
+  # rolling a WebKit protocol client — see scripts/ios-critical-milestone.cjs.
+  critical-acceptance-milestone:
+    runs-on: macos-latest
+    timeout-minutes: 35
+    env:
+      PUBLIC_URL: /
+      # The literal numeric loopback IP, not "localhost" -- iOS App
+      # Transport Security's NSAllowsLocalNetworking exception (Info.plist)
+      # is documented against numeric loopback/link-local addresses and the
+      # .local TLD, NOT the "localhost" hostname string itself.
+      REACT_APP_BACKEND_URL: http://127.0.0.1:8001
+      CI: false
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install MongoDB Community + mongosh (no Docker on macOS runners)
+        # Homebrew 6.0.0 started refusing to load formulae from a third-party
+        # tap until it's explicitly trusted — a real CI failure confirmed
+        # this directly ("Refusing to load formula mongodb/brew/mongodb-
+        # community@7.0 from untrusted tap mongodb/brew"), not assumed.
+        run: |
+          brew tap mongodb/brew
+          brew trust mongodb/brew
+          brew install mongodb-community@7.0 mongosh
+      - name: Start a throwaway mongod with a single-node replica set
+        # Same replSet requirement as docker-compose.yml's own mongo/
+        # mongo-init services (the backend uses Mongo transactions, which
+        # require one) — reproduced here without Docker.
+        run: |
+          set -eu
+          mkdir -p "$RUNNER_TEMP/mongo-data"
+          mongod --replSet nua-local --bind_ip_all --dbpath "$RUNNER_TEMP/mongo-data" --logpath "$RUNNER_TEMP/mongod.log" --fork
+          # macOS runners ship no `timeout` binary (it's a GNU coreutils
+          # thing, confirmed missing by a real CI failure: "timeout: command
+          # not found") — poll with a plain bash deadline loop instead.
+          deadline=$(( $(date +%s) + 30 ))
+          until mongosh --quiet --eval 'db.adminCommand("ping").ok'; do
+            [ "$(date +%s)" -lt "$deadline" ] || { echo "mongod never answered a ping within 30s" >&2; exit 1; }
+            sleep 1
+          done
+          mongosh --quiet --eval 'try { rs.status() } catch (e) { rs.initiate({_id:"nua-local",members:[{_id:0,host:"localhost:27017"}]}) }; for (let i=0;i<60;i++) { if (db.hello().isWritablePrimary) quit(0); sleep(500); }; quit(1)'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+          cache-dependency-path: backend/requirements.txt
+      - name: Install backend dependencies
+        working-directory: ./backend
+        run: pip install -r requirements.txt
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install frontend dependencies
+        working-directory: ./frontend
+        run: npm ci
+      - name: Build shared React app against the throwaway backend
+        working-directory: ./frontend
+        run: npm run build
+      - name: Sync Capacitor iOS project
+        working-directory: ./frontend
+        run: npx cap sync ios
+      - name: Resolve Swift Package dependencies
+        working-directory: ./frontend/ios/App
+        run: xcodebuild -resolvePackageDependencies -project App.xcodeproj
+      - name: Pick an available iOS Simulator device
+        id: device
+        run: |
+          set -eu
+          UDID=$(xcrun simctl list devices available | grep -m1 -E '^ *iPhone' | grep -Eo '[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}')
+          if [ -z "$UDID" ]; then echo "No available iPhone simulator found on this runner image" >&2; xcrun simctl list devices; exit 1; fi
+          echo "udid=$UDID" >> "$GITHUB_OUTPUT"
+      - name: Build for iOS Simulator
+        working-directory: ./frontend/ios/App
+        # CODE_SIGNING_ALLOWED=NO (the smoke-test "ios" job above, which
+        # never logs in, uses it fine) leaves the .app with no code
+        # signature at all -- and this flow's SecureStoragePlugin.set() (the
+        # real iOS Keychain write SecureStorageService.setToken() makes
+        # right after login) needs at least a valid ad-hoc signature to
+        # establish the calling process's identity for its ACL, even on the
+        # Simulator. `-` is Xcode's own "sign to run locally" ad-hoc
+        # identity -- no certificate or provisioning profile needed, same as
+        # what Xcode does automatically for any ordinary Simulator build
+        # when CI doesn't override it.
+        run: |
+          set -eu
+          xcodebuild build \
+            -project App.xcodeproj \
+            -scheme App \
+            -configuration Debug \
+            -sdk iphonesimulator \
+            -destination "platform=iOS Simulator,id=${{ steps.device.outputs.udid }}" \
+            -derivedDataPath "$RUNNER_TEMP/build" \
+            CODE_SIGN_IDENTITY=- CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=YES
+      - name: Boot the simulator
+        run: |
+          set -eu
+          xcrun simctl boot "${{ steps.device.outputs.udid }}" || true
+          xcrun simctl bootstatus "${{ steps.device.outputs.udid }}" -b
+      - name: Install Appium and the XCUITest driver
+        # Pinned, not @latest: a real CI run on this exact pair (Appium
+        # 3.8.0, xcuitest driver 12.18.1) got past install and all the way
+        # into a real session attempt, only timing out on WDA's own cold
+        # build/launch -- a proved-compatible pair, confirmed from that
+        # run's own logs, not assumed. `appium@2`/no-pin had earlier failed
+        # outright with a version-mismatch error ("'xcuitest' cannot be
+        # installed because the server version it requires ... does not
+        # meet the currently installed one"), which is why this was ever
+        # unpinned in the first place -- pinning this specific pair keeps
+        # install working AND stops this job's own tooling from silently
+        # drifting to a new, unproven version on every future run.
+        run: |
+          set -eu
+          npm install -g appium@3.8.0
+          appium driver install xcuitest@12.18.1
+      - name: Start the Appium server
+        run: |
+          set -eu
+          nohup appium --base-path / --port 4723 --session-override > "$RUNNER_TEMP/appium.log" 2>&1 &
+          deadline=$(( $(date +%s) + 30 ))
+          until curl -fsS http://localhost:4723/status; do
+            [ "$(date +%s)" -lt "$deadline" ] || { echo "Appium server never came up within 30s" >&2; exit 1; }
+            sleep 1
+          done
+      - name: Walk the full critical acceptance milestone
+        working-directory: ./frontend
+        env:
+          MILESTONE_BACKEND_URL: http://127.0.0.1:8001
+          SIMULATOR_UDID: ${{ steps.device.outputs.udid }}
+          APP_PATH: ${{ runner.temp }}/build/Build/Products/Debug-iphonesimulator/App.app
+          APPIUM_PORT: '4723'
+        run: node scripts/ios-critical-milestone.cjs
+      - name: Show Appium server logs (debugging aid)
+        # Appium's own debug-level RemoteDebugger/XCUITest chatter is
+        # extremely verbose — a full `cat` here reliably produces enough
+        # output to blow past log-retrieval tooling's own size limits on its
+        # own, drowning out the milestone script's own (much sparser)
+        # stdout, which is what actually needs to be visible on a failure.
+        # Tail it instead; the full file is still on disk if a human needs
+        # more than this from the runner itself. Also grep the whole file
+        # for WebDriverAgent's own build/launch milestones (cheap and small
+        # regardless of file size) — a plain tail alone proved useless for
+        # diagnosing a session-creation timeout, since the tail window can
+        # land entirely within the ~1-2s this step itself takes to run.
+        if: always()
+        run: |
+          echo "--- WebDriverAgent build/launch milestones (grepped from the full file) ---"
+          grep -niE "xcodebuild|wda|webdriveragent|build succeeded|build failed" "$RUNNER_TEMP/appium.log" | tail -n 200 || true
+          echo "--- last 300 lines ---"
+          tail -n 300 "$RUNNER_TEMP/appium.log" || true
+      - name: Show mongod logs (debugging aid)
+        if: always()
+        run: tail -n 300 "$RUNNER_TEMP/mongod.log" || true

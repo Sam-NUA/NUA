@@ -3,7 +3,7 @@ from pathlib import Path
 from datetime import datetime
 load_dotenv(Path(__file__).parent / '.env')
 
-from fastapi import FastAPI, APIRouter
+from fastapi import FastAPI, APIRouter, HTTPException
 from starlette.middleware.cors import CORSMiddleware
 import logging
 import os
@@ -12,6 +12,7 @@ from typing import Optional
 
 from database import client, db
 
+from routes.devices import router as devices_router
 from routes.products import router as products_router
 from routes.stock_transfers import router as stock_transfers_router
 from routes.appointments import router as appointments_router
@@ -80,13 +81,19 @@ from routes.voice_inbound import router as voice_inbound_router
 from routes.bill_split import router as bill_split_router
 from middleware.license_middleware import LicenseEnforcementMiddleware
 from middleware.actor_context import ActorContextMiddleware
+from middleware.version_middleware import VersionGateMiddleware
 
 app = FastAPI()
 
 api_router = APIRouter(prefix="/api")
 
 # Include all route modules
+from routes.booking_product import router as booking_product_router
+api_router.include_router(booking_product_router)
+from routes.loyalty_product import router as loyalty_product_router
+api_router.include_router(loyalty_product_router)
 api_router.include_router(auth_router)
+api_router.include_router(devices_router)
 api_router.include_router(cron_router)
 api_router.include_router(products_router)
 api_router.include_router(stock_transfers_router)
@@ -262,7 +269,10 @@ PUBLIC_API_PREFIXES = (
 )
 
 PUBLIC_API_PATHS = {
+    "/api/booking-product/signup", "/api/booking-product/availability",
+    "/api/loyalty-product/signup", "/api/loyalty-product/availability",
     "/api/", "/api/health", "/api/healthz", "/api/ready",
+    "/api/version",                # directive Phase 11 — a client needs this reachable to even find out it's out of date
     "/api/ops/device-status",     # login-screen peripheral status — counts/booleans only
     # Auth itself, plus the endpoints the login screen needs before there is a user.
     "/api/auth/login", "/api/auth/register", "/api/auth/logout", "/api/auth/refresh",
@@ -338,6 +348,9 @@ PUBLIC_API_PATHS = {
     # A browser reporting its own crash — has to work from the login screen
     # and the guest ordering pages, neither of which carries a token.
     "/api/ops/client-errors",
+    # Same story for client telemetry (directive Phase 12) — an app_launch
+    # event fires before a session necessarily exists.
+    "/api/ops/client-events",
     # Booking policy the guest booking portal needs to enforce BEFORE
     # confirming (large-booking size tiers, experience requirements) — a
     # guest on BookingPortal.jsx has no token, same as the /api/public/
@@ -353,7 +366,7 @@ PUBLIC_API_PATHS = {
 
 
 def _is_public_api(path: str) -> bool:
-    return path in PUBLIC_API_PATHS or path.startswith(PUBLIC_API_PREFIXES)
+    return path in PUBLIC_API_PATHS or path.startswith(PUBLIC_API_PREFIXES) or path.startswith(("/api/booking-product/public/", "/api/loyalty-product/portal/"))
 
 
 class RequireAuthMiddleware(BaseHTTPMiddleware):
@@ -402,11 +415,16 @@ class RequireAuthMiddleware(BaseHTTPMiddleware):
         # A refresh token must not be usable as an access token.
         if payload.get("type") not in (None, "access"):
             return JSONResponse(status_code=401, content={"detail": "Invalid token type"})
-        account = await db.auth_users.find_one({"id": payload.get("sub")}, {"passwordChangedAt": 1})
+        account = await db.auth_users.find_one({"id": payload.get("sub")}, {"passwordChangedAt": 1, "businessId": 1})
         if account and account.get("passwordChangedAt"):
             changed_at = datetime.fromisoformat(account["passwordChangedAt"]).timestamp()
             if payload.get("iat", 0) < changed_at:
                 return JSONResponse(status_code=401, content={"detail": "Password changed — please sign in again"})
+        from services.device_auth import validate_session_device
+        try:
+            await validate_session_device(payload, (account or {}).get("businessId"))
+        except HTTPException as error:
+            return JSONResponse(status_code=error.status_code, content={"detail": error.detail})
         return await call_next(request)
 
 
@@ -436,6 +454,8 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
     instead of no limit at all.
     """
     PATH_OVERRIDES = {
+        "/api/booking-product/signup": (5, 3600),
+        "/api/loyalty-product/signup": (5, 3600),
         "/api/vouchers/public-check": (10, 60),  # 10 req/min per IP
         # Same rationale as vouchers/public-check — an unauthenticated
         # caller with no identity beyond "some IP" shouldn't get the
@@ -456,6 +476,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         # moment this feature exists to cover. Still bounded so one runaway
         # tab can't grow client_error_log unbounded.
         "/api/ops/client-errors": (30, 60),  # 30 req/min per IP
+        "/api/ops/client-events": (30, 60),  # 30 req/min per IP — same reasoning
     }
     # Ordered (prefix, limit, window) list for endpoints whose path carries
     # a variable segment (table_id, call_id) that PATH_OVERRIDES' exact-match
@@ -468,6 +489,8 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         # Booking/waitlist creation — a real, moderately-costly write on a
         # fully anonymous surface; same tier as the guest-lookup overrides
         # above.
+        ("/api/booking-product/public/", 10, 60),
+        ("/api/loyalty-product/portal/", 30, 60),
         ("/api/public/book", 10, 60),
         ("/api/public/join-waitlist", 10, 60),
         # The tracking code is the waitlist entry's own id — 8 uppercase hex
@@ -553,7 +576,13 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
 app.add_middleware(RequireAuthMiddleware)
 app.add_middleware(RateLimitMiddleware)
 app.add_middleware(LicenseEnforcementMiddleware)
+from middleware.product_access import ProductAccessMiddleware
+app.add_middleware(ProductAccessMiddleware)
 app.add_middleware(ActorContextMiddleware)
+# Outermost of this group — a client reporting a too-old version is
+# rejected before auth/rate-limit/license do any work at all. Fail-open
+# on a missing header (see version_middleware.py's own docstring).
+app.add_middleware(VersionGateMiddleware)
 
 
 # ═════════════════════════════════════════════════════════════════════════

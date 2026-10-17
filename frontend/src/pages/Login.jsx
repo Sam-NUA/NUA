@@ -1,8 +1,10 @@
+import { isNative } from '../platform';
 import React, { useState, useEffect } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import axios from 'axios';
 import { useAuth } from '../contexts/AuthContext';
 import { staffMgmtAPI, authAPI } from '../services/api';
+import { SecureStorageService } from '../platform';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
 import { Card, CardContent } from '../components/ui/card';
@@ -160,7 +162,7 @@ export default function Login() {
         setLoading(false);
         return;
       }
-      localStorage.setItem('nua_token', res.data.token);
+      await SecureStorageService.setToken(res.data.token);
       localStorage.setItem('nua_login_mode', 'pin');
       window.location.assign('/clock-in');
     } catch (err) {
@@ -174,7 +176,7 @@ export default function Login() {
     setError(''); setLoading(true);
     try {
       const res = await staffMgmtAPI.approvePinLogin(pin, managerPin);
-      localStorage.setItem('nua_token', res.data.token);
+      await SecureStorageService.setToken(res.data.token);
       localStorage.setItem('nua_login_mode', 'pin');
       window.location.assign('/clock-in');
     } catch (err) {
@@ -287,9 +289,9 @@ export default function Login() {
                     className="text-center text-2xl tracking-[0.4em] font-mono h-14 bg-white border-nua-chromeBorderControl text-nua-chromeInk"
                     data-testid="twofactor-code" />
                   <label className="flex items-center gap-2 text-sm text-nua-chromeMuted cursor-pointer">
-                    <input type="checkbox" checked={trustDevice} className="accent-[#750D28] w-4 h-4"
+                    <input type="checkbox" disabled={isNative()} checked={!isNative() && trustDevice} className="accent-[#750D28] w-4 h-4"
                       onChange={e => setTrustDevice(e.target.checked)} data-testid="twofactor-trust" />
-                    Remember this terminal for 30 days
+                    {isNative() ? 'Native terminals require a code at each sign-in' : 'Remember this terminal for 30 days'}
                   </label>
                   <Button type="submit" className="w-full h-11 text-white font-medium hover:opacity-90"
                     style={{ backgroundColor: '#750D28' }} disabled={loading || code.length < 6}

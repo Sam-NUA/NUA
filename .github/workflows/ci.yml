@@ -1,12 +1,11 @@
 name: CI
 
-# Runs on every PR and every push, on every branch — unlike deploy.yml, which
-# only fires on main/master. This is what a reviewer sees turn red *before*
-# something merges, rather than after it's live on Fly.io.
+# Run the complete quality/security suite on PRs and every branch, including
+# main. Vercel Git integration builds releases; this workflow never deploys
+# to another hosting platform.
 on:
   pull_request:
   push:
-    branches-ignore: [main, master]   # main/master go through deploy.yml's own test job
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -96,11 +95,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   # ─── Frontend: build + lint + audit ─────────────────────────────────────
-  # There's no unit test runner wired up on the frontend yet (see the
-  # enhancement list) — a clean production build is the floor, and it's
-  # still worth blocking on: it catches the raw-fetch-with-no-auth-header
-  # class of bug that a passing backend suite alone wouldn't (import errors,
-  # JSX errors, broken imports of things like the twoFactorAPI export).
+  # Build, explicit undefined-reference lint, Jest and runtime dependency audit.
   frontend-build:
     runs-on: ubuntu-latest
     defaults:
@@ -110,17 +105,27 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
           cache: 'npm'
           cache-dependency-path: frontend/package-lock.json
       - name: Install dependencies
         run: npm ci
       - name: Dependency vulnerability scan (report only — see frontend/SECURITY_DEPENDENCY_DEBT.md)
         run: npm audit --audit-level=high || true
-      - name: Build
-        run: npx craco build
+      - name: Runtime dependency audit (no accepted advisories)
+        run: npm audit --omit=dev --audit-level=low
+      - name: Frontend undefined references and JSX syntax
+        run: npm run lint
+      - name: Unit tests (Jest — platform abstraction, device capability detection)
+        run: npm test -- --watchAll=false
         env:
-          CI: false   # CRA treats warnings as errors under CI=true; this repo isn't warning-clean yet
+          CI: true
+      - name: Native automation async-script contract
+        run: npm run test:native-tools
+      - name: Build
+        run: npm run build
+        env:
+          CI: true
 
   # ─── End-to-end: golden-path smoke suite ────────────────────────────────
   # Boots the real FastAPI app (mongomock-backed, no DB service container
@@ -141,7 +146,7 @@ jobs:
         run: pip install -r requirements-dev.txt
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
           cache: 'npm'
           cache-dependency-path: frontend/package-lock.json
       - name: Install frontend dependencies
@@ -152,9 +157,9 @@ jobs:
         run: npx playwright install --with-deps chromium
       - name: Build frontend
         working-directory: ./frontend
-        run: npx craco build
+        run: npm run build
         env:
-          CI: false
+          CI: true
       - name: Run Playwright E2E suite
         working-directory: ./frontend
         run: npx playwright test

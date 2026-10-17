@@ -274,10 +274,10 @@ async def ai_build(body: dict, _: dict = Depends(get_user)):
         raise HTTPException(400, "prompt is required")
     parsed: Dict[str, Any] = {}
     try:
-        from emergentintegrations.llm.chat import LlmChat, UserMessage
-        api_key = os.environ.get("EMERGENT_LLM_KEY")
+        from services.ai_provider import LlmChat, UserMessage
+        api_key = os.environ.get("OPENAI_API_KEY")
         if not api_key:
-            raise RuntimeError("EMERGENT_LLM_KEY missing")
+            raise RuntimeError("OPENAI_API_KEY missing")
         chat = LlmChat(
             api_key=api_key,
             session_id=f"rules-{uuid.uuid4()}",

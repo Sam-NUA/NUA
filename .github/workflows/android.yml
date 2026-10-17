@@ -1,0 +1,321 @@
+name: Android build (foundation)
+on:
+  pull_request:
+    paths: ['frontend/**', '.github/workflows/android.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  android:
+    # GitHub-hosted ubuntu-latest runners ship a full internet-connected
+    # network path and a pre-installed Android SDK/cmdline-tools — unlike
+    # this repo's own dev sandbox, which reaches exactly the
+    # dl.google.com block documented in
+    # docs/platform/ANDROID_ARCHITECTURE.md's "Not ALPHA" section. This
+    # workflow exists specifically to get past that blocker somewhere
+    # that actually can, not to duplicate frontend-build/e2e-tests.
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      PUBLIC_URL: /
+      # A real absolute origin, same reasoning as the Windows workflow's
+      # reserved .invalid origin — except Android's build doesn't bake a
+      # live-reachable requirement the way Windows's prepare-renderer.cjs
+      # does, so the real API origin is fine here and matches what a real
+      # release build would actually ship with.
+      REACT_APP_BACKEND_URL: https://native-smoke.example.invalid
+      CI: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          # @capacitor/cli 8.5.3 hard-requires Node >=22 — `npx cap sync`
+          # refuses to run at all on 20 (confirmed by a real CI failure,
+          # not assumed: "[fatal] The Capacitor CLI requires NodeJS
+          # >=22.0.0"). All shared frontend jobs now also use Node 22.
+          # Vite and the native CLI both require a supported Node 22 runtime; this
+          # workflow's cap sync step needs the newer runtime.
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install frontend dependencies
+        working-directory: ./frontend
+        run: npm ci
+      - name: Build shared React app
+        working-directory: ./frontend
+        run: npm run build
+      - uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          # @capacitor/android's own build.gradle (node_modules/@capacitor/
+          # android/capacitor/build.gradle) hardcodes sourceCompatibility/
+          # targetCompatibility JavaVersion.VERSION_21 — AGP 8.x itself only
+          # needs 17, but javac refuses source release 21 on an older JDK
+          # ("invalid source release: 21", a real CI failure, not assumed).
+          # Gradle 8.14.3 (this project's wrapper) and AGP 8.13.0 both
+          # support running on JDK 21.
+          java-version: '21'
+      - name: Sync Capacitor Android project
+        working-directory: ./frontend
+        run: npx cap sync android
+      # Two real CI failures ruled out the two obvious options before this
+      # one: (1) the ubuntu-latest image's own pre-installed SDK doesn't put
+      # `sdkmanager` on PATH reliably ("sdkmanager: command not found" even
+      # with ANDROID_HOME/ANDROID_SDK_ROOT set); (2) `android-actions/
+      # setup-android@v3` unconditionally runs `sdkmanager tools` as part of
+      # its own setup, and Google has removed that legacy "tools" package
+      # from the SDK repository ("Warning: Failed to find package 'tools'",
+      # exit code 1) — not something this workflow's own inputs control.
+      # So: fetch Google's own cmdline-tools zip directly (this runner has
+      # real internet access, unlike this repo's dev sandbox — see the
+      # dl.google.com block in ANDROID_ARCHITECTURE.md) and drive sdkmanager
+      # from that, asking only for the packages this build actually needs.
+      - name: Install Android cmdline-tools
+        run: |
+          set -eu
+          curl -fsSL -o /tmp/cmdline-tools.zip \
+            https://dl.google.com/android/repository/commandlinetools-linux-15859902_latest.zip
+          mkdir -p "$HOME/android-sdk/cmdline-tools"
+          unzip -q /tmp/cmdline-tools.zip -d "$HOME/android-sdk/cmdline-tools"
+          mv "$HOME/android-sdk/cmdline-tools/cmdline-tools" "$HOME/android-sdk/cmdline-tools/latest"
+          echo "ANDROID_HOME=$HOME/android-sdk" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$HOME/android-sdk" >> "$GITHUB_ENV"
+          echo "$HOME/android-sdk/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
+          echo "$HOME/android-sdk/platform-tools" >> "$GITHUB_PATH"
+      - name: Install the platform/build-tools this project targets
+        run: |
+          set -eu
+          yes | sdkmanager --licenses >/dev/null
+          sdkmanager "platform-tools" "platforms;android-36" "build-tools;36.0.0"
+      - name: Build debug APK
+        working-directory: ./frontend/android
+        run: ./gradlew assembleDebug --no-daemon
+      - name: Upload debug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: nua-pos-android-debug
+          path: frontend/android/app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
+          retention-days: 7
+
+  # Installing on, or even booting, an Android emulator is impossible in
+  # this repo's own dev sandbox: no /dev/kvm, no hardware virtualization
+  # exposed, no Android SDK/adb installed (confirmed directly, not
+  # assumed). GitHub-hosted ubuntu-latest runners DO expose /dev/kvm, so
+  # — same pattern as the `android` job above getting past the sandbox's
+  # dl.google.com block — this job boots a real AVD there instead.
+  #
+  # Scope is deliberately a launch smoke test, not the full critical
+  # acceptance milestone (order → offline → restart → reconnect → sync →
+  # exactly one order): that would mean either standing up a throwaway
+  # backend+Mongo inside this job (docker-compose.yml already defines the
+  # stack; not wired up here) or creating real orders against the live
+  # `https://app.nuapos.com.au` backend the APK was built against — the
+  # latter is exactly the kind of live-financial-transaction risk this
+  # effort has avoided throughout. This job only installs the APK,
+  # launches it, and verifies the process survives and logcat shows no
+  # fatal exception — proving the real packaged app actually boots on a
+  # real (if emulated) Android device for the first time, nothing more.
+  # One known, accepted side effect: launching the real app does make one
+  # real write to production — `App.js`'s `trackEvent('app_launch')` —
+  # the same harmless telemetry call any real install of this build would
+  # make; no financial or tenant-business-data writes occur.
+  emulator-smoke-test:
+    needs: android
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Download the debug APK built by the android job
+        uses: actions/download-artifact@v4
+        with:
+          name: nua-pos-android-debug
+          path: apk
+      - name: Enable KVM group perms (required for emulator acceleration)
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: AVD cache
+        uses: actions/cache@v4
+        id: avd-cache
+        with:
+          path: |
+            ~/.android/avd/*
+            ~/.android/adb*
+          key: avd-34-google_apis-x86_64
+      - name: Create AVD snapshot for caching
+        if: steps.avd-cache.outputs.cache-hit != 'true'
+        uses: ReactiveCircus/android-emulator-runner@v2
+        with:
+          # API 34 (Android 14): well within this app's minSdk 24..
+          # targetSdk 36 range, and a widely available, fast-booting image
+          # for a launch-only check — nothing here depends on 36-specific
+          # behavior.
+          api-level: 34
+          target: google_apis
+          arch: x86_64
+          force-avd-creation: false
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          disable-animations: false
+          script: echo "Generated AVD snapshot for caching."
+      - name: Install the real APK and verify it launches without crashing
+        uses: ReactiveCircus/android-emulator-runner@v2
+        with:
+          api-level: 34
+          target: google_apis
+          arch: x86_64
+          force-avd-creation: false
+          emulator-options: -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          disable-animations: true
+          # The diagnostics from a real CI run proved the root cause of
+          # every prior failure here: this action runs EACH LINE of
+          # `script:` as its OWN separate `/bin/sh -c` invocation (visible
+          # as one "[command] /usr/bin/sh -c <line>" per line in its own
+          # logs) -- so a variable assigned on one line (like $APK) is
+          # gone by the next line's fresh shell, no matter how it's
+          # computed or quoted. The real APK was always right there
+          # (confirmed: `find /home -iname '*.apk'` found
+          # $GITHUB_WORKSPACE/apk/app-debug.apk every single time) --
+          # it just never survived to the next line. Fix: keep the whole
+          # thing on exactly one line, `;`-separated, so it runs as one
+          # shell. Pitfall avoided: a bare `grep -q ... && { ...; exit 1; }`
+          # as a top-level statement under `set -e` would abort the script
+          # when grep finds nothing (the desired, non-error case), because
+          # `-e` checks the exit status of the whole `&&` list -- the
+          # trailing `; true` neutralizes that.
+          script: >-
+            set -eu;
+            APK="$(find "$GITHUB_WORKSPACE/apk" -name '*.apk' | head -n1)";
+            echo "Installing $APK";
+            adb install -r "$APK";
+            adb logcat -c;
+            adb shell am start -n com.nua.pos/.MainActivity;
+            sleep 10;
+            adb shell pidof com.nua.pos || { echo "::error::App process not found ~10s after launch — it crashed or failed to start."; adb logcat -d -s AndroidRuntime:E '*:F'; exit 1; };
+            ( adb logcat -d | grep -q "FATAL EXCEPTION" ) && { echo "::error::FATAL EXCEPTION found in logcat even though the process is still alive."; adb logcat -d | grep -A 40 "FATAL EXCEPTION"; exit 1; } ; true;
+            echo "App launched and stayed running with a clean logcat — real emulator smoke test passed."
+
+  # The job above proves the real APK boots; this one proves the one flow
+  # OFFLINE_SYNC_ARCHITECTURE.md has repeatedly flagged as explicitly NOT
+  # verified: order -> offline -> restart -> reconnect -> sync -> exactly
+  # one order. It stands up its own throwaway backend+Mongo
+  # (docker-compose.yml — destroyed with this runner) and builds its own
+  # APK against that, reached via `adb reverse` tunnelling the device's own
+  # localhost back to the runner's — never against the real
+  # `https://app.nuapos.com.au` backend the other two jobs' APK targets, so
+  # no real financial transaction is ever made against production.
+  critical-acceptance-milestone:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    env:
+      PUBLIC_URL: /
+      # A real run proved the emulator CAN reach the host at all (a plain
+      # `ping 10.0.2.2` from inside the emulator succeeds cleanly), but a
+      # real TCP fetch from the WebView to http://10.0.2.2:8001 still fails
+      # outright ("Failed to fetch") even though the exact same backend is
+      # reachable from the CI host itself via localhost:8001 — a known
+      # rough edge combining QEMU's NAT (slirp, which the emulator uses for
+      # 10.0.2.2) with Docker's own port-publishing under nested
+      # virtualization, not something worth continuing to chase inside the
+      # app or this script. `adb reverse` (set up in the milestone script
+      # itself, before launch) sidesteps it entirely: the device's own
+      # localhost:8001 gets tunneled straight to the host's localhost:8001,
+      # the same path already confirmed to work.
+      REACT_APP_BACKEND_URL: http://localhost:8001
+      CI: false
+    steps:
+      - uses: actions/checkout@v4
+      - name: Start a throwaway backend + Mongo (never production)
+        run: docker compose -f docker-compose.yml -f docker-compose.ci-milestone.yml up -d --build mongo mongo-init backend
+      - name: Wait for the throwaway backend to report ready
+        run: timeout 90 sh -c 'until curl -fsS http://localhost:8001/api/ready; do sleep 2; done'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install frontend dependencies
+        working-directory: ./frontend
+        run: npm ci
+      - name: Build shared React app against the throwaway backend
+        working-directory: ./frontend
+        run: npm run build
+      - uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '21'
+      - name: Sync Capacitor Android project
+        working-directory: ./frontend
+        run: npx cap sync android
+      - name: Install Android cmdline-tools
+        run: |
+          set -eu
+          curl -fsSL -o /tmp/cmdline-tools.zip \
+            https://dl.google.com/android/repository/commandlinetools-linux-15859902_latest.zip
+          mkdir -p "$HOME/android-sdk/cmdline-tools"
+          unzip -q /tmp/cmdline-tools.zip -d "$HOME/android-sdk/cmdline-tools"
+          mv "$HOME/android-sdk/cmdline-tools/cmdline-tools" "$HOME/android-sdk/cmdline-tools/latest"
+          echo "ANDROID_HOME=$HOME/android-sdk" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$HOME/android-sdk" >> "$GITHUB_ENV"
+          echo "$HOME/android-sdk/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
+          echo "$HOME/android-sdk/platform-tools" >> "$GITHUB_PATH"
+      - name: Install the platform/build-tools this project targets
+        run: |
+          set -eu
+          yes | sdkmanager --licenses >/dev/null
+          sdkmanager "platform-tools" "platforms;android-36" "build-tools;36.0.0"
+      - name: Build debug APK pointed at the throwaway backend
+        working-directory: ./frontend/android
+        run: ./gradlew assembleDebug --no-daemon
+      - name: Enable KVM group perms (required for emulator acceleration)
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: AVD cache
+        uses: actions/cache@v4
+        id: avd-cache
+        with:
+          path: |
+            ~/.android/avd/*
+            ~/.android/adb*
+          # Distinct key from emulator-smoke-test's own AVD cache above —
+          # same image, but two jobs writing the same cache key in one
+          # workflow run race each other.
+          key: avd-34-google_apis-x86_64-milestone
+      - name: Create AVD snapshot for caching
+        if: steps.avd-cache.outputs.cache-hit != 'true'
+        uses: ReactiveCircus/android-emulator-runner@v2
+        with:
+          api-level: 34
+          target: google_apis
+          arch: x86_64
+          force-avd-creation: false
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          disable-animations: false
+          script: echo "Generated AVD snapshot for caching."
+      - name: Install the APK and walk the full critical acceptance milestone
+        uses: ReactiveCircus/android-emulator-runner@v2
+        with:
+          api-level: 34
+          target: google_apis
+          arch: x86_64
+          force-avd-creation: false
+          emulator-options: -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          disable-animations: true
+          # See emulator-smoke-test's own comment above: this action runs
+          # each `script:` line as its own separate shell, so everything
+          # that needs to share state (cwd, env) stays on one line.
+          script: >-
+            set -eu;
+            APK="$(find "$GITHUB_WORKSPACE/frontend/android/app/build/outputs/apk/debug" -name '*.apk' | head -n1)";
+            echo "Installing $APK";
+            adb install -r "$APK";
+            adb logcat -c;
+            cd "$GITHUB_WORKSPACE/frontend" && MILESTONE_BACKEND_URL=http://localhost:8001 node scripts/android-critical-milestone.cjs;
+      - name: Show backend logs (debugging aid)
+        if: always()
+        run: docker compose -f docker-compose.yml -f docker-compose.ci-milestone.yml logs backend --tail 300
+      - name: Tear down the throwaway backend
+        if: always()
+        run: docker compose -f docker-compose.yml -f docker-compose.ci-milestone.yml down -v

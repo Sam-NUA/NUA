@@ -5,6 +5,7 @@ import { Input } from '../ui/input';
 import { Badge } from '../ui/badge';
 import { finalizeAPI } from '../../services/api';
 import { FileText, RefreshCcw, Download } from 'lucide-react';
+import { FileService } from '../../platform';
 
 /** ATO-labelled BAS Worksheet for a period range. Renders G1-G20 + W1-W5 + T1. */
 export default function BasWorksheetPanel({ theme }) {
@@ -25,7 +26,7 @@ export default function BasWorksheetPanel({ theme }) {
   };
   useEffect(() => { load(); }, []); // load on mount only
 
-  const exportCsv = () => {
+  const exportCsv = async () => {
     if (!data) return;
     const rows = [
       ['Label', 'Description', 'Amount ($)'],
@@ -36,10 +37,7 @@ export default function BasWorksheetPanel({ theme }) {
       ['NET_GST', 'Net GST', (data.netGST || 0).toFixed(2)],
     ];
     const csv = rows.map(r => r.map(c => `"${String(c).replace(/"/g, '""')}"`).join(',')).join('\n');
-    const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }));
-    const a = document.createElement('a');
-    a.href = url; a.download = `BAS-${start}-to-${end}.csv`; a.click();
-    URL.revokeObjectURL(url);
+    await FileService.downloadFile(new Blob([csv], { type: 'text/csv' }), `BAS-${start}-to-${end}.csv`);
   };
 
   const row = (code, label, val, opts = {}) => (

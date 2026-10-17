@@ -1,6 +1,6 @@
 # Nua — Restaurant OS
 
-> **Updated 14 September 2026**
+> **Updated 17 October 2026**
 >
 > An AI-first restaurant operating system. POS, kitchen, reservations, inventory, accounting, loyalty, social-media marketing — all in one place. Built with React + FastAPI + MongoDB. Themed in NUA's signature orange / purple / pink palette and rebranded as **Nua - Restaurant OS** from iteration 37 onward.
 >
@@ -35,7 +35,7 @@
 - **CRM** — customers, tiers, points, your-usual, GDPR export/erase, cohort retention, booking heatmap.
 - **Loyalty Engine** — category multipliers, points-and-pay (10pt = 10c floor), Ash AI agent.
 - **Online Ordering** — public storefront, AI ETA with surge & queue penalty, kitchen load board, order tracking.
-- **Social Media Marketing** — connect mocked Instagram/Facebook/TikTok/X/Google Business; AI composer (Claude Sonnet 4.6) generates caption + hashtags + image alt; **Content Calendar** with month grid, drag-to-reschedule, AI Weekly Plan that schedules 7 days from top sellers + active promos; wired to image library.
+- **Social Media Marketing** — connect mocked Instagram/Facebook/TikTok/X/Google Business; AI composer (configured OpenAI model) generates caption + hashtags + image alt; **Content Calendar** with month grid, drag-to-reschedule, AI Weekly Plan that schedules 7 days from top sellers + active promos; wired to image library.
 - **Voucher / Gift Card** lifecycle — auto-mint on sale, partial redemption ledger, barcode print, in-POS apply.
 - **AI Suite** — voice recipe (Whisper + GPT), AI Pantry invoice OCR + suggested price, AI upsell strip, AI cost coach, AI labor forecast, AI price tune with audit, AI surge pricing, AI marketing emails, AI overbooking check.
 - **Enterprise** — multi-tenant licensing with ABR/ABN verification, 30-min JWT entitlement, Stripe billing webhook with progressive lockout, audit log, 2FA, device fleet, dispute & evidence packs, supplier marketplace, multi-site command center, franchise dashboard, fraud detection, dynamic pricing, subscriptions, kiosk, customer-facing display, profit guardian, station readiness.
@@ -45,30 +45,35 @@
 
 | Layer        | Tech                                                                  |
 | ------------ | --------------------------------------------------------------------- |
-| Frontend     | React 18, React Router 6, Tailwind, shadcn/ui, lucide-react, sonner   |
+| Frontend     | React 19, React Router 7, Vite, Tailwind, shadcn/ui, lucide-react, sonner   |
 | Backend      | FastAPI, Pydantic, Motor (async MongoDB), httpx                       |
 | Database     | MongoDB                                                               |
-| LLMs         | Claude Sonnet 4.6 / GPT-5.x / Gemini (via `emergentintegrations`)     |
+| LLMs         | Public OpenAI SDK; configurable model and HTTPS endpoint     |
 | Auth         | JWT (`jose`) + bcrypt + optional 2FA                                  |
-| Payments     | Stripe (test key in pod env)                                          |
+| Payments     | Public Stripe SDK; operator-configured secret key                                          |
 | Object store | base64-encoded data URLs (compressed client-side to ≤1.5 MB)          |
 
 ## Quick start
 
-```bash
-# 1. Backend
-cd /app/backend
-pip install -r requirements.txt
-# Set MONGO_URL, DB_NAME, EMERGENT_LLM_KEY in .env (already pre-configured in the pod)
-sudo supervisorctl restart backend
+Use Python 3.11+ and Node 22.19+. Provision an isolated MongoDB database and
+server-only environment settings described in [Owner access](docs/OWNER_ACCESS.md).
 
-# 2. Frontend
-cd /app/frontend
-yarn install
-sudo supervisorctl restart frontend
+```bash
+# Backend (from backend/, with MONGO_URL, DB_NAME and JWT_SECRET set)
+pip install -r requirements-dev.txt
+uvicorn server:app --host 127.0.0.1 --port 8001
+
+# Frontend (in another terminal, from frontend/)
+npm ci
+REACT_APP_BACKEND_URL=http://127.0.0.1:8001 npm start
 ```
 
-Both services are managed by **supervisord** with hot reload. Use `sudo supervisorctl status` to inspect.
+Use `npm run build` for static production assets in `frontend/build`. NPM's
+committed lockfile is the single dependency source for CI and all native builds.
+AI requires a server-only `OPENAI_API_KEY`; payment checkout requires a
+server-only `STRIPE_API_KEY`. Missing configuration never supplies fake credentials
+or a simulated payment success. See the [software closure report](docs/platform/LAUNCH_SOFTWARE_CLOSURE_2026-10-17.md)
+for provider settings, validation evidence and remaining launch gates.
 
 ## Demo credentials
 
@@ -260,7 +265,7 @@ Not a single user-typed instruction like the iterations above — a multi-week d
 │   │   ├── index.html              # title: "Nua - Restaurant OS"
 │   │   └── manifest.json           # PWA name: "Nua - Restaurant OS"
 │   ├── src/
-│   │   ├── App.js                  # routes
+│   │   ├── App.jsx                 # routes
 │   │   ├── contexts/               # AuthContext, POSContext, ThemeContext, LicenseContext
 │   │   ├── services/api.js         # axios bindings
 │   │   ├── components/
@@ -307,7 +312,7 @@ Every endpoint is prefixed `/api`. Auth via Bearer JWT from `POST /api/auth/logi
 | Bookings Inbox | `POST /bookings/inbox`, `POST /bookings/inbox/{id}/ack`               | AI parse → reservation |
 | Channel Menus  | `GET /channel-menus/{channel}`, `POST .../patch`, `.../ai-prep-times`, `.../ai-discount-slow` | |
 | Awards         | `GET /awards/catalogue`, `POST /awards/install`, `POST /payruns/super-by-award` | Fair Work AU |
-| Social Media   | `GET /social/platforms`, `GET/POST/DELETE /social/accounts`, `GET/POST/PATCH/DELETE /social/posts`, `POST /social/posts/{id}/publish`, `POST /social/ai-generate`, `POST /social/ai-weekly-plan` | Mock OAuth; AI via Claude Sonnet 4.6 |
+| Social Media   | `GET /social/platforms`, `GET/POST/DELETE /social/accounts`, `GET/POST/PATCH/DELETE /social/posts`, `POST /social/posts/{id}/publish`, `POST /social/ai-generate`, `POST /social/ai-weekly-plan` | Mock OAuth; AI via configured OpenAI model |
 | Online Orders  | Public: `GET /online/{categories,products}`, `POST /online/orders`, `GET /online/orders/track/{code}` · Auth: `GET /online/orders`, `PATCH .../status`, `POST .../eta` | AI ETA |
 | Licensing      | `POST /license/{onboard,validate}`, `POST /license/device/{activate,revoke}`, `POST /license/abn/change-request`, `POST /license/stripe/webhook` | Progressive lockout |
 
@@ -319,8 +324,8 @@ Environment variables (all in `.env` files, never hard-coded):
 | ------------------------- | ----------------- | -------- | ----------------------------------------- |
 | `MONGO_URL`               | `backend/.env`    | ✅       | Don't rename                              |
 | `DB_NAME`                 | `backend/.env`    | ✅       | Don't rename                              |
-| `EMERGENT_LLM_KEY`        | `backend/.env`    | ✅       | Universal LLM key for all AI features      |
-| `LLM_GATEWAY_URL`         | `backend/.env`    | optional | Defaults to the Emergent gateway          |
+| `OPENAI_API_KEY`          | `backend/.env`    | AI only  | Server-only public OpenAI SDK secret      |
+| `OPENAI_BASE_URL`         | `backend/.env`    | optional | HTTPS endpoint; defaults to public OpenAI |
 | `JWT_SECRET`              | `backend/.env`    | ✅       | Signs entitlement tokens                  |
 | `STRIPE_API_KEY`          | `backend/.env`    | optional | Live billing                              |
 | `STRIPE_WEBHOOK_SECRET`   | `backend/.env`    | optional | Verifies Stripe webhooks                  |

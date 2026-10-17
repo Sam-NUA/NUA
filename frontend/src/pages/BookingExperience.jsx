@@ -8,6 +8,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from '../components/
 import { useTheme } from '../contexts/ThemeContext';
 import { reservationFeaturesAPI } from '../services/api';
 import { toast } from 'sonner';
+import { DialogService } from '../platform';
 
 const DAYS = ['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday'];
 
@@ -34,7 +35,7 @@ export default function BookingExperience() {
   };
 
   const handleDelete = async (id) => {
-    if (!window.confirm('Delete this experience?')) return;
+    if (!await DialogService.confirm('Delete this experience?')) return;
     try { await reservationFeaturesAPI.deleteExperience(id); toast.success('Deleted'); fetchData(); } catch {}
   };
 

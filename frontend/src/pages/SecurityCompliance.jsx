@@ -9,6 +9,8 @@ import { useTheme } from '../contexts/ThemeContext';
 import { useAuth } from '../contexts/AuthContext';
 import { v15API, customersAPI } from '../services/api';
 import { toast } from 'sonner';
+import SensitiveActionReauthDialog from '../components/security/SensitiveActionReauthDialog';
+import { FileService } from '../platform';
 
 const LANGS = [{ c: 'en', n: 'English' }, { c: 'es', n: 'Español' }, { c: 'fr', n: 'Français' }, { c: 'hi', n: 'हिन्दी' }, { c: 'zh', n: '中文' }];
 
@@ -20,6 +22,11 @@ export default function SecurityCompliance() {
   const [code, setCode] = useState('');
   const [customers, setCustomers] = useState([]);
   const [exportData, setExportData] = useState(null);
+  // Directive Phase 5 — disabling 2FA and erasing a customer's personal
+  // data are both "sensitive settings": one weakens the owner's own
+  // account security, the other is irreversible. A single reauth dialog
+  // is reused for both, dispatching on `pendingReauth.run` once verified.
+  const [pendingReauth, setPendingReauth] = useState(null); // { label, run } | null
 
   useEffect(() => { customersAPI.getAll().then(r => setCustomers(r.data || [])).catch(() => {}); }, []);
 
@@ -31,7 +38,10 @@ export default function SecurityCompliance() {
     try { await v15API.verify2FA(code); toast.success('2FA enabled!'); setSetup(null); setCode(''); }
     catch (e) { toast.error(e.response?.data?.detail || 'Invalid code'); }
   };
-  const disable2FA = async () => { try { await v15API.disable2FA(); toast('2FA disabled'); } catch {} };
+  const disable2FA = () => setPendingReauth({
+    label: 'disable two-factor authentication',
+    run: async () => { try { await v15API.disable2FA(); toast('2FA disabled'); } catch {} },
+  });
 
   const doExport = async (cid) => {
     try {
@@ -39,16 +49,19 @@ export default function SecurityCompliance() {
       setExportData(r.data);
       // Trigger download
       const blob = new Blob([JSON.stringify(r.data, null, 2)], { type: 'application/json' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a'); a.href = url; a.download = `gdpr-export-${cid}.json`; a.click();
-      URL.revokeObjectURL(url);
+      await FileService.downloadFile(blob, `gdpr-export-${cid}.json`);
       toast.success('GDPR export downloaded');
     } catch { toast.error('Export failed'); }
   };
-  const doErase = async (cid) => {
+  const doErase = (cid) => {
     if (!window.confirm('Anonymize this customer\'s personal data? Financial records will be preserved. This cannot be undone.')) return;
-    try { await v15API.gdprErase(cid); toast.success('Customer anonymized'); customersAPI.getAll().then(r => setCustomers(r.data || [])); }
-    catch (e) { toast.error(e.response?.data?.detail || 'Failed'); }
+    setPendingReauth({
+      label: 'anonymize this customer\'s personal data',
+      run: async () => {
+        try { await v15API.gdprErase(cid); toast.success('Customer anonymized'); customersAPI.getAll().then(r => setCustomers(r.data || [])); }
+        catch (e) { toast.error(e.response?.data?.detail || 'Failed'); }
+      },
+    });
   };
 
   return (
@@ -127,6 +140,12 @@ export default function SecurityCompliance() {
           </div>
         </CardContent>
       </Card>
+      <SensitiveActionReauthDialog
+        open={!!pendingReauth}
+        label={pendingReauth?.label || ''}
+        onVerified={() => { const run = pendingReauth?.run; setPendingReauth(null); run?.(); }}
+        onCancel={() => setPendingReauth(null)}
+      />
     </div>
   );
 }

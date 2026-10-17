@@ -1,0 +1,640 @@
+#!/usr/bin/env node
+'use strict';
+/**
+ * Drives the REAL, already-installed-and-launchable Android app (this
+ * workflow's earlier steps built the APK and booted a real, if emulated,
+ * AVD) through the one flow OFFLINE_SYNC_ARCHITECTURE.md has repeatedly
+ * flagged as "not verified this pass": order -> offline -> restart ->
+ * reconnect -> sync -> exactly one order — against a throwaway
+ * backend+Mongo this same workflow starts (see docker-compose.yml), never
+ * production, and never a real financial transaction.
+ *
+ * Runs on the CI runner's host (NOT inside the emulator). Talks to the
+ * throwaway backend over localhost; the app-under-test on the emulator
+ * reaches that same backend the same way, via `adb reverse tcp:8001
+ * tcp:8001` tunnelling the device's own localhost back to this runner's
+ * (baked into this job's APK build via REACT_APP_BACKEND_URL — see the
+ * workflow). A real run proved the emulator's documented 10.0.2.2 NAT
+ * alias reaches the host for ICMP but not for a TCP fetch to this
+ * Docker-published port, so this avoids that path entirely.
+ *
+ * Drives the app's own real DOM (via data-testid hooks already used by
+ * this project's Jest/e2e tests) over the WebView's Chrome DevTools
+ * Protocol bridge — the same automation tier as apps/windows/scripts/
+ * smoke.cjs uses for the Windows app, just reached through adb instead of
+ * Playwright's built-in Electron support (Capacitor's Android WebView has
+ * no such first-class automation library).
+ *
+ * Simulating "offline": several real runs proved `adb reverse --remove`
+ * alone doesn't do it. It stops the device from accepting brand-new
+ * connections through the tunnel, but the WebView's own HTTP keep-alive
+ * connections (already open from the dashboard's page-load requests
+ * before the tunnel comes down) keep right on working — a real
+ * POST /api/transactions landed on the backend with status 200 while
+ * "offline" before this was caught (see backend's own request log in a
+ * failed run). setNetwork() instead stops/starts the throwaway backend
+ * container itself, which actually closes those sockets from the far end.
+ */
+const { execFileSync } = require('node:child_process');
+const CDP = require('chrome-remote-interface');
+
+const BACKEND = process.env.MILESTONE_BACKEND_URL || 'http://localhost:8001';
+const PACKAGE_ID = 'com.nua.pos';
+const FORWARD_PORT = 9333;
+
+function log(msg) { console.log(`[milestone] ${msg}`); }
+function wait(ms) { return new Promise((resolve) => setTimeout(resolve, ms)); }
+
+function adb(args) {
+  return execFileSync('adb', args, { encoding: 'utf8' });
+}
+function adbShell(cmd) {
+  return execFileSync('adb', ['shell', cmd], { encoding: 'utf8' });
+}
+// This script's own cwd is $GITHUB_WORKSPACE/frontend (see android.yml's
+// final step), one level below the compose files.
+function dockerCompose(args) {
+  return execFileSync('docker', [
+    'compose', '-f', '../docker-compose.yml', '-f', '../docker-compose.ci-milestone.yml', ...args,
+  ], { encoding: 'utf8' });
+}
+
+async function fetchJson(path, opts = {}) {
+  const res = await fetch(`${BACKEND}${path}`, {
+    ...opts,
+    headers: { 'Content-Type': 'application/json', ...(opts.headers || {}) },
+  });
+  const text = await res.text();
+  const body = text ? JSON.parse(text) : null;
+  if (!res.ok) throw new Error(`${opts.method || 'GET'} ${path} -> HTTP ${res.status}: ${text}`);
+  return body;
+}
+
+async function seedBackend(runId) {
+  // The backend's RegisterRequest validates with pydantic's EmailStr (the
+  // email-validator package), which does real deliverability checks AND
+  // hard-rejects RFC 2606's reserved special-use names (.invalid/.test/
+  // .example/.local) outright, even though those are exactly what you'd
+  // reach for in a throwaway script — confirmed by a real CI failure, not
+  // assumed. example.com is the one RFC 2606 domain that's a real,
+  // resolvable, ICANN-operated placeholder (not on email-validator's
+  // reserved-name denylist), so it's both safe and passes validation.
+  const email = `ci-milestone-${runId}@example.com`;
+  const password = 'Ci-Milestone-Password-1!';
+  const name = `CI Milestone ${runId}`;
+  log(`registering throwaway owner ${email}`);
+  const registered = await fetchJson('/api/auth/register', {
+    method: 'POST',
+    body: JSON.stringify({ name, email, password, role: 'owner' }),
+  });
+  const token = registered.token;
+  const price = 19.5;
+  log('creating one throwaway product to sell');
+  const product = await fetchJson('/api/products', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}` },
+    body: JSON.stringify({
+      name: `CI Milestone Item ${runId}`, category: 'Test', price, cost: 0, stock: 999, sku: `CI-${runId}`,
+    }),
+  });
+  return { email, password, token, product };
+}
+
+async function currentPid() {
+  try { return adbShell(`pidof ${PACKAGE_ID}`).trim().split(/\s+/)[0] || null; }
+  catch { return null; }
+}
+
+async function waitForPid(timeoutMs = 20000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const pid = await currentPid();
+    if (pid) return pid;
+    await wait(500);
+  }
+  throw new Error('App process never appeared after launch');
+}
+
+// The WebView's devtools unix-domain socket is only registered once the
+// Chromium engine inside the app has finished spinning up — a short poll
+// after the process itself appears, not instant.
+async function findDevtoolsSocket(pid, timeoutMs = 20000) {
+  const deadline = Date.now() + timeoutMs;
+  let lastListing = '';
+  while (Date.now() < deadline) {
+    let listing = '';
+    try { listing = adbShell('cat /proc/net/unix'); } catch { /* retry */ }
+    lastListing = listing;
+    const lines = listing.split('\n').filter((l) => l.includes('devtools_remote'));
+    const forThisPid = lines.find((l) => l.includes(`_${pid}`));
+    const chosen = forThisPid || (lines.length === 1 ? lines[0] : null);
+    if (chosen) {
+      const name = chosen.trim().split(/\s+/).pop().replace(/^@/, '');
+      return name;
+    }
+    await wait(500);
+  }
+  throw new Error(`No devtools socket found for pid ${pid} within ${timeoutMs}ms. Last listing:\n${lastListing}`);
+}
+
+async function connectToAppPage() {
+  const pid = await waitForPid();
+  log(`app process pid=${pid}, locating its WebView devtools socket`);
+  const socketName = await findDevtoolsSocket(pid);
+  log(`forwarding tcp:${FORWARD_PORT} -> localabstract:${socketName}`);
+  try { execFileSync('adb', ['forward', '--remove', `tcp:${FORWARD_PORT}`], { stdio: 'ignore' }); } catch { /* nothing to remove yet */ }
+  adb(['forward', `tcp:${FORWARD_PORT}`, `localabstract:${socketName}`]);
+  // The forwarded port exists as soon as `adb forward` returns, but the
+  // WebView's devtools HTTP endpoint behind it isn't necessarily accepting
+  // connections yet — a real run hit "socket hang up" from CDP.List() on
+  // the very first attempt, not an empty target list, so both failure
+  // modes need to be retried, not just the empty-list one.
+  let targets = [];
+  const deadline = Date.now() + 20000;
+  let lastError = null;
+  while (Date.now() < deadline) {
+    try {
+      targets = await CDP.List({ port: FORWARD_PORT });
+      lastError = null;
+      if (targets.length) break;
+    } catch (error) { lastError = error; }
+    await wait(500);
+  }
+  if (lastError) throw lastError;
+  if (!targets.length) throw new Error('WebView devtools endpoint had no page targets');
+  // Passing target.id makes the library re-fetch the target list and
+  // connect to THAT target's own webSocketDebuggerUrl verbatim (see
+  // chrome-remote-interface's lib/chrome.js _fetchDebuggerURL). A real
+  // run's diagnostic log showed that URL already uses our correct
+  // forwarded port (ws://127.0.0.1:9333/...) — so the port was never the
+  // problem. The actual cause: Chrome DevTools' WebSocket handshake
+  // validates the request's Host header against what it expects (an
+  // anti-DNS-rebinding protection), and we were connecting with host
+  // 'localhost' while the WebView itself reports '127.0.0.1' — a mismatch
+  // the server answers by resetting the connection, indistinguishable
+  // from the outside from any other "socket hang up". Passing a
+  // path-only target string (starting with "/") makes the library build
+  // the ws:// URL from the host/port WE specify, so using the exact host
+  // the WebView itself reports avoids the mismatch entirely.
+  const debuggerPath = (targets[0].webSocketDebuggerUrl.match(/\/devtools\/.*/) || [targets[0].webSocketDebuggerUrl])[0];
+  const debuggerHost = (targets[0].webSocketDebuggerUrl.match(/^wss?:\/\/([^:/]+)/) || [, '127.0.0.1'])[1];
+  log(`WebView reported debugger URL "${targets[0].webSocketDebuggerUrl}" — connecting to host "${debuggerHost}" port ${FORWARD_PORT} path "${debuggerPath}"`);
+  // The host-header fix above still hung up every time. Reading
+  // chrome-remote-interface's chrome.js _start() further: before ever
+  // opening the WebSocket, it fetches `/json/protocol` over HTTP to
+  // learn the CDP schema — a discovery endpoint only full desktop Chrome
+  // serves. Android WebView's per-page devtools target almost certainly
+  // doesn't implement it, so that HTTP request itself is what was
+  // hanging/resetting, before the WebSocket step was ever reached.
+  // `local: true` makes the library use its own bundled protocol.json
+  // instead of fetching it from the device at all.
+  let client;
+  let connectError = null;
+  const connectDeadline = Date.now() + 10000;
+  while (Date.now() < connectDeadline) {
+    try { client = await CDP({ host: debuggerHost, port: FORWARD_PORT, target: debuggerPath, local: true }); connectError = null; break; }
+    catch (error) { connectError = error; await wait(500); }
+  }
+  if (connectError) throw connectError;
+  await client.Runtime.enable();
+  return client;
+}
+
+function makePageDriver(client) {
+  async function evalPage(expression) {
+    const { result, exceptionDetails } = await client.Runtime.evaluate({
+      expression, awaitPromise: true, returnByValue: true,
+    });
+    if (exceptionDetails) {
+      throw new Error(`Page eval failed: ${exceptionDetails.exception?.description || exceptionDetails.text}\n${expression}`);
+    }
+    return result.value;
+  }
+  async function waitForSelector(selector, timeoutMs = 30000) {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      if (await evalPage(`!!document.querySelector(${JSON.stringify(selector)})`)) return;
+      await wait(500);
+    }
+    throw new Error(`Timed out waiting for selector ${selector}`);
+  }
+  async function setValue(selector, value) {
+    await evalPage(`(function(){
+      const el = document.querySelector(${JSON.stringify(selector)});
+      if (!el) throw new Error('missing ${selector}');
+      const setter = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(el), 'value').set;
+      setter.call(el, ${JSON.stringify(value)});
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+    })();`);
+  }
+  async function click(selector) {
+    await evalPage(`(function(){
+      const el = document.querySelector(${JSON.stringify(selector)});
+      if (!el) throw new Error('missing ${selector}');
+      el.click();
+    })();`);
+  }
+  return { evalPage, waitForSelector, setValue, click };
+}
+
+// Counts rows in the business-scoped offline queue's pending_transactions
+// store directly via IndexedDB — the real durable state offlineQueue.js
+// writes to (see lib/offlineQueue.js's dbNameFor/activate), independent of
+// whatever the UI happens to be showing right now.
+async function countPendingTransactions(evalPage) {
+  return evalPage(`(async function(){
+    const names = (await indexedDB.databases()).map(d => d.name).filter(n => n.startsWith('nua-offline-v2-biz-'));
+    if (!names.length) return 0;
+    let total = 0;
+    for (const name of names) {
+      const db = await new Promise((resolve, reject) => {
+        const req = indexedDB.open(name);
+        req.onsuccess = () => resolve(req.result);
+        req.onerror = () => reject(req.error);
+      });
+      if (db.objectStoreNames.contains('pending_transactions')) {
+        total += await new Promise((resolve, reject) => {
+          const tx = db.transaction('pending_transactions', 'readonly');
+          const countReq = tx.objectStore('pending_transactions').count();
+          countReq.onsuccess = () => resolve(countReq.result);
+          countReq.onerror = () => reject(countReq.error);
+        });
+      }
+      db.close();
+    }
+    return total;
+  })();`);
+}
+
+async function setNetwork(enabled) {
+  const action = enabled ? 'enable' : 'disable';
+  log(`turning network ${action} on the device (svc wifi/data)`);
+  adbShell(`svc wifi ${action}`);
+  adbShell(`svc data ${action}`);
+  if (enabled) {
+    adb(['reverse', 'tcp:8001', 'tcp:8001']);
+    log('adb reverse tcp:8001 tcp:8001 restored');
+  } else {
+    try { adb(['reverse', '--remove', 'tcp:8001']); } catch { /* already removed */ }
+    log('adb reverse tcp:8001 removed');
+  }
+  // Four real runs, in order, proved adb reverse alone never actually cuts
+  // this app off: `svc wifi/data disable` flips navigator.onLine but
+  // doesn't touch the tunnel; removing the tunnel itself still left a real
+  // POST /api/transactions landing on the backend with status 200 while
+  // "offline" (confirmed in its own log) — adb's own bookkeeping said the
+  // mapping was gone (adb reverse --list came back empty), no device-wide
+  // HTTP proxy was configured, and nothing was listed as listening on the
+  // device's own port 8001, yet a raw fetch() still got a live round trip.
+  // The one thing all of that is consistent with: Chromium's WebView
+  // pools HTTP keep-alive connections per-origin, and the dashboard's own
+  // page-load requests already opened several to this exact host:port
+  // before the tunnel came down. `adb reverse --remove` stops the device
+  // from accepting brand-new connections through it — it does nothing to
+  // a connection that was already established and handed off before the
+  // removal, which is exactly what Chromium keeps reusing for every
+  // request afterwards, "offline" or not. The only thing that actually
+  // kills an already-open socket is closing the far end: stop the real
+  // backend process this test's own Docker Compose started, not just the
+  // tunnel to it.
+  if (enabled) {
+    dockerCompose(['start', 'backend']);
+    log('throwaway backend container started — the sale\'s next retry has somewhere to land');
+    const deadline = Date.now() + 30000;
+    let ready = false;
+    while (Date.now() < deadline) {
+      try {
+        const res = await fetch(`${BACKEND}/api/ready`);
+        if (res.ok) { ready = true; break; }
+      } catch { /* still coming up */ }
+      await wait(1000);
+    }
+    log(`throwaway backend reachable again from this runner's own localhost: ${ready}`);
+  } else {
+    dockerCompose(['stop', 'backend']);
+    log('throwaway backend container stopped — any reused keep-alive socket now gets a real connection failure, not just a refused new one');
+  }
+  await wait(3000); // propagation isn't instant
+}
+
+async function main() {
+  const runId = Date.now().toString(36);
+  const { email, password, token, product } = await seedBackend(runId);
+  log(`seeded owner ${email}, product ${product.id} at $${product.price}`);
+
+  try { adb(['root']); } catch { log('adb root unavailable/unneeded on this image — continuing as shell user'); }
+
+  // A real run's reconnect after the backend restart found dock-pos never
+  // appearing — but every evalPage() call throughout the 45s wait kept
+  // succeeding (never throwing), and the backend's own request log shows
+  // zero activity from the app for that whole window — not even the
+  // GET /api/auth/me a route change would trigger. That's consistent with
+  // the screen having locked from idle (this run has several real gaps —
+  // the docker compose stop/start cycle alone is ~15s): a backgrounded
+  // WebView's render commits can stop reaching the DOM even though one-off
+  // synchronous document.querySelector reads of the already-committed DOM
+  // still succeed, which is exactly the split this hit. Keep the screen on
+  // for the whole run so nothing backgrounds the activity involuntarily.
+  try { adbShell('svc power stayon true'); } catch { log('svc power stayon failed/unneeded — continuing'); }
+
+  // A real run proved the emulator's basic gateway routing is fine (a
+  // plain `ping 10.0.2.2` from inside the emulator succeeds cleanly) but
+  // a real TCP fetch to http://10.0.2.2:8001 from the WebView still fails
+  // outright — a known rough edge combining QEMU's NAT (slirp) with
+  // Docker's own port-publishing under nested virtualization, not an app
+  // or script bug. `adb reverse` sidesteps the whole NAT path: the app
+  // (built against plain http://localhost:8001 — see android.yml) now
+  // reaches the throwaway backend by tunnelling the device's own
+  // localhost:8001 straight to this runner's localhost:8001, the exact
+  // path already confirmed reachable (the earlier `curl .../api/ready`
+  // step). Kept the ping as a cheap ongoing sanity check, not the fix.
+  try {
+    const pingResult = adbShell('ping -c 3 -W 2 10.0.2.2');
+    log(`ping 10.0.2.2 from inside the emulator:\n${pingResult}`);
+  } catch (error) {
+    log(`ping 10.0.2.2 from inside the emulator FAILED: ${error.message}`);
+  }
+  adb(['reverse', 'tcp:8001', 'tcp:8001']);
+  log('adb reverse tcp:8001 tcp:8001 — the device\'s own localhost:8001 now tunnels to this runner\'s localhost:8001');
+
+  log('clearing any previous app state and launching the app fresh');
+  try { adbShell(`pm clear ${PACKAGE_ID}`); } catch { /* fine on a first install */ }
+  adbShell(`am start -n ${PACKAGE_ID}/.MainActivity`);
+
+  let client = await connectToAppPage();
+  let page = makePageDriver(client);
+
+  log('waiting for the login screen');
+  await page.waitForSelector('[data-testid="login-email"]');
+
+  // Confirm the adb reverse tunnel actually works before trusting the
+  // login flow to it — a direct fetch() from the WebView's own JS context
+  // to the same localhost:8001 the app itself is built against.
+  const reachability = await page.evalPage(`
+    fetch(${JSON.stringify(BACKEND)} + '/api/ready')
+      .then(r => ({ ok: true, status: r.status }))
+      .catch(e => ({ ok: false, message: e.message, name: e.name }))
+  `);
+  log(`direct fetch() reachability check from inside the WebView: ${JSON.stringify(reachability)}`);
+
+  await page.setValue('[data-testid="login-email"]', email);
+  await page.setValue('[data-testid="login-password"]', password);
+  await page.click('[data-testid="login-submit"]');
+
+  // A prior real run's backend logs showed the login POST never arrived at
+  // all — diagnose definitively what happened instead of guessing again:
+  // poll briefly for either a visible login error, the dashboard nav
+  // appearing, or neither, and log exactly what the page shows.
+  {
+    const deadline = Date.now() + 15000;
+    let outcome = 'timed-out-waiting';
+    while (Date.now() < deadline) {
+      const hasError = await page.evalPage(`!!document.querySelector('[data-testid="login-error"]')`);
+      if (hasError) { outcome = 'login-error'; break; }
+      const hasNav = await page.evalPage(`!!document.querySelector('[data-testid="dock-pos"]')`);
+      if (hasNav) { outcome = 'nav-pos-visible'; break; }
+      const stillOnLogin = await page.evalPage(`!!document.querySelector('[data-testid="login-page"]')`);
+      if (!stillOnLogin) { outcome = 'left-login-page-no-nav-yet'; break; }
+      await wait(500);
+    }
+    const pathname = await page.evalPage('window.location.pathname');
+    const errorText = await page.evalPage(`(document.querySelector('[data-testid="login-error"]') || {}).innerText || null`);
+    log(`post-submit diagnosis: outcome=${outcome} pathname=${pathname} loginErrorText=${JSON.stringify(errorText)}`);
+  }
+
+  // A real run's screen dump proved the actual root cause: the app shell
+  // was rendering fine (no onboarding wizard/license/version-gate blocker,
+  // real API calls for Today's page all succeeding) — the selector itself
+  // was just wrong. `components/Sidebar.jsx` (whose nav items use
+  // `nav-${path}` testids) is dead code, never imported by App.js. The
+  // real navigation the app actually renders is `BottomDock.jsx`, whose
+  // items use `dock-${path}` — i.e. `dock-pos`, not `nav-pos`.
+  log('navigating to the POS terminal via the bottom dock');
+  await page.waitForSelector('[data-testid="dock-pos"]', 45000);
+  await page.click('[data-testid="dock-pos"]');
+  await page.waitForSelector('[data-testid="pos-terminal"]', 20000);
+  await page.waitForSelector(`[data-testid="product-${product.id}"]`, 20000);
+
+  await setNetwork(false);
+  const isOnline = await page.evalPage('navigator.onLine');
+  log(`navigator.onLine after disabling network: ${isOnline}`);
+
+  log('ringing up one cash sale while offline');
+  await page.click(`[data-testid="product-${product.id}"]`);
+  await page.click('[data-testid="pos-proceed-payment"]');
+  await page.click('[data-testid="pay-cash"]');
+  await page.click('[data-testid="cash-exact"]');
+  await page.click('[data-testid="cash-complete"]');
+
+  // Captured right away, not after the poll loop below — any toast
+  // (Saved offline / Transaction Complete! / Transaction failed) auto-
+  // dismisses after a few seconds, so reading it later always comes back
+  // empty regardless of what actually happened.
+  await wait(1500);
+  const checkoutToastText = await page.evalPage('document.body.innerText').catch(() => null);
+  log(`page text ~1.5s after the checkout click burst: ${JSON.stringify((checkoutToastText || '').split('\n').filter(l => /offline|complete|fail|unknown table|error/i.test(l)))}`);
+
+  log('confirming the sale actually landed in durable offline storage');
+  let pendingBeforeRestart = 0;
+  {
+    const deadline = Date.now() + 15000;
+    while (Date.now() < deadline) {
+      pendingBeforeRestart = await countPendingTransactions(page.evalPage);
+      if (pendingBeforeRestart > 0) break;
+      await wait(500);
+    }
+  }
+  if (pendingBeforeRestart !== 1) {
+    // The toast text was already captured right after the click burst,
+    // above — by now any toast has long since auto-dismissed. This dump is
+    // just every IndexedDB database that actually exists, not only the
+    // nua-offline-biz-* ones countPendingTransactions looks for (a prior
+    // run used this to rule out the DB-naming/activation theory: the
+    // correctly-named database exists, with cached_reads already written).
+    const dbDump = await page.evalPage(`(async function(){
+      const dbs = await indexedDB.databases();
+      const out = [];
+      for (const d of dbs) {
+        const db = await new Promise((resolve, reject) => {
+          const req = indexedDB.open(d.name);
+          req.onsuccess = () => resolve(req.result);
+          req.onerror = () => reject(req.error);
+        });
+        const stores = {};
+        for (const storeName of db.objectStoreNames) {
+          stores[storeName] = await new Promise((resolve) => {
+            const countReq = db.transaction(storeName, 'readonly').objectStore(storeName).count();
+            countReq.onsuccess = () => resolve(countReq.result);
+            countReq.onerror = () => resolve('?');
+          });
+        }
+        out.push({ name: d.name, version: d.version, stores });
+        db.close();
+      }
+      return out;
+    })();`);
+    log(`every IndexedDB database that actually exists: ${JSON.stringify(dbDump)}`);
+    throw new Error(`Expected exactly 1 queued offline transaction before restart, found ${pendingBeforeRestart}`);
+  }
+  log('exactly 1 transaction is queued offline, as expected');
+
+  log('killing the app process — a real restart, not a reload');
+  adbShell(`am force-stop ${PACKAGE_ID}`);
+  await wait(2000);
+  adbShell(`am start -n ${PACKAGE_ID}/.MainActivity`);
+
+  client = await connectToAppPage();
+  page = makePageDriver(client);
+
+  log('confirming the queued sale survived the restart while still offline');
+  let pendingAfterRestart = 0;
+  {
+    const deadline = Date.now() + 20000;
+    while (Date.now() < deadline) {
+      try {
+        pendingAfterRestart = await countPendingTransactions(page.evalPage);
+      } catch (error) {
+        // A real run hit this immediately after reconnecting post-restart:
+        // "Access to the IndexedDB API is denied in this context" — the
+        // exact error Chromium throws when indexedDB is touched before the
+        // page has finished navigating to its real origin (e.g. still on
+        // about:blank right after the WebView reattaches). Not a real
+        // access-control failure, just reconnecting too early; retry
+        // rather than let one early call fail the whole run.
+        log(`countPendingTransactions failed right after restart (${error.message}) — retrying`);
+        await wait(1000);
+        continue;
+      }
+      if (pendingAfterRestart > 0) break;
+      await wait(1000);
+    }
+  }
+  if (pendingAfterRestart !== 1) {
+    throw new Error(`Expected the queued transaction to survive the restart (1), found ${pendingAfterRestart}`);
+  }
+  log('the queued transaction survived a real app restart while offline');
+
+  await setNetwork(true);
+
+  // A real run's CDP WebSocket was closed by the time this point was
+  // reached — the app itself was never restarted here (only the network
+  // state changed), but the debugger session doesn't survive the ~10s the
+  // backend container takes to come back up regardless (most likely the
+  // emulator's screen idling off during that gap; -no-window CI runs still
+  // model a screen that can sleep). Reconnect rather than assume the
+  // existing `client`/`page` are still good.
+  client = await connectToAppPage();
+  page = makePageDriver(client);
+
+  // A real run's own page dump named the actual cause of the dock-pos
+  // timeout directly: pathname "/", testids: [], body text "Unable to
+  // check your session ... Wait a moment, then try again." — App.js's
+  // ProtectedRoutes authError screen (no data-testid, by design: it's a
+  // deliberate "let the human decide when to retry" choice, not a bug).
+  // The app restart a few steps back happened WHILE STILL OFFLINE (the
+  // network wasn't restored until after it), so AuthContext's mount-time
+  // checkAuth() genuinely failed and parked here — same thing a real
+  // cashier's tablet would show after rebooting mid-outage. There's no
+  // auto-retry once the network actually comes back (same as a real
+  // device), so do what a cashier would: tap the real "Try again" button.
+  const triedAgain = await page.evalPage(`(function(){
+    const btn = [...document.querySelectorAll('button')].find(b => b.textContent.trim() === 'Try again');
+    if (!btn) return false;
+    btn.click();
+    return true;
+  })();`);
+  if (triedAgain) {
+    log('hit the "Unable to check your session" screen (app restarted while still offline) — tapped Try again');
+    await wait(2000);
+  }
+
+  // useOfflineQueue (hooks/useOfflineQueue.js) — the only thing that
+  // actually calls flushQueue(), on an 'online' event AND a 30s safety-net
+  // poll — is only mounted inside POSTerminal.jsx. A real run proved this
+  // the hard way: 90s of waiting with zero POST /api/transactions ever
+  // reaching the backend (confirmed in its own request log), because the
+  // app restart landed back on its default route for an owner (/today),
+  // not /pos, so that hook's effect was never running at all. Navigate
+  // back to POS before waiting for anything to auto-flush.
+  log('navigating back to the POS terminal so useOfflineQueue is actually mounted');
+  try {
+    await page.waitForSelector('[data-testid="dock-pos"]', 45000);
+  } catch (error) {
+    // The screen-stayon fix didn't change this at all — same timeout, same
+    // zero backend activity for the whole window (confirmed in its own
+    // request log: nothing but this script's own GET /api/ready). dock-pos
+    // lives in BottomDock, rendered unconditionally by StaffLayout for
+    // every route under it — so it should be on screen no matter which
+    // page the app landed back on, unless the page genuinely isn't
+    // rendering/ticking at all. Dump what's actually there, and what
+    // Android itself thinks has focus, instead of guessing a third time.
+    const dump = await page.evalPage(`({
+      pathname: window.location.pathname,
+      readyState: document.readyState,
+      bodyTextHead: document.body.innerText.slice(0, 300),
+      testids: [...document.querySelectorAll('[data-testid]')].map(e => e.getAttribute('data-testid')).slice(0, 80),
+    })`).catch(e => ({ evalPageFailed: e.message }));
+    log(`page dump when dock-pos never appeared: ${JSON.stringify(dump)}`);
+    let focus = '(unavailable)';
+    try { focus = adbShell('dumpsys window | grep mCurrentFocus').trim(); } catch (e) { focus = `dumpsys failed: ${e.message}`; }
+    log(`Android's own current window focus: ${JSON.stringify(focus)}`);
+    throw error;
+  }
+  await page.click('[data-testid="dock-pos"]');
+  await page.waitForSelector('[data-testid="pos-terminal"]', 20000);
+
+  log('waiting for the queue to auto-flush now that the device is back online');
+  let synced = false;
+  {
+    const deadline = Date.now() + 90000; // useOfflineQueue's own 30s safety-net poll, with margin
+    while (Date.now() < deadline) {
+      let pendingNow;
+      try {
+        pendingNow = await countPendingTransactions(page.evalPage);
+      } catch (error) {
+        // Same CDP-session-drops-during-a-long-wait issue as above — this
+        // loop alone can run up to 90s, plenty of time for it to recur.
+        log(`CDP call failed mid-poll (${error.message}) — reconnecting and retrying`);
+        client = await connectToAppPage();
+        page = makePageDriver(client);
+        continue;
+      }
+      if (pendingNow === 0) { synced = true; break; }
+      await wait(3000);
+    }
+  }
+  if (!synced) throw new Error('Offline queue never drained after reconnecting within the timeout');
+  log('offline queue drained — verifying against the backend itself, not just the client');
+
+  const transactions = await fetchJson('/api/transactions?payment_method=Cash', {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (transactions.length !== 1) {
+    throw new Error(`Expected exactly 1 server-side transaction after sync, found ${transactions.length}: ${JSON.stringify(transactions)}`);
+  }
+  const [txn] = transactions;
+  if (Math.abs(txn.total - product.price) > 0.01) {
+    throw new Error(`Synced transaction total $${txn.total} doesn't match the expected $${product.price}`);
+  }
+  if (!txn.clientOpId) throw new Error('Synced transaction is missing its durable idempotency key');
+  const owner = await fetchJson('/api/auth/me', { headers: { Authorization: `Bearer ${token}` } });
+  if (txn.businessId !== owner.businessId) throw new Error('Synced transaction belongs to another business');
+  log(`exactly one server-side transaction exists: id=${txn.id} total=$${txn.total} clientOpId=${txn.clientOpId || '(none)'}`);
+
+  log('PASS: order -> offline -> restart -> reconnect -> sync -> exactly one order, verified for real on a real (emulated) Android WebView.');
+  await client.close();
+}
+
+main().then(() => {
+  // A real run proved this genuinely needed: every assertion passed and
+  // the PASS line printed, but the CI step then sat there for another 26
+  // minutes until something else cancelled it — Node doesn't exit on its
+  // own while something (the adb forward/reverse child processes, or the
+  // CDP client's underlying socket) is still keeping the event loop
+  // alive. Exit explicitly rather than hope everything closes cleanly.
+  process.exit(0);
+}).catch((error) => {
+  console.error(`[milestone] FAIL: ${error.stack || error.message}`);
+  try { console.error(execFileSync('adb', ['logcat', '-d'], { encoding: 'utf8', maxBuffer: 1024 * 1024 * 20 }).split('\n').slice(-200).join('\n')); } catch {}
+  process.exit(1);
+});

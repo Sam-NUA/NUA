@@ -2,7 +2,7 @@ from fastapi import APIRouter, HTTPException, Depends
 from deps import require_owner, require_owner_or_manager, get_user
 from database import db
 from middleware.actor_context import tenant_scope_filter
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 import uuid
 
 router = APIRouter()
@@ -94,36 +94,42 @@ async def check_gratuity(covers: int = None, user: dict = Depends(get_user)):
 # ============ LIVE SALES REPORTING ============
 @router.get("/live-sales")
 async def get_live_sales(user: dict = Depends(require_owner_or_manager)):
-    now = datetime.now(timezone.utc)
+    from services.venue_time import business_timezone, resolve_zone
+    zone = resolve_zone(await business_timezone(user.get("businessId")))
+    now = datetime.now(zone)
     today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    today_end = today_start + timedelta(days=1)
     all_txns = await db.transactions.find(tenant_scope_filter(user.get("businessId")), {"_id": 0}).to_list(50000)
-    # Filter today's transactions
-    today_txns = []
-    for t in all_txns:
-        ts = t.get("timestamp")
-        if ts and hasattr(ts, 'replace'):
-            if ts.tzinfo is None:
-                ts = ts.replace(tzinfo=timezone.utc)
-            if ts >= today_start:
-                today_txns.append(t)
-        else:
-            today_txns.append(t)
-    if not today_txns and all_txns:
-        today_txns = all_txns[-20:]  # Fallback: show last 20
+    dated = []
+    for transaction in all_txns:
+        stamp = transaction.get("timestamp")
+        if isinstance(stamp, str):
+            try:
+                stamp = datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+            except ValueError:
+                continue
+        if not isinstance(stamp, datetime):
+            continue
+        # Mongo returns naive BSON dates as UTC; legacy ISO strings may include offsets.
+        if stamp.tzinfo is None:
+            stamp = stamp.replace(tzinfo=timezone.utc)
+        local_stamp = stamp.astimezone(zone)
+        if today_start <= local_stamp < today_end:
+            dated.append((local_stamp, transaction))
+    today_txns = [transaction for _, transaction in dated]
 
     total = sum(t.get("total", 0) for t in today_txns)
     count = len(today_txns)
     avg = total / max(count, 1)
     # By hour
     by_hour = {}
-    for t in today_txns:
-        ts = t.get("timestamp")
-        h = ts.hour if ts and hasattr(ts, 'hour') else 0
+    for ts, t in dated:
+        h = ts.hour
         by_hour[h] = by_hour.get(h, {"count": 0, "total": 0})
         by_hour[h]["count"] += 1
         by_hour[h]["total"] += t.get("total", 0)
     # Last 5 transactions
-    last5 = sorted(today_txns, key=lambda x: x.get("timestamp", ""), reverse=True)[:5]
+    last5 = [transaction for _, transaction in sorted(dated, key=lambda item: item[0], reverse=True)[:5]]
     for t in last5:
         t.pop("_id", None)
 
@@ -208,7 +214,7 @@ async def set_role_permissions(role: str, data: dict, user: dict = Depends(requi
     if not isinstance(perms, list):
         raise HTTPException(status_code=400, detail="permissions must be a list")
     valid = [p for p in perms if p in ALL_PERMISSIONS]
-    from datetime import datetime, timezone
+    from datetime import datetime, timezone, timedelta
     now_iso = datetime.now(timezone.utc).isoformat()
     await db.role_permissions.update_one(
         {"role": role, **tenant_scope_filter(user.get("businessId"))},

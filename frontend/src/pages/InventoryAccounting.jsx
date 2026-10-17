@@ -8,6 +8,7 @@ import { Badge } from '../components/ui/badge';
 import { useTheme } from '../contexts/ThemeContext';
 import { inventoryAPI, productsAPI, aiPantryAPI, awardsAPI, staffMgmtAPI } from '../services/api';
 import { useToast } from '../hooks/use-toast';
+import { DialogService, FileService } from '../platform';
 
 const BASE_UNITS = ['g', 'mL', 'ea'];
 const ALL_UNITS = { g: ['g', 'kg', 'mg'], mL: ['mL', 'L', 'cl'], ea: ['ea', 'box', 'case', 'pack'] };
@@ -69,7 +70,7 @@ function IngredientsPanel() {
     } catch (e) { toast({ title: 'Failed', description: e?.response?.data?.detail, variant: 'destructive' }); }
   };
   const del = async (id) => {
-    if (!window.confirm('Delete ingredient?')) return;
+    if (!await DialogService.confirm('Delete ingredient?')) return;
     try { await inventoryAPI.deleteIngredient(id); load(); }
     catch (e) { toast({ title: 'Cannot delete', description: e?.response?.data?.detail, variant: 'destructive' }); }
   };
@@ -455,12 +456,11 @@ function BASPanel() {
     catch (e) { toast({ title: 'Failed', description: e?.response?.data?.detail, variant: 'destructive' }); }
     setLoading(false);
   };
-  useEffect(() => { load(); }, []);  // eslint-disable-line
+  useEffect(() => { load(); }, []);
   const dl = async () => {
     try {
       const r = await inventoryAPI.basCsv({ fy, quarter });
-      const url = window.URL.createObjectURL(new Blob([r.data]));
-      const a = document.createElement('a'); a.href = url; a.download = `BAS-FY${fy}-${quarter}.csv`; a.click();
+      await FileService.downloadFile(new Blob([r.data]), `BAS-FY${fy}-${quarter}.csv`);
     } catch { /* download failed silently */ }
   };
   return (
@@ -528,14 +528,14 @@ function SuperAwardsPanel() {
     } catch { /* no awards available yet */ toast({ title: 'Could not load awards', variant: 'destructive' }); }
   };
 
-  useEffect(() => { refresh(); /* eslint-disable-next-line */ }, [country]);
+  useEffect(() => { refresh();   }, [country]);
 
   const install = async (code) => {
     try { await awardsAPI.install(code); toast({ title: 'Award installed' }); refresh(); }
     catch (e) { toast({ title: 'Failed', description: e?.response?.data?.detail, variant: 'destructive' }); }
   };
   const uninstall = async (code) => {
-    if (!window.confirm('Uninstall this award? Any payruns referencing it will fall back to 11.5%.')) return;
+    if (!await DialogService.confirm('Uninstall this award? Any payruns referencing it will fall back to 11.5%.')) return;
     try { await awardsAPI.uninstall(code); toast({ title: 'Uninstalled' }); refresh(); }
     catch { toast({ title: 'Failed', variant: 'destructive' }); }
   };

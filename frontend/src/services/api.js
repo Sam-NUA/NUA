@@ -1,4 +1,9 @@
+import { getSessionToken } from '../platform/sessionToken';
 import axios from 'axios';
+import { SecureStorageService, isNative } from '../platform';
+import { APP_VERSION } from '../version';
+import { tripVersionGate } from '../lib/versionGate';
+import { usesDurableNativeRefresh, refreshNativeSession } from './nativeRefreshSession';
 
 const API_BASE_URL = `${process.env.REACT_APP_BACKEND_URL}/api`;
 
@@ -15,9 +20,22 @@ const api = axios.create({
 // session, and a staff member testing the guest flow on a browser where
 // they're ALSO logged in as staff must not have that call silently
 // switched to their staff credential).
-api.interceptors.request.use((config) => {
-  const token = localStorage.getItem('nua_token');
-  if (token && !config.headers.Authorization) config.headers.Authorization = `Bearer ${token}`;
+api.interceptors.request.use(async (config) => {
+  config._offlineScope?.();
+  if (!config.headers.Authorization) {
+    const before = getSessionToken();
+    const token = await SecureStorageService.getToken();
+    if (before !== getSessionToken()) throw new Error('Session changed during request');
+    config._usesStaffSession = true;
+    config._sessionToken = token;
+    if (token) config.headers.Authorization = `Bearer ${token}`;
+  }
+  // Only native builds report this (see version.js) — the backend's
+  // VersionGateMiddleware fails open on a missing header, so this is
+  // additive: it lets a native build start being gated once it opts in,
+  // it never changes web's behavior at all.
+  if (isNative()) config.headers['X-App-Version'] = APP_VERSION;
+  config._offlineScope?.();
   return config;
 });
 
@@ -30,34 +48,140 @@ api.interceptors.request.use((config) => {
 // localStorage and retries the original request exactly once. Concurrent
 // 401s (several polling components failing around the same moment) share
 // one in-flight refresh instead of each firing their own.
-let refreshPromise = null;
+function sameSessionActor(previous, next) {
+  // Continuity check only; the server remains responsible for JWT validation.
+  try {
+    const decode = token => JSON.parse(atob(token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/')));
+    const a = decode(previous), b = decode(next);
+    const result = !!a.sub && !!a.businessId && a.sub === b.sub && a.businessId === b.businessId
+      && a.deviceId === b.deviceId && a.sessionId === b.sessionId;
+    if (!result) {
+      // TEMPORARY diagnostic (see ios-critical-milestone.cjs's cold-restart
+      // fault-injection test) -- pinpoints exactly which claim differs
+      // between the expired token we refreshed from and the token the
+      // server handed back, since every directly-observable claim has
+      // appeared consistent right up to this mismatch.
+      try {
+        window.__lastSameSessionActorDiagnostic = {
+          sub: [a.sub, b.sub], businessId: [a.businessId, b.businessId],
+          deviceId: [a.deviceId, b.deviceId], sessionId: [a.sessionId, b.sessionId],
+        };
+      } catch { /* best-effort diagnostic only */ }
+    }
+    return result;
+  } catch { return false; }
+}
+// A real CI run (ios-critical-milestone.cjs's cold-restart fault-injection
+// test) caught this exact race: right after a native terminate+relaunch, the
+// FIRST /auth/refresh call came back 401 "No refresh token" in ~17ms -- too
+// fast to have reached the backend's JWT/DB checks, so the refresh_token
+// cookie itself wasn't on the request. The same cookie worked seconds
+// earlier and nothing logged the user out in between, so it's still on
+// disk; CapacitorHttp's native request layer (a separate cookie jar from
+// WKWebView's own persistent store) just hadn't synced it back in yet at
+// the moment this very first post-launch request fired. One short delay and
+// a single retry costs nothing when the cookie genuinely isn't there --
+// the user ends up on the login page ~400ms later either way -- but
+// recovers the race when it is.
+async function postRefreshWithColdStartRetry() {
+  // iOS uses the synchronously committed Keychain session, never whichever
+  // old cookie a WK/URLSession synchronization happens to restore first.
+  if (usesDurableNativeRefresh()) return refreshNativeSession(process.env.REACT_APP_BACKEND_URL);
+  try {
+    return await axios.post(`${API_BASE_URL}/auth/refresh`, {}, { withCredentials: true });
+  } catch (error) {
+    if (error.response?.status !== 401) throw error;
+    await new Promise(resolve => setTimeout(resolve, 400));
+    return await axios.post(`${API_BASE_URL}/auth/refresh`, {}, { withCredentials: true });
+  }
+}
+let refreshFlight = null;
+async function refreshStaffSession(expectedToken) {
+  if (!refreshFlight || refreshFlight.token !== expectedToken) {
+    const flight = { token: expectedToken };
+    flight.promise = (async () => {
+      try { window.__lastSameSessionActorDiagnostic = null; } catch { /* best-effort diagnostic only */ }
+      const response = await postRefreshWithColdStartRetry();
+      if (getSessionToken() !== expectedToken) throw new Error('Session changed during refresh');
+      const next = response.data?.token;
+      if (!next || !sameSessionActor(expectedToken, next)) {
+        const error = new Error('Refresh changed account, business or terminal session');
+        error.invalidRefreshIdentity = true;
+        throw error;
+      }
+      // Persist once for every group of simultaneous 401s. Concurrent writes
+      // to OS storage can otherwise invalidate one another's generation guard.
+      await SecureStorageService.setToken(next);
+      if (window.nuaDesktop) {
+        await window.nuaDesktop.activateOffline(JSON.parse(atob(next.split('.')[1].replace(/-/g, '+').replace(/_/g, '/'))).businessId);
+      }
+      return next;
+    })().finally(() => { if (refreshFlight === flight) refreshFlight = null; });
+    refreshFlight = flight;
+  }
+  return refreshFlight.promise;
+}
 api.interceptors.response.use(
   (response) => response,
   async (error) => {
+    // Directive Phase 11 — VersionGateMiddleware's 426 ("this app version
+    // is no longer supported"). Only a native build that opts into sending
+    // X-App-Version can ever see this (see the request interceptor above),
+    // so this never trips for web. Recorded globally rather than left for
+    // each individual caller's own catch block, which would otherwise show
+    // it as just another generic failed-request toast — see
+    // VersionGateLockScreen.jsx for what actually surfaces it.
+    if (error.response?.status === 426) {
+      tripVersionGate(error.response.data);
+    }
     const original = error.config;
     const isAuthEndpoint = original?.url?.includes('/auth/refresh') || original?.url?.includes('/auth/login');
-    if (error.response?.status === 401 && original && !original._retriedAfterRefresh && !isAuthEndpoint) {
+    if (error.response?.status === 401 && original && original._usesStaffSession && original._sessionToken && original._sessionToken === getSessionToken() && !original._skipAuthRefresh && !original._retriedAfterRefresh && !isAuthEndpoint) {
       original._retriedAfterRefresh = true;
       try {
-        if (!refreshPromise) {
-          refreshPromise = axios
-            .post(`${API_BASE_URL}/auth/refresh`, {}, { withCredentials: true })
-            .finally(() => { refreshPromise = null; });
+        const newToken = await refreshStaffSession(original._sessionToken);
+        if (newToken !== getSessionToken()) throw new Error('Session changed after refresh');
+        original.headers.Authorization = `Bearer ${newToken}`;
+        original._sessionToken = newToken;
+        try {
+          return await api(original);
+        } catch (retryError) {
+          // TEMPORARY diagnostic (see ios-critical-milestone.cjs's own
+          // cold-restart test) -- a real CI run showed refresh itself
+          // succeed (200, correct actor) but no second backend /auth/me
+          // request ever followed, and checkAuth still ended up on the
+          // login page (a [401,403,409] outcome) rather than the "Unable
+          // to check your session" gate. `return api(original)` used to be
+          // tail-returned unawaited, so a rejection here bypassed this
+          // function's own try/catch entirely and propagated raw -- which
+          // explains a [401,403,409] escaping without this file's own
+          // clearToken logic ever running. Await it explicitly so a retry
+          // failure is visible and handled the same way a refresh failure
+          // already is, and capture exactly what it was.
+          try {
+            window.__lastRefreshDiagnostic = {
+              phase: 'retry', message: retryError?.message, status: retryError?.response?.status,
+            };
+          } catch { /* best-effort diagnostic only */ }
+          throw retryError;
         }
-        const r = await refreshPromise;
-        const newToken = r.data?.token;
-        if (newToken) {
-          localStorage.setItem('nua_token', newToken);
-          original.headers.Authorization = `Bearer ${newToken}`;
-          return api(original);
-        }
-      } catch {
-        // Refresh token is itself missing/expired — the session is genuinely
-        // over, not just the access token. Fall through to the rejection
-        // below; AuthContext's next checkAuth (or a protected-route guard)
-        // is what actually navigates to /login, this just stops pretending
-        // localStorage still holds something usable.
-        localStorage.removeItem('nua_token');
+      } catch (refreshError) {
+        // Outages are not sign-out decisions. Preserve the credential and
+        // propagate the actual failure so cold-start verification stays locked
+        // and retryable, instead of treating the original expired-token 401 as
+        // a server rejection of a refresh that never reached it.
+        const rejected = [401, 403].includes(refreshError.response?.status) || refreshError.invalidRefreshIdentity;
+        if (rejected && original._sessionToken === getSessionToken()) await SecureStorageService.clearToken();
+        try {
+          if (!window.__lastRefreshDiagnostic || window.__lastRefreshDiagnostic.phase !== 'retry') {
+            window.__lastRefreshDiagnostic = {
+              phase: 'refresh', message: refreshError?.message, status: refreshError?.response?.status,
+              invalidRefreshIdentity: !!refreshError?.invalidRefreshIdentity,
+              sameSessionActorMismatch: window.__lastSameSessionActorDiagnostic || null,
+            };
+          }
+        } catch { /* best-effort diagnostic only */ }
+        return Promise.reject(refreshError.invalidRefreshIdentity ? error : refreshError);
       }
     }
     return Promise.reject(error);
@@ -72,6 +196,23 @@ export const authAPI = {
   resetPassword: (token, password) => api.post('/auth/reset-password', { token, password }),
   ownerRecoveryInitiate: (recoveryKey, email) => api.post('/auth/owner-recovery/initiate', { recoveryKey, email }),
   ownerRecoveryComplete: (token, password, pin) => api.post('/auth/owner-recovery/complete', { token, password, ...(pin ? { pin } : {}) }),
+  // Directive Phase 5 — biometric reauthentication for sensitive actions.
+  // No biometric hardware is wired up anywhere (see
+  // hooks/useSensitiveActionReauth.js), so this PIN re-entry, verified
+  // server-side, is the real gate every platform uses today.
+  verifySensitiveAction: (pin) => api.post('/auth/verify-sensitive-action', { pin }),
+};
+
+// Device identity (backend/routes/devices.py) — see docs/platform/
+// DEVICE_IDENTITY_MODEL.md. The register/heartbeat calls are made with
+// whatever session is active at the time (no elevated role required to
+// register); list/revoke require owner/manager and are surfaced in
+// Settings, not here.
+export const devicesAPI = {
+  register: (data) => api.post('/devices/register', data),
+  list: () => api.get('/devices'),
+  heartbeat: (deviceId) => api.post(`/devices/${deviceId}/heartbeat`),
+  revoke: (deviceId) => api.post(`/devices/${deviceId}/revoke`),
 };
 
 // Products API
@@ -161,7 +302,7 @@ export const feedbackAPI = {
 // Transactions API
 export const transactionsAPI = {
   getAll: (params) => api.get('/transactions', { params }),
-  create: (data) => api.post('/transactions', data),
+  create: (data, config) => api.post('/transactions', data, config),
   getDetail: (id) => api.get(`/transactions/${id}`),
 };
 
@@ -331,11 +472,11 @@ export const floorPlansAPI = {
 export const coursingAPI = {
   getConfig: () => api.get('/coursing/config'),
   updateConfig: (data) => api.put('/coursing/config', data),
-  sendToKitchen: (data) => api.post('/coursing/send-to-kitchen', data),
+  sendToKitchen: (data, config) => api.post('/coursing/send-to-kitchen', data, config),
   openOrders: (params) => api.get('/coursing/orders/open', { params }),
-  addRound: (id, data) => api.post(`/coursing/orders/${id}/add-round`, data),
-  settle: (data) => api.post('/coursing/settle', data),
-  voidItems: (id, data) => api.post(`/coursing/orders/${id}/void`, data),
+  addRound: (id, data, config) => api.post(`/coursing/orders/${id}/add-round`, data, config),
+  settle: (data, config) => api.post('/coursing/settle', data, config),
+  voidItems: (id, data, config) => api.post(`/coursing/orders/${id}/void`, data, config),
   // SSE endpoint — consumed via EventSource, not axios.
   setPrintTarget: (printer, data) => api.put(`/print-targets/${encodeURIComponent(printer)}`, data),
   printHealth: () => api.get('/print-targets/health'),
@@ -343,6 +484,9 @@ export const coursingAPI = {
   analytics: (days = 7) => api.get('/coursing/analytics', { params: { days } }),
   streamUrl: (tableNumber) =>
     `${API_BASE_URL}/coursing/stream?tableNumber=${encodeURIComponent(tableNumber || '')}`
+    // EventSource can't do async/header-based auth, so this reads the mirror
+    // SecureStorageService keeps in localStorage for exactly this case — see
+    // SecureStorageService.js's own comment.
     + `&token=${encodeURIComponent(localStorage.getItem('nua_token') || '')}`,
   endOfService: () => api.get('/coursing/end-of-service'),
   closeService: (reason) => api.post('/coursing/end-of-service/close', { reason }),
@@ -366,6 +510,8 @@ export const opsAPI = {
   recentErrors: (limit = 50) => api.get('/ops/errors', { params: { limit } }),
   recentClientErrors: (limit = 50) => api.get('/ops/client-errors', { params: { limit } }),
   reportClientError: (payload) => api.post('/ops/client-errors', payload),
+  reportClientEvent: (payload) => api.post('/ops/client-events', payload),
+  recentClientEvents: (limit = 50) => api.get('/ops/client-events', { params: { limit } }),
 };
 
 // Backup / restore
@@ -397,9 +543,9 @@ export const kitchenAPI = {
   readyOrder: (id) => api.post(`/kitchen/orders/${id}/ready`),
   servedOrder: (id) => api.post(`/kitchen/orders/${id}/served`),
   cancelOrder: (id) => api.post(`/kitchen/orders/${id}/cancel`),
-  fireCourse: (id, course) => api.post(`/kitchen/orders/${id}/fire-course/${course}`),
-  holdCourse: (id, course) => api.post(`/kitchen/orders/${id}/hold-course/${course}`),
-  serveCourse: (id, course) => api.post(`/kitchen/orders/${id}/serve-course/${course}`),
+  fireCourse: (id, course, config) => api.post(`/kitchen/orders/${id}/fire-course/${course}`, null, config),
+  holdCourse: (id, course, config) => api.post(`/kitchen/orders/${id}/hold-course/${course}`, null, config),
+  serveCourse: (id, course, config) => api.post(`/kitchen/orders/${id}/serve-course/${course}`, null, config),
   readyCourse: (id, course) => api.post(`/kitchen/orders/${id}/ready-course/${course}`),
   setPriority: (id, priority) => api.post(`/kitchen/orders/${id}/priority`, null, { params: { priority } }),
   getAvgOrderTime: () => api.get('/kitchen/avg-order-time'),
@@ -526,10 +672,22 @@ export const advancedAPI = {
   getSegmentCustomers: (id) => api.get(`/marketing/segments/${id}/customers`),
 };
 
+// PIN login is the primary sign-in path on a registered terminal (a tablet
+// at the counter, not an individual's own device) — attaches this
+// device's X-Device-Id itself, same as AuthContext's email/password login,
+// so a revoked terminal is rejected outright rather than only on its next
+// password-login attempt. Most callers (web, an unregistered device) have
+// no stored device id and this is a no-op header-wise, exactly as before.
+async function _deviceHeaders() {
+  const { DeviceIdentityService } = await import('../platform');
+  return DeviceIdentityService.getLoginHeaders();
+}
+
 // Staff Management — PIN, Timecards, Roster, Payrun
 export const staffMgmtAPI = {
-  pinLogin: (pin) => api.post('/auth/pin-login', { pin }),
-  approvePinLogin: (staffPin, managerPin) => api.post('/auth/pin-login/approve', { staffPin, managerPin }),
+  pinLogin: async (pin) => api.post('/auth/pin-login', { pin }, { headers: await _deviceHeaders() }),
+  approvePinLogin: async (staffPin, managerPin) =>
+    api.post('/auth/pin-login/approve', { staffPin, managerPin }, { headers: await _deviceHeaders() }),
   setPin: (staffId, pin) => api.post(`/auth/staff/${staffId}/set-pin`, { pin }),
   clockIn: () => api.post('/staff/clock-in'),
   clockOut: (data) => api.post('/staff/clock-out', data || {}),

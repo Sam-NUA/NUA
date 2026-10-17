@@ -6,6 +6,7 @@ import { Input } from '../components/ui/input';
 import { Card, CardContent } from '../components/ui/card';
 import { Lock, AlertCircle, CheckCircle2 } from 'lucide-react';
 import Logo from '../components/brand/Logo';
+import { SecureStorageService } from '../platform';
 
 export default function ResetPassword() {
   const [searchParams] = useSearchParams();
@@ -24,7 +25,7 @@ export default function ResetPassword() {
     setLoading(true);
     try {
       await authAPI.resetPassword(token, password);
-      localStorage.removeItem('nua_token');
+      await SecureStorageService.clearToken();
       localStorage.setItem('nua_login_mode', 'email');
       setPassword(''); setConfirm('');
       setDone(true);

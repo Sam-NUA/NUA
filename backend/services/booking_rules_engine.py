@@ -213,6 +213,13 @@ async def get_rules(business_id: Optional[str] = None) -> Dict[str, Any]:
     from services.tenant_settings import get_setting
     value = await get_setting("booking_rules", business_id)
     rules = dict(DEFAULT_RULES)
+    if business_id and business_id.startswith("nb_"):
+        from services.booking_product import require_booking
+        account = await require_booking(business_id)
+        venue = account["venue"]
+        rules.update(maxOnlinePartySize=venue["maxPartySize"], bookingOpenTime=venue["openTime"],
+                     bookingCloseTime=venue["closeTime"])
+        return rules
     if isinstance(value, dict):
         rules.update(value)
     return rules

@@ -6,9 +6,10 @@ import { Badge } from '../components/ui/badge';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '../components/ui/tabs';
 import { toast } from 'sonner';
 import { Brain, Sparkles, AlertTriangle, TrendingDown, DollarSign, Users, ChefHat, Package, CloudRain, CalendarCheck, ShoppingCart, Clock, Heart, UserX, LineChart, FileText, Play, X as XIcon } from 'lucide-react';
+import { SecureStorageService } from '../platform';
 
 const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
-const H = () => ({ Authorization: `Bearer ${localStorage.getItem('nua_token')}` });
+const H = async () => ({ Authorization: `Bearer ${await SecureStorageService.getToken()}` });
 
 const CAT_META = {
   staffing:         { label: 'Staffing',           icon: Users,        color: '#3b82f6' },
@@ -43,22 +44,22 @@ export default function AshDashboard() {
   const load = useCallback(async () => {
     try {
       const [i, s, c] = await Promise.all([
-        axios.get(`${API}/nua/insights?limit=200`, { headers: H() }),
-        axios.get(`${API}/nua/insights/summary`, { headers: H() }),
-        axios.get(`${API}/nua/capabilities`, { headers: H() }),
+        axios.get(`${API}/nua/insights?limit=200`, { headers: await H() }),
+        axios.get(`${API}/nua/insights/summary`, { headers: await H() }),
+        axios.get(`${API}/nua/capabilities`, { headers: await H() }),
       ]);
       setInsights(i.data); setSummary(s.data); setCaps(c.data.capabilities || []);
     } catch { toast.error('Failed to load NUA insights'); }
   }, []);
   useEffect(() => { load(); }, [load]);
   useEffect(() => {
-    axios.get(`${API}/nua/scheduler/status`, { headers: H() }).then(r => setDigest(r.data)).catch(() => {});
+    H().then(h => axios.get(`${API}/nua/scheduler/status`, { headers: h }).then(r => setDigest(r.data)).catch(() => {}));
   }, []);
 
   const run = async (includeSummary) => {
     setRunning(true);
     try {
-      const r = await axios.post(`${API}/nua/run?include_summary=${includeSummary}`, {}, { headers: H() });
+      const r = await axios.post(`${API}/nua/run?include_summary=${includeSummary}`, {}, { headers: await H() });
       toast.success(`NUA generated ${r.data.generated} insight(s) across ${Object.keys(r.data.perCategory).length} categories`);
       load();
     } catch (e) { toast.error(e.response?.data?.detail || 'NUA run failed'); }
@@ -67,7 +68,7 @@ export default function AshDashboard() {
 
   const dismiss = async (id) => {
     setBusy(true);
-    try { await axios.post(`${API}/nua/insights/${id}/dismiss`, {}, { headers: H() }); load(); }
+    try { await axios.post(`${API}/nua/insights/${id}/dismiss`, {}, { headers: await H() }); load(); }
     catch { toast.error('Failed'); }
     finally { setBusy(false); }
   };

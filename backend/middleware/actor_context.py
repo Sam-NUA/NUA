@@ -14,6 +14,7 @@ from __future__ import annotations
 from contextvars import ContextVar
 from typing import Optional, Dict, Any
 from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.responses import JSONResponse
 import logging
 
 logger = logging.getLogger(__name__)
@@ -75,7 +76,7 @@ class ActorContextMiddleware(BaseHTTPMiddleware):
         role = None
         jwt_business_id = None
         auth = request.headers.get("authorization") or ""
-        if request.cookies.get("access_token"):
+        if not auth and request.cookies.get("access_token"):
             auth = "Bearer " + request.cookies["access_token"]
         if auth.lower().startswith("bearer "):
             token = auth.split(" ", 1)[1]
@@ -98,6 +99,15 @@ class ActorContextMiddleware(BaseHTTPMiddleware):
         # Guest routes resolve a venue explicitly; protected dependencies refresh
         # this context from the current user record before database operations.
         business_id = jwt_business_id
+
+        # This header only RESTRICTS a verified actor; it can never select or
+        # grant a tenant. It catches cookie/token changes in other browser tabs
+        # after the caller captured its offline operation's business.
+        expected_business = request.headers.get("x-offline-business-id")
+        if expected_business is not None and (
+            not business_id or expected_business != business_id
+        ):
+            return JSONResponse(status_code=403, content={"detail": "Offline session business changed; sign in again"})
 
         ctx = {
             "email": email,

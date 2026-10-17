@@ -8,6 +8,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from '../components/
 import { useTheme } from '../contexts/ThemeContext';
 import { itemsSystemAPI } from '../services/api';
 import { toast } from 'sonner';
+import SensitiveActionReauthDialog from '../components/security/SensitiveActionReauthDialog';
 
 // Used both as its own route (/comp-void — full page header) and embedded
 // as the "Comp / Void History" tab inside Discounts.jsx, which used to
@@ -21,13 +22,23 @@ export default function CompVoid({ embedded = false }) {
   const [search, setSearch] = useState('');
   const [filter, setFilter] = useState('all');
   const [form, setForm] = useState({ type: 'comp', reason: '', amount: '', transactionId: '', printVoid: false });
+  // Directive Phase 5 — a void (writing off a transaction) is a sensitive
+  // action, same as a refund; a comp isn't named by the directive but
+  // shares this form/handler, so it goes through the same gate rather
+  // than forking the save path by type.
+  const [showReauth, setShowReauth] = useState(false);
 
   useEffect(() => { fetchData(); }, []);
   const fetchData = async () => { try { const r = await itemsSystemAPI.getCompVoids(); setRecords(r.data); } catch {} };
 
-  const handleSave = async () => {
+  const handleSave = () => {
     if (!form.reason) { toast.error('Reason required'); return; }
     if (!form.amount || parseFloat(form.amount) <= 0) { toast.error('Amount must be greater than 0'); return; }
+    setShowReauth(true);
+  };
+
+  const doSave = async () => {
+    setShowReauth(false);
     try {
       await itemsSystemAPI.createCompVoid({ ...form, amount: parseFloat(form.amount) });
       toast.success(`${form.type === 'comp' ? 'Comp' : 'Void'} recorded`);
@@ -117,6 +128,12 @@ export default function CompVoid({ embedded = false }) {
           </div>
         </DialogContent>
       </Dialog>
+      <SensitiveActionReauthDialog
+        open={showReauth}
+        label={`record this ${form.type === 'comp' ? 'comp' : 'void'}`}
+        onVerified={doSave}
+        onCancel={() => setShowReauth(false)}
+      />
     </div>
   );
 }

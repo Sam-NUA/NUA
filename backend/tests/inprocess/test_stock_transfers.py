@@ -87,3 +87,32 @@ def test_listing_transfers_can_filter_by_status(client, owner_headers):
     ids = [t["id"] for t in in_transit]
     assert t2["id"] in ids
     assert t1["id"] not in ids
+
+
+
+def test_dangling_transfer_never_credits_foreign_product(client, owner_headers):
+    import uuid
+    from database import db
+
+    for action in ("receive", "cancel"):
+        product = _create_product(client, owner_headers, sku=f"TENANT-XFER-{uuid.uuid4()}")
+        transfer = req(client, "POST", "/api/stock-transfers", headers=owner_headers, json={
+            "productId": product["id"], "fromLocation": "Main", "toLocation": "Warehouse", "quantity": 5,
+        })
+        assert transfer.status_code == 200, transfer.text
+        own = client.portal.call(db.products.find_one, {"id": product["id"]})
+        # Keep the unique id index intact. A deleted source followed by a
+        # restored foreign product is enough to expose the id-only write.
+        client.portal.call(db.products.delete_one, {"_id": own["_id"]})
+        foreign = {**own, "businessId": f"foreign-{uuid.uuid4()}", "stockByLocation": {"Main": 100, "Warehouse": 100}}
+        foreign.pop("_id")
+        client.portal.call(db.products.insert_one, foreign)
+        try:
+            result = req(client, "POST", f"/api/stock-transfers/{transfer.json()['id']}/{action}", headers=owner_headers)
+            assert result.status_code == 404, result.text
+            after = client.portal.call(db.products.find_one, {"id": product["id"], "businessId": foreign["businessId"]})
+            assert after["stockByLocation"] == {"Main": 100, "Warehouse": 100}
+            untouched = client.portal.call(db.stock_transfers.find_one, {"id": transfer.json()["id"]})
+            assert untouched["status"] == "in_transit"
+        finally:
+            client.portal.call(db.products.delete_many, {"id": product["id"]})

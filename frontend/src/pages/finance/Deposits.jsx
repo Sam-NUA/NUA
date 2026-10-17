@@ -7,6 +7,7 @@ import { Input } from '../../components/ui/input';
 import { Badge } from '../../components/ui/badge';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '../../components/ui/dialog';
 import { PlusCircle } from 'lucide-react';
+import { DialogService } from '../../platform';
 import { FMT, today } from './helpers';
 
 const STATUS_BADGE = { held: 'outline', applied: 'default', refunded: 'secondary' };
@@ -46,7 +47,7 @@ const Deposits = () => {
   };
 
   const refund = async (d) => {
-    if (!window.confirm(`Refund ${FMT(d.amount)} held for ${d.customerName || d.customerId}? This cannot be undone.`)) return;
+    if (!await DialogService.confirm(`Refund ${FMT(d.amount)} held for ${d.customerName || d.customerId}? This cannot be undone.`)) return;
     try {
       await financeAPI.refundDeposit(d.id);
       toast.success('Deposit refunded'); load();

@@ -1,17 +1,17 @@
-# Nua Frontend — React (CRA + craco) served by nginx.
-# REACT_APP_BACKEND_URL is baked at BUILD time (CRA replaces it in the bundle),
+# Nua Frontend — React (Vite) served by nginx.
+# REACT_APP_BACKEND_URL is baked at BUILD time (Vite replaces it in the bundle),
 # so it must be passed via --build-arg or fly.toml's [build.args].
-FROM node:20-alpine AS builder
+FROM node:22-alpine AS builder
 
 WORKDIR /app
-COPY package.json yarn.lock ./
-RUN yarn install --frozen-lockfile --network-timeout 600000
+COPY package.json package-lock.json ./
+RUN npm ci
 
 COPY . .
 
 ARG REACT_APP_BACKEND_URL
 ENV REACT_APP_BACKEND_URL=${REACT_APP_BACKEND_URL}
-RUN yarn build
+RUN npm run build
 
 # ---------- runtime ----------
 FROM nginx:alpine

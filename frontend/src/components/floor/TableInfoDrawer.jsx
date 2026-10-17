@@ -7,6 +7,7 @@ import { X, Send, Clock, Users, Utensils, ChevronRight, Settings2, BellRing, Cro
 import { tableCoursesAPI, reservationsAPI } from '../../services/api';
 import { useTheme } from '../../contexts/ThemeContext';
 import { toast } from 'sonner';
+import { DialogService } from '../../platform';
 
 const VIP_COLOR = '#db2777'; // NUA_POS_DESIGN_TOKENS.md §6 — VIP is pink, Reserved is purple
 
@@ -107,7 +108,7 @@ export const TableInfoDrawer = ({ open, onClose, table, states, courses, overdue
   };
 
   const clearTable = async () => {
-    if (!window.confirm('Clear this table state?')) return;
+    if (!await DialogService.confirm('Clear this table state?')) return;
     setBusy(true);
     try {
       await tableCoursesAPI.upsertState({ tableId: table.id, clearState: true });

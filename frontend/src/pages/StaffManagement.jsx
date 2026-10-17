@@ -13,9 +13,10 @@ import { useAuth } from '../contexts/AuthContext';
 import { toast } from 'sonner';
 import axios from 'axios';
 import { effectiveHourlyRate, salaryTypeSuffix } from '../lib/staffPay';
+import { SecureStorageService } from '../platform';
 
 const API = process.env.REACT_APP_BACKEND_URL;
-const authHeader = () => ({ Authorization: `Bearer ${localStorage.getItem('nua_token')}` });
+const authHeader = async () => ({ Authorization: `Bearer ${await SecureStorageService.getToken()}` });
 
 const ROLE_COLORS = {
   owner: 'bg-purple-100 text-purple-700 border-purple-300',
@@ -38,8 +39,8 @@ export default function StaffManagement() {
   const fetchData = async () => {
     try {
       const [staffRes, laborRes] = await Promise.all([
-        axios.get(`${API}/api/auth/staff`, { headers: authHeader() }),
-        user?.role === 'owner' ? axios.get(`${API}/api/auth/reports/labor-cost`, { headers: authHeader() }) : Promise.resolve({ data: null }),
+        axios.get(`${API}/api/auth/staff`, { headers: await authHeader() }),
+        user?.role === 'owner' ? axios.get(`${API}/api/auth/reports/labor-cost`, { headers: await authHeader() }) : Promise.resolve({ data: null }),
       ]);
       setStaff(staffRes.data);
       setLaborReport(laborRes.data);
@@ -51,7 +52,7 @@ export default function StaffManagement() {
       // /auth/staff/add (owner-authenticated) rather than the public /auth/register:
       // register() is meant for self-signup and caps the role at cashier/kitchen, so a
       // Manager added through this dialog would otherwise get silently downgraded.
-      await axios.post(`${API}/api/auth/staff/add`, form, { headers: authHeader() });
+      await axios.post(`${API}/api/auth/staff/add`, form, { headers: await authHeader() });
       toast.success('Staff member added');
       setShowAdd(false);
       setForm({ name: '', email: '', password: 'Staff2026!', role: 'cashier', payRate: 25, salaryType: 'hourly' });
@@ -61,7 +62,7 @@ export default function StaffManagement() {
 
   const handleDelete = async (id) => {
     try {
-      await axios.delete(`${API}/api/auth/staff/${id}`, { headers: authHeader() });
+      await axios.delete(`${API}/api/auth/staff/${id}`, { headers: await authHeader() });
       toast.success('Staff removed');
       fetchData();
     } catch (e) { toast.error(e.response?.data?.detail || 'Failed'); }

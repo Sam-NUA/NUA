@@ -1,0 +1,234 @@
+# Launch software closure — 17 October 2026
+
+Application revision: `10d40a183d51176362e8367b6cf6c3fa03e49363`.
+Status: software pass complete. All five application workflows passed on the revision above.
+Provider, physical-hardware, signing and supervised-venue launch gates remain below. No merge, deployment,
+Railway operation, live payment or production data/configuration change is authorized.
+
+## Source and integration path
+
+Started from `fix/native-session-durability` at
+`1df99be16c5c214d42ff86e87e7da81918ade53f` (PR #31), whose application
+commit `c95e164f18a9dd61d3bd4c35fd547c641f46915b` passed its five workflows.
+The working branch is `fix/launch-software-gaps`, stacked on that branch rather
+than `main`. Existing worktrees and owner seed semantics were preserved.
+Read README, OWNER_ACCESS, LAUNCH_FOUNDATION_RUNBOOK, and both original
+multiplatform directives before selecting gaps. The old remaining-work checklist
+predates the Android/iOS/Windows milestones; those are not undone or reimplemented.
+
+Reviewed and integrated the backend consistency source from PR #26 (`c4d9429`):
+stock-transfer atomicity, appointment locking/ownership references, channel-menu
+slow-mover timestamp compatibility and durable consistency helpers. This PR is
+one integration path for that source; do not separately merge overlapping #26,
+#27 and #28 changes into this stack. Earlier native durability work remains in #31.
+
+## What was broken and why
+
+| Root cause | Fix and verification |
+| --- | --- |
+| Proprietary `emergentintegrations` imports were absent from reproducible public installs, making configured AI/Stripe paths fail before reaching providers. | Owned bounded adapters use the already pinned public OpenAI and Stripe SDKs. Existing route authorization/tenant tools are preserved. HTTP/SDK boundary tests verify payloads, amounts, errors and unpaid status without external requests. |
+| Voice ordering wrote raw audio to disk and called an unavailable gateway; the loyalty wrapper passed a Request where an authenticated user was expected and swallowed transcription failures. | Send bounded named audio bytes directly to the public async SDK; pass the authenticated actor, return a visible provider failure and retain no temporary recording. |
+| A lost Stripe response could create another session after the local two-second wait; a permanent upstream key would instead replay expired attempts forever. | Send a business-scoped key derived from the durable claim generation. Reconstruct generated order metadata on retries; compare-and-swap rotates stale generations. Tests cover identical retry payloads, tenant separation and expiry rotation. |
+| iOS automation still used removed `executeAsync` after the WebdriverIO 10 upgrade, so acceptance failed before any flow assertions. | Use an actual AsyncFunction through `driver.execute`; preserve all native acceptance assertions and the async-script timeout. Two contract tests exercise promise results/errors and the real SDK W3C endpoint. Raise the documented Node floor to 22.19 to match the installed SDK. |
+| Legacy CRA/CRACO, unused desktop packaging and old automation tooling brought 139 frontend audit findings. | Vite/Jest/WebdriverIO migration and compatible updates reduce findings to 29, with zero runtime advisories. Explicit lint replaces the correctness checks CRA used to provide. Canonical npm lockfile/install removes dual graph drift. See dependency debt document for each remaining advisory's reachable input path. |
+| Service worker treated `/bookings-api/` as a cacheable static resource. | Both private API prefixes are network-only and return offline 503. Cache version v4 purges earlier shell caches. Tests assert no private cache reads/writes and old-cache removal. |
+| Live sales confused string `.replace()` with datetime normalization, mixed date types and used old sales as today's fallback. | Normalize BSON UTC and ISO strings, filter by venue-local day, discard malformed rows and return zero for a genuinely empty day. Browser walkthrough now asserts no API 5xx across registered staff screens. |
+| Customer wallet refresh referenced undefined `fetchAll`, so successful wallet edits could throw instead of refreshing. | Reload the selected profile and customer list through the existing defined loaders. New explicit lint caught this; obsolete ESLint suppression comments were removed, not replaced by a disable. |
+| Low-stock expression failed on legacy missing/null stock counters. | `$ifNull` treats missing stock as zero while requiring an explicit positive reorder threshold and tenant scope. |
+| Event updates accepted arbitrary ownership/id/counter fields; ticket increments were a read/write race. | Whitelist editable event fields and atomically enforce active status, positive quantity and remaining capacity. Concurrency test proves a one-seat event only accepts one request. |
+| Staff roster writes accepted foreign/nonexistent staff references. | Verify the staff member within the actor's business before create/update. Foreign/missing references return 404. |
+| Loyalty ledger retries/history/activity reads and fraud voucher action relied on related ids without scoping the actual ledger/voucher query. | Added business filters on every identified read/write, stamped expiry ledger entries, and reject foreign voucher references before resolving a flag. A negative test seeds colliding customer/transaction references across businesses. |
+| GDPR redaction selected feedback and updated a previously scoped bill split by related id alone. | Apply explicit business filters to those writes; regression proves foreign feedback with a colliding customer reference remains private and unchanged. |
+| Refund kitchen-effect metadata update used only a generated id. | Include the actor's strict tenant filter on the write, retaining the preceding ownership check. |
+
+The first post-adapter full run found one genuine test-double incompatibility:
+the audio privacy test still mocked the old synchronous SDK while the production
+path became async. Replaced the SDK boundary stub, retaining all raw-audio privacy
+assertions. That full run was 959 passed / 1 failed; the subsequent full run was
+999 passed / 0 failed. Final-tree counts follow below; neither partial run is
+presented as the final proof.
+
+## Static and dependency checks
+
+No credential fallback, test skip, security-baseline expansion or weakened tenant
+check was used. `backend/.flake8` remains the existing error-only policy. The
+mypy differential gate still checks the existing count and accepted categories;
+it is not a claim of a fully typed backend. Public SDKs were already dependencies,
+so this change adds no Python package or private index requirement.
+
+Frontend full audit: 139 → 29 package findings (0 critical, 5 high, 24 moderate,
+0 low). Runtime audit: zero. Remaining build inputs and upgrade tradeoffs are
+listed in `frontend/SECURITY_DEPENDENCY_DEBT.md`, not hidden in an ignore file.
+ESLint 9 EOL and existing redundant dynamic-import build warnings remain visible.
+The separate Windows package audit has 8 moderate ancestor/package findings from
+`electron-builder` → packaging/logging tools → `sprintf-js`, the same unpatched
+precision-format advisory. Its input is repository build tooling, not customer
+receipt data. No forced downgrade of the verified Windows packager was attempted.
+Older root packaging guides now point to `CURRENT_BUILD_GUIDE.md`.
+
+## Validation evidence
+
+All application results below refer to the application revision above unless
+explicitly identified as a predecessor run. The report-only follow-up commit does
+not alter application code, dependencies or CI workflows. Existing test warnings
+are retained; most are Pydantic API and naive-UTC deprecations and were not silenced.
+
+| Check | Result |
+| --- | --- |
+| Full backend `python -m pytest tests/inprocess -q` | 1,008 passed, 0 failed; 45,889 warnings in 372.95s (6m12s). Final CI full run also passed. |
+| Frontend `npm ci` | Fresh install succeeded; no lockfile changes |
+| Frontend ESLint | 0 errors, 0 warnings |
+| Native automation contract | 2 passed, 0 failed; includes public WebdriverIO 10 → local W3C HTTP boundary |
+| Frontend Jest | 85 passed, 0 failed; 14 suites |
+| Frontend production build | Passed, 0 errors; existing ineffective dynamic-import warnings remain |
+| Playwright browser suite | 15 passed, 0 failed (local 6.2 minutes); final-revision CI also passed |
+| Booking service unit/boundary tests | 35 passed, 0 failed |
+| Windows Node tests | 26 passed, 0 failed, 0 skipped |
+| Real MongoDB booking contention/replay/rollback | 7 passed, 0 failed |
+| Real MongoDB backend consistency/transaction/outbox | 19 passed, 0 failed |
+| Cross-process/cold-restart proofs | Passed: 5 processes, 100 attempts / exactly 25 allowed; 50 unique events, tenant isolation, cursor replay, expiry and overflow |
+| Backend flake8 | Existing error-only gate passed, 0 findings |
+| Mypy differential | Passed: 299 errors vs existing baseline 814; no new categories (15 known). These are existing type debt, not a zero-error claim. |
+| Backend pip-audit | No known vulnerabilities; CI differential dependency gate also passed |
+| Frontend runtime npm audit | 0 advisories; hard CI gate passed |
+| Full frontend npm audit | 29 package findings: 5 high, 24 moderate; all build/test paths, explicitly triaged |
+| Windows packaging npm audit | 8 moderate package findings; explicitly triaged above |
+| Gitleaks | Final-revision CI passed; no allowlist expansion |
+| Windows native build + smoke + acceptance | Passed on real Windows runner; unsigned installer artifact produced |
+| Android build + launch + critical milestone | Passed: APK build, emulator launch and complete offline/restart/reconnect/exactly-once milestone |
+| iOS build + launch + strict critical milestone | Passed: simulator build/launch, password/PIN refresh, expired-access cold restart, offline sale recovery, tenant isolation, exact replay and bearer/refresh revocation |
+| `git diff --check` | Passed |
+
+The full backend output summaries were:
+
+```text
+Local: 1008 passed, 45889 warnings in 372.95s (0:06:12)
+CI:    1008 passed, 1127 warnings in 271.71s (0:04:31)
+```
+
+The iOS simulator log explicitly confirmed refresh HTTP 200 and bearer `/me` HTTP
+200 with the same account, business, device and session after PIN login and after
+an expired-access cold restart. Offline logout removed native refresh capability;
+exactly one server sale matched the queued record after reconnection. Revocation
+rejected the bound bearer and refresh (401), while an independent unbound session
+remained valid. These were actual native acceptance assertions, not just build checks.
+
+Final application workflow links:
+
+- [CI](https://github.com/Sam-NUA/NUA/actions/runs/39019263810)
+- [Real MongoDB proofs](https://github.com/Sam-NUA/NUA/actions/runs/39019263837)
+- [Windows foundation and acceptance](https://github.com/Sam-NUA/NUA/actions/runs/39019263809)
+- [Android build and acceptance](https://github.com/Sam-NUA/NUA/actions/runs/39019263814)
+- [iOS build and acceptance](https://github.com/Sam-NUA/NUA/actions/runs/39019263816)
+
+The first native migration runs failed with `driver.executeAsync is not a
+function`, an automation API migration error before flow assertions. This was
+fixed in the runner rather than downgrading the SDK or bypassing the milestone.
+The helper's real-SDK contract test now verifies `/execute/async`, promise values,
+false/null results and propagated page errors. The [official migration guide](https://webdriver.io/docs/v10-migration)
+was checked against the installed SDK implementation. Native assertions for PIN,
+refresh provenance, exact actor, tenant isolation, revocation and replay are retained.
+
+The first local browser re-run could not launch the newly pinned Playwright
+browser because that executable was not installed in this scratch environment.
+It was aborted, then rerun using the available Chromium through the existing
+`PLAYWRIGHT_CHROMIUM_PATH` option. No assertion, retry policy or browser security
+setting was weakened. CI installed its matching browser and also passed.
+
+
+## Tenant isolation spot check
+
+Reviewed five previously untouched request files: `devices.py`, `customers.py`,
+`loyalty.py`, `transactions.py`, `staff_management.py`, including their stamped
+insert/update helpers. Device/customer data paths use actor business filters and
+server-stamped ownership. Event ownership injection, roster references and the
+refund metadata write were fixed as described above. Newly touched files now have
+negative cross-business coverage. No broad legacy default-business fallback added.
+
+Global PIN lookup/collision checks in staff authentication are deliberate identity
+resolution before a business is known, not unscoped tenant-data browsing. They
+reject ambiguous PINs, inactive memberships and MFA-only accounts. No PIN policy,
+manager authority or tenant permission was widened. This is a bounded spot check,
+not a proof that every historical route is free of tenant bugs.
+
+## End-to-end code traces
+
+- **Owner email/password:** Login → `authAPI` → `/api/auth/login` → saved bcrypt
+  credential → account lockout and required 2FA → `_complete_login` → membership,
+  device binding and native durable session storage. Challenges grant no business
+  access. Bootstrap env changes deliberately never overwrite saved credentials.
+- **Owner PIN:** Login → `staffAPI.pinLogin` with device headers →
+  `/api/auth/pin-login` → unique PIN, active account/business and device validation.
+  MFA-required owners must use email + second factor. No shared/default `0311`
+  is installed; it works only when privately assigned to that account and unique.
+- **POS:** Product selection/POSContext cart → `POSTerminal.handleCheckout` →
+  `createTransactionResilient` → actor-bound queue or `/transactions` → server
+  product/tax/tender/loyalty validation and atomic sale effects → transaction id.
+  Offline cash is queued, not represented as settled server data. Stripe uses a
+  hosted-session redirect; signed webhook/provider status drives finalization,
+  never a client success flag. Physical EFTPOS and printing remain separate gates.
+- **Reservation:** Reservations form → `reservationsAPI.create` → `/reservations`
+  with matching `Reservation` response model. Backend validates owned customer/
+  table references, booking rules and tenant/date capacity fence; reservation store
+  writes durable booking-sync outbox work. UI renders rule 409 for authorized
+  overrides. Public booking service has separate contention/replay tests.
+- **Recovery:** `/owner-recovery` → initiate verifies operator secret and existing
+  owner email → hashes a 15-minute one-use token bound to saved credentials →
+  complete atomically consumes it, sets password/optional unique PIN, revokes old
+  sessions/trusted devices. It preserves MFA and business/role. Routine email reset
+  is separately configuration-gated and must be delivery-tested before handover.
+
+No API-shape mismatch was found in these traced paths after adapter replacement.
+Removed dead development plugins and unused frontend Electron host; supported
+Windows host remains in `apps/windows`. The old webpack public-path shim is
+replaced by Vite module-relative chunks and an explicit host asset manifest.
+
+## Provider configuration and reproducibility
+
+Server only: `OPENAI_API_KEY`; optional `NUA_AI_MODEL` (default current route model,
+usually `gpt-5.2`), `NUA_TRANSCRIPTION_MODEL` (default `whisper-1`),
+`OPENAI_BASE_URL` (HTTPS, no embedded credentials; default public OpenAI API).
+Before deployment, verify that `OPENAI_API_KEY` is configured and the chosen model is available to that account. Legacy `EMERGENT_LLM_KEY` does not act as an OpenAI secret. No deployment environment was changed in this pass. No key is exposed in
+Vite's explicit public build-variable allowlist. Chat history is bounded per
+adapter instance; it is not shared across tenants or process-global sessions.
+The adapter sends `store=false`; this is not a claim about the provider's full
+retention policy or compliance status.
+
+Stripe: `STRIPE_API_KEY` and existing webhook secret/configuration; the public SDK
+uses per-request credentials, integer AUD cents and actual Checkout status. It does
+not register webhooks or select a payment provider for a venue. Retry URLs must
+remain consistent for a given provider key; Stripe safely rejects conflicting
+parameters rather than charging another session. Coinbase's existing two-second
+local claim wait is unchanged; this PR does not claim provider-side dedup for it.
+The existing 30-minute stale-claim renewal policy is also retained: local claim
+age does not itself prove an older upstream checkout session has expired. Validate
+abandoned-session expiry/retry and cross-attempt settlement in the isolated provider
+pilot before enabling hosted payments. Choosing a different renewal/expiration
+policy changes payment behavior and was deliberately not silently folded into an
+SDK replacement.
+See public [OpenAI chat](https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create),
+[audio](https://developers.openai.com/api/reference/resources/audio/subresources/transcriptions/methods/create)
+and [Stripe idempotency](https://docs.stripe.com/api/idempotent_requests) contracts.
+
+Build: Node 22.19+, `cd frontend && npm ci && npm run lint && npm test -- --runInBand
+--watchAll=false && npm run build`. Native builds retain explicit HTTPS API
+origin and existing Capacitor/Electron isolation policies. Vercel service roots,
+API-prefix routing and SPA fallback are preserved; only frontend framework and
+install/build commands change. This branch has Git deployment disabled.
+
+## Remaining launch gates / original checklist disposition
+
+| Area | Current disposition |
+| --- | --- |
+| Shared web/mobile/Windows foundation, actor-bound offline queue, plaintext token migration, docket escaping | Implemented in the earlier stack; retained here. Current Android, iOS and Windows workflows all passed. |
+| iOS refresh/PIN cold restart | PR #31 proved strict refresh provenance, exact actor and logout invalidation using Keychain. Current build migration passed the same strict simulator proof below. |
+| Consistency and tenant references | PR #26 source integrated; combined tree passed the full in-process suite and real Mongo proofs. |
+| Portable public AI/Stripe execution | Software adapter and contract tests implemented here; provider sandbox credentials, model access, webhook delivery and actual venue checkout still need an authorized isolated smoke run. No paid or live request performed. |
+| Offline cold-start authorization | Intentionally requires server verification before a saved native session may act. Do not bypass actor/device checks to make offline startup appear successful. |
+| Printer/drawer/scanner/payment terminal | Honest capability abstractions exist. Choose supported hardware/provider/SDK and test actual devices, disconnects, reconnects, cash drawer and paper errors at the pilot venue. No hardware success invented from simulator runs. |
+| Signing and distribution | Release certificates/profiles, app-store accounts/review, signed Windows distribution and device installation remain operator-controlled external inputs. |
+| Backup/restore, tenant legacy reconciliation, delivery and launch pilot | Follow foundation runbook against authorized staging, review quarantine evidence, prove restore and actual recovery-email delivery, then run a supervised venue acceptance session. No production migration or destructive operation performed here. |
+
+The next phase is review/integration, then an explicitly authorized isolated
+provider + physical-device pilot and signing/distribution. No percentage or
+unqualified production-ready claim substitutes for those external proofs.

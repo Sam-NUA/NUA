@@ -5,6 +5,7 @@ import { useTheme } from '../../contexts/ThemeContext';
 import { backupAPI } from '../../services/api';
 import { toast } from 'sonner';
 import { DownloadCloud, ShieldQuestion, CheckCircle2, XCircle } from 'lucide-react';
+import { FileService } from '../../platform';
 
 /**
  * An untested backup isn't a backup — it's a file nobody has opened since
@@ -22,12 +23,7 @@ export default function BackupPanel() {
     setDownloading(true);
     try {
       const r = await backupAPI.download();
-      const url = URL.createObjectURL(new Blob([r.data], { type: 'application/gzip' }));
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `nua-backup-${new Date().toISOString().slice(0, 10)}.tar.gz`;
-      a.click();
-      URL.revokeObjectURL(url);
+      await FileService.downloadFile(new Blob([r.data], { type: 'application/gzip' }), `nua-backup-${new Date().toISOString().slice(0, 10)}.tar.gz`);
       toast.success('Backup downloaded');
     } catch (e) { toast.error(e.response?.data?.detail || 'Backup failed'); }
     setDownloading(false);

@@ -28,7 +28,7 @@ _TRANSLATABLE_LANGUAGES = {
 # page are the menu, and they render before anyone has a session. What a guest
 # must NOT get is the trade side of the catalogue — what each dish costs us and
 # how much of it is in the building — so that gets stripped for guests only.
-GUEST_HIDDEN_PRODUCT_FIELDS = ("cost", "stock", "sku")
+GUEST_HIDDEN_PRODUCT_FIELDS = ("cost", "stock", "stockByLocation", "sku")
 
 
 @router.get("/products", response_model=List[Product])
@@ -178,9 +178,9 @@ async def _draft_translations_core(name: str, description: str, session_suffix: 
     )
     user_text = f"Languages: {lang_list}\n\nDish name: {name}\nDescription: {description or '(none)'}"
 
-    from emergentintegrations.llm.chat import LlmChat, UserMessage
+    from services.ai_provider import LlmChat, UserMessage
     chat = LlmChat(
-        api_key=os.environ["EMERGENT_LLM_KEY"], session_id=f"translate-{session_suffix}",
+        api_key=os.environ["OPENAI_API_KEY"], session_id=f"translate-{session_suffix}",
         system_message=system,
     ).with_model("openai", "gpt-5.2")
     resp = await chat.send_message(UserMessage(text=user_text))
@@ -224,7 +224,7 @@ async def auto_translate_product(product_id: str, user: dict = Depends(require_o
     if not product or not tenant_owns_strict(product.get("businessId"), user.get("businessId")):
         raise HTTPException(status_code=404, detail="Product not found")
 
-    api_key = os.environ.get("EMERGENT_LLM_KEY")
+    api_key = os.environ.get("OPENAI_API_KEY")
     if not api_key:
         raise HTTPException(status_code=503, detail="AI translation is not configured")
 
@@ -260,7 +260,7 @@ async def bulk_auto_translate_products(only_missing: bool = True, user: dict = D
     doesn't clobber it. Runs up to 5 products concurrently — serial would
     make a real menu take minutes.
     """
-    api_key = os.environ.get("EMERGENT_LLM_KEY")
+    api_key = os.environ.get("OPENAI_API_KEY")
     if not api_key:
         raise HTTPException(status_code=503, detail="AI translation is not configured")
 

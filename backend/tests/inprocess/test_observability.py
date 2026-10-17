@@ -102,4 +102,51 @@ def test_client_errors_endpoint_requires_owner_or_manager(anon):
 def test_client_error_report_tolerates_a_missing_body(anon):
     r = req(anon, "POST", "/api/ops/client-errors", json={})
     assert r.status_code == 200
+
+
+def test_client_event_report_requires_no_authentication(anon):
+    # app_launch fires before a session necessarily exists.
+    r = req(anon, "POST", "/api/ops/client-events", json={"type": "app_launch", "platform": "web"})
+    assert r.status_code == 200
     assert r.json() == {"recorded": True}
+
+
+def test_client_event_report_is_readable_back_by_an_owner(client, owner_headers):
+    r = req(client, "POST", "/api/ops/client-events", headers=owner_headers, json={
+        "type": "printer_failure", "data": {"reason": "timeout"}, "platform": "android", "appVersion": "1.0.0",
+    })
+    assert r.status_code == 200
+
+    events = req(client, "GET", "/api/ops/client-events", headers=owner_headers).json()["events"]
+    matching = [e for e in events if e["type"] == "printer_failure"]
+    assert matching, "the captured event should be readable back through /api/ops/client-events"
+    assert matching[0]["platform"] == "android"
+    assert matching[0]["data"]["reason"] == "timeout"
+
+
+def test_unknown_event_type_is_silently_dropped_not_recorded(client, owner_headers):
+    r = req(client, "POST", "/api/ops/client-events", headers=owner_headers, json={"type": "definitely-not-a-real-type"})
+    assert r.status_code == 200  # never errors back to an untrusted reporter
+
+    events = req(client, "GET", "/api/ops/client-events", headers=owner_headers).json()["events"]
+    assert not any(e["type"] == "definitely-not-a-real-type" for e in events)
+
+
+def test_client_event_never_persists_sensitive_keys_even_if_sent(client, owner_headers):
+    r = req(client, "POST", "/api/ops/client-events", headers=owner_headers, json={
+        "type": "sync_failure",
+        "data": {"reason": "409", "token": "super-secret-value", "pin": "1234"},
+    })
+    assert r.status_code == 200
+
+    events = req(client, "GET", "/api/ops/client-events", headers=owner_headers).json()["events"]
+    matching = [e for e in events if e["type"] == "sync_failure"]
+    assert matching
+    assert matching[0]["data"]["token"] == "[redacted]"
+    assert matching[0]["data"]["pin"] == "[redacted]"
+    assert matching[0]["data"]["reason"] == "409"
+
+
+def test_client_events_endpoint_requires_owner_or_manager(anon):
+    r = req(anon, "GET", "/api/ops/client-events")
+    assert r.status_code == 401

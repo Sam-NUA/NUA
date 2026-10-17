@@ -107,7 +107,8 @@ async def delete_ingredient(ing_id: str, user: dict = Depends(require_owner)):
 @router.get("/ingredients/low-stock")
 async def low_stock(_: dict = Depends(get_user)):
     rows = await db.ingredients.find(
-        {"$expr": {"$lte": ["$stock", "$reorderLevel"]}, "reorderLevel": {"$gt": 0},
+        {"$expr": {"$lte": [{"$ifNull": ["$stock", 0]}, {"$ifNull": ["$reorderLevel", 0]}]},
+         "reorderLevel": {"$gt": 0},
          **tenant_scope_filter()},
         {"_id": 0},
     ).to_list(200)

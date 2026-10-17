@@ -60,7 +60,8 @@ BACKUP_COLLECTIONS = [
     # db.booking_capacity_locks (a lock with a few seconds' TTL) — same
     # reasoning this module already applies to kiosk_sessions/notifications/
     # login_attempts/totp_used/trusted_devices/course_events above.
-    "businesses", "cancellation_policies", "booking_blackouts",
+    "loyalty_product_members", "loyalty_product_ledger", "loyalty_product_rewards", "loyalty_product_redemptions",
+    "businesses", "product_accounts", "cancellation_policies", "booking_blackouts",
     "floor_plans", "loyalty_config", "loyalty_tiers",
 ]
 

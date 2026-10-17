@@ -16,10 +16,11 @@ import { staffMgmtAPI } from '../services/api';
 import { toast } from 'sonner';
 import axios from 'axios';
 import { effectiveHourlyRate, salaryTypeSuffix } from '../lib/staffPay';
+import { DialogService, SecureStorageService } from '../platform';
 import { DndContext, useDraggable, useDroppable, DragOverlay, PointerSensor, KeyboardSensor, useSensor, useSensors } from '@dnd-kit/core';
 
 const API = process.env.REACT_APP_BACKEND_URL;
-const authHeader = () => ({ Authorization: `Bearer ${localStorage.getItem('nua_token')}` });
+const authHeader = async () => ({ Authorization: `Bearer ${await SecureStorageService.getToken()}` });
 
 // ===== Draggable Shift Card (used inside week roster grid) =====
 function DraggableShift({ shift, hours, canManage, onDelete, theme }) {
@@ -115,7 +116,7 @@ export default function StaffRoster() {
     try {
       const [status, tc, ros, st] = await Promise.all([
         staffMgmtAPI.myStatus(), staffMgmtAPI.getTimecards(),
-        staffMgmtAPI.getRoster(), axios.get(`${API}/api/auth/staff`, { headers: authHeader() }),
+        staffMgmtAPI.getRoster(), axios.get(`${API}/api/auth/staff`, { headers: await authHeader() }),
       ]);
       setClockStatus(status.data);
       setTimecards(tc.data);
@@ -167,7 +168,7 @@ export default function StaffRoster() {
     } catch (e) {
       if (e.response?.status === 409) {
         const reason = e.response.data?.detail || 'This staff member is unavailable on that day';
-        if (window.confirm(`${reason}. Schedule them anyway?`)) {
+        if (await DialogService.confirm(`${reason}. Schedule them anyway?`)) {
           await staffMgmtAPI.createRosterShift({ ...payload, overrideBlackout: true });
           return true;
         }
@@ -263,7 +264,7 @@ export default function StaffRoster() {
     } catch (e) {
       if (e.response?.status === 409) {
         const reason = e.response.data?.detail || 'This staff member is unavailable on that day';
-        if (window.confirm(`${reason}. Move them anyway?`)) {
+        if (await DialogService.confirm(`${reason}. Move them anyway?`)) {
           try {
             await staffMgmtAPI.updateRosterShift(shift.id, { date: newDay, overrideBlackout: true });
             toast.success(`${shift.staffName} moved to ${newDay} (override)`);
@@ -412,7 +413,7 @@ export default function StaffRoster() {
             <div className="flex flex-wrap gap-2">
               {roster.length > 0 && <Button size="sm" variant="outline" onClick={printRoster} data-testid="print-roster-btn"><Printer size={14} className="mr-1" /> Print Roster</Button>}
               {canManage && <Button size="sm" variant="outline" onClick={async () => {
-                if (!window.confirm('Clear ALL shifts on the roster? This cannot be undone.')) return;
+                if (!await DialogService.confirm('Clear ALL shifts on the roster? This cannot be undone.')) return;
                 try {
                   const { v26API } = await import('../services/api');
                   const r = await v26API.clearRoster();

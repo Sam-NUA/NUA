@@ -27,7 +27,7 @@ const groups = [
     ['reports', 'Scheduled reports', 'Report types, delivery times and recipients', 'automated email daily', ['owner']],
   ] },
   { label: 'Devices & printing', items: [
-    ['hardware', 'Printers & scanners', 'Manage the devices used at your venue', 'hardware barcode equipment'],
+    ['hardware', 'Terminals, printers & scanners', 'Terminal access, offline review and venue hardware', 'hardware barcode equipment device version revoke offline export'],
     ['print-routing', 'Print routing & health', 'Send orders to the right printer and check its status', 'kitchen receipt paper offline'],
   ] },
   { label: 'Maintenance', items: [

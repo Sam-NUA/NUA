@@ -113,6 +113,7 @@ async def preflight_duplicate_report() -> list:
 
 
 async def ensure_indexes() -> None:
+    await _create_index_safely(db.terminal_sessions, "expiresAt", expireAfterSeconds=0)
     await preflight_duplicate_report()
 
     # Transactions: the busiest collection in the system. timestamp backs

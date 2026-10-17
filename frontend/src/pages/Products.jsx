@@ -13,10 +13,12 @@ import { ProductsToolbar } from '../components/products/ProductsToolbar';
 import { ProductTable } from '../components/products/ProductTable';
 import { BulkEditDialog } from '../components/products/BulkEditDialog';
 import { RecentlyEditedSidebar } from '../components/products/RecentlyEditedSidebar';
+import { FileService } from '../platform';
 import { ProductVariants } from '../components/products/ProductVariants';
 import { PromotionDialog } from '../components/products/PromotionDialog';
 import { ItemsKpiStrip } from '../components/products/ItemsKpiStrip';
 import { toast } from 'sonner';
+import { DialogService, SecureStorageService } from '../platform';
 
 const makeEmptyProduct = () => ({
   name: '', category: '', categoryId: '', price: '', cost: '', stock: '', sku: '', barcode: '',
@@ -149,7 +151,7 @@ const Products = () => {
     } catch (e) { toast.error(e.response?.data?.detail || 'Failed to save product'); }
   };
   const deleteProduct = async (id) => {
-    if (!window.confirm('Delete this product?')) return;
+    if (!await DialogService.confirm('Delete this product?')) return;
     try { await productsAPI.delete(id); toast.success('Product deleted'); fetchData(); } catch { toast.error('Failed to delete'); }
   };
 
@@ -251,7 +253,7 @@ const Products = () => {
     } catch (e) { toast.error(e.response?.data?.detail || 'Failed to save promotion'); }
   };
   const deletePromo = async (id) => {
-    if (!window.confirm('Delete this promotion?')) return;
+    if (!await DialogService.confirm('Delete this promotion?')) return;
     try { await promotionsAPI.delete(id); toast.success('Promotion deleted'); fetchData(); } catch { toast.error('Failed to delete'); }
   };
 
@@ -396,7 +398,7 @@ const Products = () => {
 
   const bulkDelete = async () => {
     if (selected.size === 0) return;
-    if (!window.confirm(`Delete ${selected.size} products? This cannot be undone.`)) return;
+    if (!await DialogService.confirm(`Delete ${selected.size} products? This cannot be undone.`)) return;
     let ok = 0, fail = 0;
     for (const id of selected) {
       try { await productsAPI.delete(id); ok++; } catch { fail++; }
@@ -441,7 +443,7 @@ const Products = () => {
     setInlineEditCell(null);
   };
 
-  const exportCsv = () => {
+  const exportCsv = async () => {
     const headers = ['id', 'name', 'sku', 'category', 'price', 'cost', 'stock', 'gstRate', 'eightySixed', 'modifiersCount'];
     const rows = filteredProducts.map(p => [
       p.id, p.name, p.sku, p.category, p.price, p.cost, p.stock, p.gstRate,
@@ -450,10 +452,7 @@ const Products = () => {
     const escape = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
     const csv = [headers.join(','), ...rows.map(r => r.map(escape).join(','))].join('\n');
     const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url; a.download = `products-${new Date().toISOString().slice(0, 10)}.csv`;
-    a.click(); URL.revokeObjectURL(url);
+    await FileService.downloadFile(blob, `products-${new Date().toISOString().slice(0, 10)}.csv`);
   };
 
   const onCsvImport = async (e) => {
@@ -496,7 +495,7 @@ const Products = () => {
     try {
       const r = await fetch(`${process.env.REACT_APP_BACKEND_URL}/api/items/bulk-import`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${localStorage.getItem('nua_token')}` },
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${await SecureStorageService.getToken()}` },
         body: JSON.stringify({ rows }),
       });
       if (!r.ok) {

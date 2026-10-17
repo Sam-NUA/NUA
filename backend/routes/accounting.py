@@ -495,9 +495,9 @@ async def parse_invoice_upload(data: dict, user: dict = Depends(require_owner_or
         "Best-guess parsing — do not invent line items."
     )
 
-    from emergentintegrations.llm.chat import LlmChat, UserMessage
+    from services.ai_provider import LlmChat, UserMessage
     chat = LlmChat(
-        api_key=os.environ.get("EMERGENT_LLM_KEY"),
+        api_key=os.environ.get("OPENAI_API_KEY"),
         session_id=f"ar-invoice-{uuid.uuid4().hex[:6]}",
         system_message=sys_msg,
     ).with_model("openai", "gpt-5.2")
@@ -505,7 +505,7 @@ async def parse_invoice_upload(data: dict, user: dict = Depends(require_owner_or
     msg_args = {"text": invoice_text or "Parse the attached invoice image."}
     if image_b64:
         try:
-            from emergentintegrations.llm.chat import ImageContent
+            from services.ai_provider import ImageContent
             msg_args["file_contents"] = [ImageContent(image_base64=image_b64)]
         except Exception:
             pass

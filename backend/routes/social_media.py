@@ -335,11 +335,11 @@ def _fallback_generation(platform: str, post_type: str, subject_label: str) -> d
 
 async def _generate_for_platform(*, platform: str, post_type: str, tone: str,
                                  subject_label: str, subject_detail: str, locale: str) -> dict:
-    key = os.environ.get("EMERGENT_LLM_KEY")
+    key = os.environ.get("OPENAI_API_KEY")
     if not key:
         return _fallback_generation(platform, post_type, subject_label)
     try:
-        from emergentintegrations.llm.chat import LlmChat, UserMessage
+        from services.ai_provider import LlmChat, UserMessage
         # NOTE: do NOT stream here — we need a single JSON envelope back.
         system = (
             f"You are a senior restaurant social media editor writing in {locale}. "
@@ -354,7 +354,7 @@ async def _generate_for_platform(*, platform: str, post_type: str, tone: str,
             api_key=key,
             session_id=f"social-{uuid.uuid4()}",
             system_message=system,
-        ).with_model("anthropic", "claude-sonnet-4-6")
+        ).with_model("openai", "gpt-5.2")
         prompt = (
             f"Platform: {platform}. Post type: {post_type}. Tone: {tone}.\n"
             f"Subject: {subject_label}\nDetails: {subject_detail}\n"
