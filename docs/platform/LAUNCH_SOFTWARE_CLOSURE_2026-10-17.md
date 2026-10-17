@@ -36,6 +36,7 @@ one integration path for that source; do not separately merge overlapping #26,
 | Event updates accepted arbitrary ownership/id/counter fields; ticket increments were a read/write race. | Whitelist editable event fields and atomically enforce active status, positive quantity and remaining capacity. Concurrency test proves a one-seat event only accepts one request. |
 | Staff roster writes accepted foreign/nonexistent staff references. | Verify the staff member within the actor's business before create/update. Foreign/missing references return 404. |
 | Loyalty ledger retries/history/activity reads and fraud voucher action relied on related ids without scoping the actual ledger/voucher query. | Added business filters on every identified read/write, stamped expiry ledger entries, and reject foreign voucher references before resolving a flag. A negative test seeds colliding customer/transaction references across businesses. |
+| GDPR redaction selected feedback and updated a previously scoped bill split by related id alone. | Apply explicit business filters to those writes; regression proves foreign feedback with a colliding customer reference remains private and unchanged. |
 | Refund kitchen-effect metadata update used only a generated id. | Include the actor's strict tenant filter on the write, retaining the preceding ownership check. |
 
 The first post-adapter full run found one genuine test-double incompatibility:
@@ -57,6 +58,11 @@ Frontend full audit: 139 → 29 package findings (0 critical, 5 high, 24 moderat
 0 low). Runtime audit: zero. Remaining build inputs and upgrade tradeoffs are
 listed in `frontend/SECURITY_DEPENDENCY_DEBT.md`, not hidden in an ignore file.
 ESLint 9 EOL and existing redundant dynamic-import build warnings remain visible.
+The separate Windows package audit has 8 moderate ancestor/package findings from
+`electron-builder` → packaging/logging tools → `sprintf-js`, the same unpatched
+precision-format advisory. Its input is repository build tooling, not customer
+receipt data. No forced downgrade of the verified Windows packager was attempted.
+Older root packaging guides now point to `CURRENT_BUILD_GUIDE.md`.
 
 Final validation table will be filled from completed runs, including new native
 runs for the Vite/WebdriverIO build. Earlier native results alone do not prove

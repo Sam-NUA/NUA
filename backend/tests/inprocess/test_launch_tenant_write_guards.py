@@ -92,3 +92,21 @@ def test_loyalty_ledger_and_fraud_action_are_scoped_even_with_foreign_references
         client.portal.call(db.loyalty_ledger.delete_many, {'customerId': customer_id})
         client.portal.call(db.vouchers.delete_one, {'id': 'launch-foreign-voucher'})
         client.portal.call(db.loyalty_fraud_flags.delete_one, {'id': 'launch-owned-flag'})
+
+
+def test_customer_erasure_cannot_redact_another_business_feedback(client, owner_headers):
+    from database import db
+    business = req(client, 'GET', '/api/auth/me', headers=owner_headers).json()['businessId']
+    customer_id = 'launch-gdpr-customer'
+    client.portal.call(db.customers.insert_one, {'id': customer_id, 'businessId': business, 'name': 'Owned'})
+    for tenant in (business, 'FOREIGN-GDPR'):
+        client.portal.call(db.feedback.insert_one, {'id': f'launch-feedback-{tenant}', 'businessId': tenant,
+            'customerId': customer_id, 'customerName': 'Keep private'})
+    try:
+        response = req(client, 'DELETE', f'/api/customers/{customer_id}/gdpr-erase', headers=owner_headers)
+        assert response.status_code == 200, response.text
+        assert client.portal.call(db.feedback.find_one, {'id': f'launch-feedback-{business}'})['customerName'] == '[REDACTED]'
+        assert client.portal.call(db.feedback.find_one, {'id': 'launch-feedback-FOREIGN-GDPR'})['customerName'] == 'Keep private'
+    finally:
+        client.portal.call(db.customers.delete_one, {'id': customer_id, 'businessId': business})
+        client.portal.call(db.feedback.delete_many, {'customerId': customer_id})

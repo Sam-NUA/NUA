@@ -850,7 +850,7 @@ async def gdpr_erase(customer_id: str, user: dict = Depends(require_owner)):
     # Anonymize rather than hard-delete to preserve financial records
     anon = {"name": "[REDACTED]", "email": "redacted@nua.local", "phone": "[REDACTED]", "notes": "", "erasedAt": datetime.now(timezone.utc).isoformat(), "erasedBy": user["id"]}
     await db.customers.update_one({**tenant_scope_filter(user.get("businessId")), "id": customer_id}, {"$set": anon})
-    await db.feedback.update_many({"customerId": customer_id}, {"$set": {"customerName": "[REDACTED]"}})
+    await db.feedback.update_many({"customerId": customer_id, **tenant_scope_filter(user.get("businessId"))}, {"$set": {"customerName": "[REDACTED]"}})
 
     phone = existing.get("phone")
     business_id = user.get("businessId")
@@ -876,7 +876,7 @@ async def gdpr_erase(customer_id: str, user: dict = Depends(require_owner)):
                     changed = True
             if changed:
                 await db.bill_splits.update_one(
-                    {"id": split["id"]},
+                    {"id": split["id"], **tenant_scope_filter(business_id)},
                     {"$set": {"lines": split["lines"], "equalParts": split["equalParts"]}})
 
         own_split_ids = [s["id"] for s in own_splits]

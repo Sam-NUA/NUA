@@ -312,7 +312,7 @@ Every endpoint is prefixed `/api`. Auth via Bearer JWT from `POST /api/auth/logi
 | Bookings Inbox | `POST /bookings/inbox`, `POST /bookings/inbox/{id}/ack`               | AI parse → reservation |
 | Channel Menus  | `GET /channel-menus/{channel}`, `POST .../patch`, `.../ai-prep-times`, `.../ai-discount-slow` | |
 | Awards         | `GET /awards/catalogue`, `POST /awards/install`, `POST /payruns/super-by-award` | Fair Work AU |
-| Social Media   | `GET /social/platforms`, `GET/POST/DELETE /social/accounts`, `GET/POST/PATCH/DELETE /social/posts`, `POST /social/posts/{id}/publish`, `POST /social/ai-generate`, `POST /social/ai-weekly-plan` | Mock OAuth; AI via Claude Sonnet 4.6 |
+| Social Media   | `GET /social/platforms`, `GET/POST/DELETE /social/accounts`, `GET/POST/PATCH/DELETE /social/posts`, `POST /social/posts/{id}/publish`, `POST /social/ai-generate`, `POST /social/ai-weekly-plan` | Mock OAuth; AI via configured OpenAI model |
 | Online Orders  | Public: `GET /online/{categories,products}`, `POST /online/orders`, `GET /online/orders/track/{code}` · Auth: `GET /online/orders`, `PATCH .../status`, `POST .../eta` | AI ETA |
 | Licensing      | `POST /license/{onboard,validate}`, `POST /license/device/{activate,revoke}`, `POST /license/abn/change-request`, `POST /license/stripe/webhook` | Progressive lockout |
 
@@ -324,8 +324,8 @@ Environment variables (all in `.env` files, never hard-coded):
 | ------------------------- | ----------------- | -------- | ----------------------------------------- |
 | `MONGO_URL`               | `backend/.env`    | ✅       | Don't rename                              |
 | `DB_NAME`                 | `backend/.env`    | ✅       | Don't rename                              |
-| `EMERGENT_LLM_KEY`        | `backend/.env`    | ✅       | Universal LLM key for all AI features      |
-| `LLM_GATEWAY_URL`         | `backend/.env`    | optional | Defaults to the Emergent gateway          |
+| `OPENAI_API_KEY`          | `backend/.env`    | AI only  | Server-only public OpenAI SDK secret      |
+| `OPENAI_BASE_URL`         | `backend/.env`    | optional | HTTPS endpoint; defaults to public OpenAI |
 | `JWT_SECRET`              | `backend/.env`    | ✅       | Signs entitlement tokens                  |
 | `STRIPE_API_KEY`          | `backend/.env`    | optional | Live billing                              |
 | `STRIPE_WEBHOOK_SECRET`   | `backend/.env`    | optional | Verifies Stripe webhooks                  |
