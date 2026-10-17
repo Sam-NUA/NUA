@@ -472,8 +472,15 @@ async def get_roster( week_start: str = None, user: dict = Depends(get_user)):
     shifts = await db.roster_shifts.find(query, {"_id": 0}).sort("date", 1).to_list(5000)
     return shifts
 
+async def _require_roster_staff(staff_id, business_id):
+    if not staff_id or not await db.auth_users.find_one(
+            {"id": staff_id, **tenant_scope_filter(business_id)}, {"_id": 0, "id": 1}):
+        raise HTTPException(status_code=404, detail="Staff member not found")
+
+
 @router.post("/staff/roster")
 async def create_roster_shift(data: dict, user: dict = Depends(require_owner_or_manager)):
+    await _require_roster_staff(data.get("staffId"), user.get("businessId"))
     conflict = await _blackout_conflict(
         data.get("staffId"), data.get("date"), data.get("weekStart"), user.get("businessId"))
     if conflict and not data.get("overrideBlackout"):
@@ -505,6 +512,7 @@ async def update_roster_shift(shift_id: str, data: dict, user: dict = Depends(re
     if not existing:
         raise HTTPException(status_code=404, detail="Shift not found")
     staff_id = data.get("staffId", existing.get("staffId"))
+    await _require_roster_staff(staff_id, user.get("businessId"))
     day = data.get("date", existing.get("date"))
     week_start = data.get("weekStart", existing.get("weekStart"))
     conflict = await _blackout_conflict(staff_id, day, week_start, user.get("businessId"))

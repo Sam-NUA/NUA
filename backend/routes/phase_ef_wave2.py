@@ -35,9 +35,9 @@ async def _llm_json(session_id: str, system: str, user_text: str, model: str = "
     """Run an LLM call expecting strict JSON in the response. Returns parsed dict
     or {} on failure."""
     try:
-        from emergentintegrations.llm.chat import LlmChat, UserMessage
+        from services.ai_provider import LlmChat, UserMessage
         chat = LlmChat(
-            api_key=os.environ.get("EMERGENT_LLM_KEY"),
+            api_key=os.environ.get("OPENAI_API_KEY"),
             session_id=session_id,
             system_message=system,
         ).with_model("openai", model)
@@ -447,8 +447,8 @@ async def voice_to_recipe(data: dict, user: dict = Depends(get_user)):
     # Optional voice path: transcribe with whisper first
     if not transcript and audio_base64:
         try:
-            from emergentintegrations.llm.openai.audio import OpenAIAudio
-            audio = OpenAIAudio(api_key=os.environ.get("EMERGENT_LLM_KEY"))
+            from services.ai_provider import OpenAIAudio
+            audio = OpenAIAudio(api_key=os.environ.get("OPENAI_API_KEY"))
             import base64
             audio_bytes = base64.b64decode(audio_base64)
             transcript = await audio.audio_to_text(

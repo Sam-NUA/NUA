@@ -22,7 +22,7 @@ absolute origin instead — there is no "same origin" from inside a
 Capacitor WebView:
 
 ```bash
-PUBLIC_URL=/ REACT_APP_BACKEND_URL=https://app.nuapos.com.au npx craco build
+PUBLIC_URL=/ REACT_APP_BACKEND_URL=https://app.nuapos.com.au npm run build
 npx cap sync android
 ```
 

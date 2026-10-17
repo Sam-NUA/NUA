@@ -292,32 +292,10 @@ async def voice_order(data: dict, _: dict = Depends(get_user)):
     mime = data.get("mime", "audio/webm")
     if not audio_b64:
         raise HTTPException(status_code=400, detail="audioBase64 required")
-    tmp_path = None
     try:
-        from openai import OpenAI
-        import tempfile
-        # Universal LLM gateway (OpenAI-compatible) wired up via env vars so we
-        # don't hard-code provider URLs here.
-        client = OpenAI(
-            api_key=os.environ.get("EMERGENT_LLM_KEY"),
-            base_url=os.environ.get("LLM_GATEWAY_URL", "https://integrations.emergentagent.com/llm/openai"),
-        )
-        audio_bytes = base64.b64decode(audio_b64.split(",", 1)[-1])
-        ext = ".webm" if "webm" in mime else ".mp3" if "mp3" in mime else ".wav"
-        # Raw guest audio is not retained by default — used to be written
-        # with delete=False and never cleaned up (found during the Trust
-        # Release final readiness audit), leaving every voice-order clip on
-        # local disk indefinitely. The `finally` block below deletes it on
-        # every path, success or failure, and it's still only ever a local
-        # temp file used for exactly one transcription call, never persisted
-        # to the database or object storage.
-        fd, tmp_path = tempfile.mkstemp(suffix=ext)
-        with os.fdopen(fd, "wb") as tmp:
-            tmp.write(audio_bytes)
-            tmp.flush()
-        with open(tmp_path, "rb") as af:
-            tr = client.audio.transcriptions.create(model="whisper-1", file=af)
-        transcript = tr.text if hasattr(tr, "text") else str(tr)
+        from services.ai_provider import OpenAIAudio
+        audio_bytes = base64.b64decode(audio_b64.split(",", 1)[-1], validate=True)
+        transcript = await OpenAIAudio().audio_to_text(content=audio_bytes, mime_type=mime)
 
         # Match transcript words to products
         products = await db.products.find(tenant_scope_filter(), {"_id": 0, "id": 1, "name": 1, "price": 1}).to_list(1000)
@@ -336,12 +314,7 @@ async def voice_order(data: dict, _: dict = Depends(get_user)):
         return {"transcript": transcript, "suggestions": suggestions}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Voice transcription failed: {str(e)[:200]}")
-    finally:
-        if tmp_path:
-            try:
-                os.remove(tmp_path)
-            except OSError:
-                pass
+
 
 
 # =============================================================================
@@ -877,7 +850,7 @@ async def gdpr_erase(customer_id: str, user: dict = Depends(require_owner)):
     # Anonymize rather than hard-delete to preserve financial records
     anon = {"name": "[REDACTED]", "email": "redacted@nua.local", "phone": "[REDACTED]", "notes": "", "erasedAt": datetime.now(timezone.utc).isoformat(), "erasedBy": user["id"]}
     await db.customers.update_one({**tenant_scope_filter(user.get("businessId")), "id": customer_id}, {"$set": anon})
-    await db.feedback.update_many({"customerId": customer_id}, {"$set": {"customerName": "[REDACTED]"}})
+    await db.feedback.update_many({"customerId": customer_id, **tenant_scope_filter(user.get("businessId"))}, {"$set": {"customerName": "[REDACTED]"}})
 
     phone = existing.get("phone")
     business_id = user.get("businessId")
@@ -903,7 +876,7 @@ async def gdpr_erase(customer_id: str, user: dict = Depends(require_owner)):
                     changed = True
             if changed:
                 await db.bill_splits.update_one(
-                    {"id": split["id"]},
+                    {"id": split["id"], **tenant_scope_filter(business_id)},
                     {"$set": {"lines": split["lines"], "equalParts": split["equalParts"]}})
 
         own_split_ids = [s["id"] for s in own_splits]

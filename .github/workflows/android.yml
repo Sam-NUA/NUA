@@ -24,7 +24,7 @@ jobs:
       # does, so the real API origin is fine here and matches what a real
       # release build would actually ship with.
       REACT_APP_BACKEND_URL: https://native-smoke.example.invalid
-      CI: false   # CRA treats warnings as errors under CI=true; this repo isn't warning-clean yet (see ci.yml's frontend-build)
+      CI: true
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -32,8 +32,8 @@ jobs:
           # @capacitor/cli 8.5.3 hard-requires Node >=22 — `npx cap sync`
           # refuses to run at all on 20 (confirmed by a real CI failure,
           # not assumed: "[fatal] The Capacitor CLI requires NodeJS
-          # >=22.0.0"). frontend-build/e2e-tests in ci.yml stay on 20
-          # since craco build/test don't have this requirement; only this
+          # >=22.0.0"). All shared frontend jobs now also use Node 22.
+          # Vite and the native CLI both require a supported Node 22 runtime; this
           # workflow's cap sync step needs the newer runtime.
           node-version: '22'
           cache: 'npm'
@@ -43,7 +43,7 @@ jobs:
         run: npm ci
       - name: Build shared React app
         working-directory: ./frontend
-        run: npx craco build
+        run: npm run build
       - uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
@@ -239,7 +239,7 @@ jobs:
         run: npm ci
       - name: Build shared React app against the throwaway backend
         working-directory: ./frontend
-        run: npx craco build
+        run: npm run build
       - uses: actions/setup-java@v4
         with:
           distribution: 'temurin'

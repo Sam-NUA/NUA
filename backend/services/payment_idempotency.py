@@ -90,8 +90,9 @@ async def claim_or_wait(provider: str, key: Optional[str],
     A claim that never resolves (the first caller crashed after claiming
     but before recording a result) is not blocked on forever: after ~2s
     this gives up waiting and returns None, letting the caller create its
-    own session. Favors availability over a stuck request — Stripe/
-    Coinbase network calls normally finish well inside that window."""
+    own session. Stripe callers must also pass provider_request_key() upstream so a slow
+    or lost response cannot mint a second provider session. Coinbase retains
+    its existing bounded-wait behavior."""
     if not key:
         return None
     claim_key = f"{provider}:{key}"
@@ -115,20 +116,22 @@ async def claim_or_wait(provider: str, key: Optional[str],
         )
 
     if _is_stale(prior):
-        # Old enough that reusing its result would likely redirect to a
-        # dead/expired session — refresh the claim in place and proceed as
-        # a fresh claim. Not itself atomic against another equally-stale
-        # concurrent refresh, but that's the same "gave up waiting, create
-        # our own" tradeoff already accepted below — at worst two sessions
-        # get created for a retry happening 30+ minutes after the first.
-        await db.payment_session_claims.update_one(
-            {"claimKey": claim_key},
+        # Compare-and-swap ensures concurrent stale retries share one new generation.
+        renewed = await db.payment_session_claims.find_one_and_update(
+            {"claimKey": claim_key, "createdAt": prior.get("createdAt")},
             {"$set": {"createdAt": now.isoformat(),
                        "expiresAt": now + timedelta(seconds=CLAIM_DOC_TTL_SECONDS),
-                       "payloadFingerprint": payload_fingerprint,
-                       "result": None}},
-        )
-        return None
+                       "payloadFingerprint": payload_fingerprint, "result": None}},
+            return_document=ReturnDocument.AFTER)
+        if renewed is not None:
+            return None
+        # Another process renewed it first. Join that generation; never mint a
+        # second provider request identity from the same stale claim.
+        prior = await db.payment_session_claims.find_one({"claimKey": claim_key})
+        if prior is None:
+            raise IdempotencyConflict("Checkout claim changed; retry the request")
+        if payload_fingerprint is not None and prior.get("payloadFingerprint") != payload_fingerprint:
+            raise IdempotencyConflict("Checkout claim renewed for a different request")
 
     existing = prior
     for _ in range(20):  # ~2s total
@@ -147,3 +150,11 @@ async def record_result(provider: str, key: Optional[str], result: dict) -> None
     await db.payment_session_claims.update_one(
         {"claimKey": f"{provider}:{key}"}, {"$set": {"result": result}},
     )
+
+
+async def provider_request_key(provider: str, key: str) -> str:
+    """Provider dedup survives a lost response; a genuinely stale claim rotates it."""
+    claim = await db.payment_session_claims.find_one({"claimKey": f"{provider}:{key}"}, {"_id": 0})
+    if not claim or not claim.get("createdAt"):
+        raise IdempotencyConflict("Checkout claim unavailable; retry the request")
+    return hashlib.sha256(f"nua:{provider}:{key}:{claim['createdAt']}".encode()).hexdigest()

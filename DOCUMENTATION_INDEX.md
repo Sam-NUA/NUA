@@ -1,3 +1,5 @@
+> Historical packaging guide. The old frontend Electron/CRA commands below are retired. Use the [current shared/native build guide](docs/platform/CURRENT_BUILD_GUIDE.md) and `apps/windows` for Windows releases.
+
 # 📚 Complete Documentation Index - NUA POS
 
 ## 🎯 I Want to Build the Windows .exe - Where Do I Start?

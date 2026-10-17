@@ -66,7 +66,7 @@ module.exports = defineConfig({
       // e2e backend above — CRA bakes REACT_APP_* vars in at build time,
       // there's no runtime config file to point a pre-built bundle at a
       // different backend after the fact.
-      command: `sh -c "REACT_APP_BACKEND_URL=${BACKEND_URL} CI=false npx craco build && npx serve -s build -l ${FRONTEND_PORT}"`,
+      command: `sh -c "REACT_APP_BACKEND_URL=${BACKEND_URL} CI=false npm run build && npm run preview -- --port ${FRONTEND_PORT}"`,
       cwd: __dirname,
       url: `http://127.0.0.1:${FRONTEND_PORT}`,
       timeout: 180_000,

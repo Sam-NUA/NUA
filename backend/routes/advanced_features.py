@@ -820,8 +820,8 @@ async def generate_ai_insights(data: dict, _: dict = Depends(require_owner_or_ma
 
     report_data = data.get("reportData", {})
     try:
-        from emergentintegrations.llm.chat import LlmChat, UserMessage
-        api_key = os.environ.get("EMERGENT_LLM_KEY", "")
+        from services.ai_provider import LlmChat, UserMessage
+        api_key = os.environ.get("OPENAI_API_KEY", "")
         chat = LlmChat(api_key=api_key, session_id=f"eod-{uuid.uuid4()}", system_message="You are an expert restaurant business analyst. Provide concise, actionable insights from POS data. Use bullet points. Be specific with numbers. Keep response under 300 words.")
         chat.with_model("openai", "gpt-5.2")
 

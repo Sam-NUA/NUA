@@ -443,8 +443,8 @@ async def generate_weekly_summary() -> Optional[Dict[str, Any]]:
 End with ONE specific recommendation."""
     summary_text = None
     try:
-        from emergentintegrations.llm.chat import LlmChat, UserMessage
-        key = os.environ.get("EMERGENT_LLM_KEY")
+        from services.ai_provider import LlmChat, UserMessage
+        key = os.environ.get("OPENAI_API_KEY")
         if key:
             chat = LlmChat(api_key=key, session_id=f"ash-{uuid.uuid4()}",
                             system_message="You are Ash, NUA's hospitality business analyst. Warm, concrete, brief.")\

@@ -38,7 +38,7 @@ jobs:
         run: npm ci
       - name: Build shared React app
         working-directory: ./frontend
-        run: npx craco build
+        run: npm run build
       - name: Sync Capacitor iOS project
         working-directory: ./frontend
         run: npx cap sync ios
@@ -176,7 +176,7 @@ jobs:
         run: npm ci
       - name: Build shared React app against the throwaway backend
         working-directory: ./frontend
-        run: npx craco build
+        run: npm run build
       - name: Sync Capacitor iOS project
         working-directory: ./frontend
         run: npx cap sync ios

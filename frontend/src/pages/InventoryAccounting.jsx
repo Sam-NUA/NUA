@@ -456,7 +456,7 @@ function BASPanel() {
     catch (e) { toast({ title: 'Failed', description: e?.response?.data?.detail, variant: 'destructive' }); }
     setLoading(false);
   };
-  useEffect(() => { load(); }, []);  // eslint-disable-line
+  useEffect(() => { load(); }, []);
   const dl = async () => {
     try {
       const r = await inventoryAPI.basCsv({ fy, quarter });
@@ -528,7 +528,7 @@ function SuperAwardsPanel() {
     } catch { /* no awards available yet */ toast({ title: 'Could not load awards', variant: 'destructive' }); }
   };
 
-  useEffect(() => { refresh(); /* eslint-disable-next-line */ }, [country]);
+  useEffect(() => { refresh();   }, [country]);
 
   const install = async (code) => {
     try { await awardsAPI.install(code); toast({ title: 'Award installed' }); refresh(); }

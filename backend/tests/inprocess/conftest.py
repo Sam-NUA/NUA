@@ -141,3 +141,32 @@ def mock_pos_sale_transaction(monkeypatch):
                         await collection.insert_many(rows)
                 raise
     monkeypatch.setattr(pos_sale_store, "_transaction", execute)
+
+
+@pytest.fixture(autouse=True)
+def mock_consistency_transaction(monkeypatch):
+    """Behavior/abort double only; tests_real proves actual Mongo contention.
+
+    Mongomock cannot supply sessions. Keep production transaction requirements
+    intact and restore every participating collection if the callback aborts.
+    """
+    import asyncio
+    from database import db
+    from services import consistency_store
+    lock = asyncio.Lock()
+
+    async def execute(operation):
+        async with lock:
+            collections = (db.products, db.stock_transfers, db.appointments,
+                           db.appointment_calendars, db.customers)
+            snapshots = [await c.find({}).to_list(None) for c in collections]
+            try:
+                return await operation(None)
+            except BaseException:
+                for collection, rows in zip(collections, snapshots):
+                    await collection.delete_many({})
+                    if rows:
+                        await collection.insert_many(rows)
+                raise
+
+    monkeypatch.setattr(consistency_store, "_transaction", execute)

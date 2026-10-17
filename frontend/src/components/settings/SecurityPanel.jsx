@@ -36,7 +36,7 @@ export default function SecurityPanel() {
       try { setPolicy((await twoFactorAPI.getPolicy()).data); } catch { /* silent */ }
     }
   };
-  useEffect(() => { load(); /* eslint-disable-next-line */ }, []);
+  useEffect(() => { load();   }, []);
 
   const begin = async () => {
     setBusy(true);

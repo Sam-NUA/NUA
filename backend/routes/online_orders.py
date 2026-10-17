@@ -108,11 +108,11 @@ async def _ai_eta_explanation(order: dict, eta: dict) -> str:
         f"Your {order.get('channel','order')} is being prepared. "
         f"Estimated ready in ~{eta['etaMinutes']} minutes."
     )
-    if not os.environ.get("EMERGENT_LLM_KEY"): return fallback
+    if not os.environ.get("OPENAI_API_KEY"): return fallback
     try:
-        from emergentintegrations.llm.chat import LlmChat, UserMessage
+        from services.ai_provider import LlmChat, UserMessage
         chat = LlmChat(
-            api_key=os.environ["EMERGENT_LLM_KEY"],
+            api_key=os.environ["OPENAI_API_KEY"],
             session_id=f"eta-{uuid.uuid4().hex[:6]}",
             system_message=(
                 "You are a friendly restaurant assistant writing a single-sentence "
@@ -378,13 +378,13 @@ async def create_online_order_checkout(data: dict, http_request: Request):
     # case (found running this endpoint end to end via Playwright). Matches
     # routes/integrations.py's _create_stripe_session, which already does
     # this the right way round.
-    from emergentintegrations.payments.stripe.checkout import StripeCheckout, CheckoutSessionRequest
+    from services.stripe_checkout import StripeCheckout, CheckoutSessionRequest
 
     # A double-click or a client retry must not create two live Stripe
     # sessions for the same order — order_id is already a stable resource
     # identity (unlike a freshly-generated one), so this needs no new
     # client-supplied key at all. See services/payment_idempotency.py.
-    from services.payment_idempotency import claim_or_wait, record_result
+    from services.payment_idempotency import claim_or_wait, record_result, provider_request_key
     prior_result = await claim_or_wait("stripe_online_order", order_id)
     if prior_result is not None:
         return {"configured": True, **prior_result}
@@ -406,6 +406,7 @@ async def create_online_order_checkout(data: dict, http_request: Request):
         success_url=success_url,
         cancel_url=cancel_url,
         metadata={"orderId": order_id, "source": "nua_pos", "kind": "online_order"},
+        idempotency_key=await provider_request_key("stripe_online_order", order_id),
     )
     session = await stripe_checkout.create_checkout_session(checkout_request)
 

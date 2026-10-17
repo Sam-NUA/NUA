@@ -1,5 +1,5 @@
-// NUA POS service worker — v3 (network-first for JS/HTML to avoid stale bundles)
-const CACHE = 'nua-shell-v3';
+// NUA POS service worker — v4 (network-first for JS/HTML to avoid stale bundles)
+const CACHE = 'nua-shell-v4';
 const STATIC_ASSETS = ['/manifest.json', '/favicon.ico'];
 
 self.addEventListener('install', (e) => {
@@ -36,7 +36,7 @@ self.addEventListener('fetch', (e) => {
     url.pathname === '/';
 
   // API always network-only (no SW caching of authenticated data)
-  if (url.pathname.startsWith('/api/')) {
+  if ((url.pathname.startsWith('/api/') || url.pathname.startsWith('/bookings-api/'))) {
     e.respondWith(fetch(req).catch(() => new Response(JSON.stringify({offline: true}), {status: 503, headers: {'Content-Type': 'application/json'}})));
     return;
   }

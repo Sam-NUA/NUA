@@ -806,10 +806,10 @@ async def ai_promotion_goal(body: dict, user: dict = Depends(get_user)):
 
     # Try LLM first; fall back to a heuristic library so this endpoint never
     # 500s in demos / offline runs.
-    key = os.environ.get("EMERGENT_LLM_KEY") or os.environ.get("OPENAI_API_KEY")
+    key = os.environ.get("OPENAI_API_KEY")
     if key:
         try:
-            from emergentintegrations.llm.chat import LlmChat, UserMessage
+            from services.ai_provider import LlmChat, UserMessage
             chat = LlmChat(
                 api_key=key,
                 session_id=f"promo-goal-{uuid.uuid4().hex[:6]}",

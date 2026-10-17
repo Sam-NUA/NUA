@@ -612,7 +612,7 @@ async def create_refund(refund: RefundCreate, _user: dict = Depends(require_owne
         refund_obj_dict["kitchenEffects"] = await refund_effects.reverse(
             original_txn, refund_obj_dict, actor=_user.get("name") or _user.get("email"))
         await db.refunds.update_one(
-            {"id": refund_obj_dict["id"]},
+            {"id": refund_obj_dict["id"], **tenant_scope_filter(_user.get("businessId"))},
             {"$set": {"kitchenEffects": refund_obj_dict["kitchenEffects"]}})
     except Exception as e:
         log_and_continue(logger, "Refund kitchen/stock reversal skipped", e)

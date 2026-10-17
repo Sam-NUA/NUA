@@ -6,7 +6,6 @@
   "dependencies": {
     "@capacitor/android": "^8.5.3",
     "@capacitor/app": "^8.1.2",
-    "@capacitor/cli": "^8.5.3",
     "@capacitor/clipboard": "^8.0.1",
     "@capacitor/core": "^8.5.3",
     "@capacitor/device": "^8.0.3",
@@ -52,7 +51,6 @@
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "cmdk": "^1.1.1",
-    "cra-template": "1.2.0",
     "date-fns": "^4.1.0",
     "embla-carousel-react": "^8.6.0",
     "input-otp": "^1.4.2",
@@ -65,23 +63,21 @@
     "react-hook-form": "^7.56.2",
     "react-resizable-panels": "^3.0.1",
     "react-router-dom": "^7.5.1",
-    "react-scripts": "5.0.1",
     "sonner": "^2.0.3",
     "tailwind-merge": "^3.2.0",
-    "tailwindcss-animate": "^1.0.7",
     "vaul": "^1.1.2",
     "zod": "^3.24.4"
   },
   "scripts": {
-    "start": "craco start",
-    "build": "craco build",
-    "test": "craco test",
+    "start": "vite --host 127.0.0.1 --port 3000",
+    "build": "vite build",
+    "test": "jest",
     "test:e2e": "playwright test",
-    "electron-dev": "concurrently \"cross-env BROWSER=none craco start\" \"wait-on http://localhost:3000 && cross-env ELECTRON_START_URL=http://localhost:3000 electron electron/main.js\"",
-    "electron-build": "craco build && electron-builder --win --publish never",
-    "android-build": "craco build && npx cap sync android"
+    "android-build": "npm run build && npx cap sync android",
+    "preview": "vite preview --host 127.0.0.1",
+    "lint": "eslint src",
+    "test:native-tools": "node --test scripts/ios-page-eval.test.cjs"
   },
-  "main": "electron/main.js",
   "browserslist": {
     "production": [
       ">0.2%",
@@ -95,56 +91,32 @@
     ]
   },
   "devDependencies": {
-    "@babel/plugin-proposal-private-property-in-object": "^7.21.11",
-    "@craco/craco": "^7.1.0",
-    "@eslint/js": "9.23.0",
+    "@eslint/js": "9.39.5",
     "@playwright/test": "^1.62.1",
     "autoprefixer": "^10.4.20",
     "chrome-remote-interface": "^0.34.0",
-    "concurrently": "^9.2.1",
-    "cross-env": "^10.1.0",
-    "electron": "33",
-    "electron-builder": "25",
-    "eslint": "9.23.0",
+    "eslint": "9.39.5",
     "eslint-plugin-import": "2.31.0",
     "eslint-plugin-jsx-a11y": "6.10.2",
     "eslint-plugin-react": "7.37.4",
     "fake-indexeddb": "^6.2.5",
     "globals": "15.15.0",
     "postcss": "^8.4.49",
-    "serve": "^14.2.6",
     "tailwindcss": "^3.4.17",
-    "wait-on": "^9.0.5",
-    "webdriverio": "^9.0.0"
+    "webdriverio": "10.0.2",
+    "@capacitor/cli": "^8.5.3",
+    "vite": "8.3.4",
+    "@vitejs/plugin-react": "6.1.2",
+    "jest": "30.5.2",
+    "jest-environment-jsdom": "30.5.2",
+    "babel-jest": "30.5.2",
+    "@babel/core": "^7.28.0",
+    "@babel/preset-env": "^7.28.0",
+    "@babel/preset-react": "^7.27.0",
+    "tailwindcss-animate": "^1.0.7"
   },
-  "build": {
-    "appId": "com.nua.pos",
-    "productName": "NUA POS",
-    "files": [
-      "build/**/*",
-      "electron/**/*"
-    ],
-    "directories": {
-      "buildResources": "public"
-    },
-    "win": {
-      "target": [
-        {
-          "target": "nsis",
-          "arch": [
-            "x64"
-          ]
-        }
-      ],
-      "icon": "public/favicon.ico"
-    },
-    "nsis": {
-      "oneClick": false,
-      "allowToChangeInstallationDirectory": true,
-      "installerIcon": "public/favicon.ico",
-      "uninstallerIcon": "public/favicon.ico",
-      "installerHeaderIcon": "public/favicon.ico"
-    }
-  },
-  "packageManager": "yarn@1.22.22+sha512.a6b2f7906b721bba3d67d4aff083df04dad64c399707841b7acf00f6b133b7ac24255f2652fa22ae3534329dc6180534e98d17432037ff6fd140556e2bb3137e"
+  "packageManager": "npm@11.9.0",
+  "engines": {
+    "node": ">=22.19.0"
+  }
 }

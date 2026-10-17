@@ -53,9 +53,9 @@ def _new_code(prefix: str = "NUA") -> dict:
 
 async def _llm_json(session_id: str, system: str, user_text: str):
     try:
-        from emergentintegrations.llm.chat import LlmChat, UserMessage
+        from services.ai_provider import LlmChat, UserMessage
         chat = LlmChat(
-            api_key=os.environ.get("EMERGENT_LLM_KEY"),
+            api_key=os.environ.get("OPENAI_API_KEY"),
             session_id=session_id, system_message=system,
         ).with_model("openai", "gpt-5.2")
         resp = await chat.send_message(UserMessage(text=user_text))

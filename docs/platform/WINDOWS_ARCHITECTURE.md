@@ -1,5 +1,7 @@
 # Windows touchscreen and desktop
 
+Current build commands and all-platform evidence: [build guide](CURRENT_BUILD_GUIDE.md) and [software closure](LAUNCH_SOFTWARE_CLOSURE_2026-10-17.md). Historical foundation observations below predate the now-passing Android/iOS native milestones.
+
 Started independently by Codex (ChatGPT) on `feat/windows-foundation`
 (PR #21) with its own Phase 0 audit and a real, carefully-sandboxed
 Electron host and offline-queue primitive; taken over and integrated
@@ -12,8 +14,7 @@ full handoff history.
 
 - Native host: `apps/windows/` — a standalone Electron 44.7.0 app with
   its own `package.json`/lockfile (isolated from the frontend's
-  dependencies and from the older, stalled `frontend/electron/` scaffold,
-  which is not used to release this). `npm run dist` (electron-builder)
+  dependencies; the old `frontend/electron/` scaffold has been retired). `npm run dist` (electron-builder)
   produces an unsigned Windows NSIS installer.
 - A reusable, identity-scoped offline primitive: `packages/platform-core/`
   — not Windows-specific by name, but currently only consumed by

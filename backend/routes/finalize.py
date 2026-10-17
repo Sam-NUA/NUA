@@ -790,8 +790,8 @@ async def ai_suggest_automation(body: dict, _: dict = Depends(get_user)):
     if not prompt:
         raise HTTPException(400, "prompt is required")
     try:
-        from emergentintegrations.llm.chat import LlmChat, UserMessage
-        api_key = os.environ.get("EMERGENT_LLM_KEY")
+        from services.ai_provider import LlmChat, UserMessage
+        api_key = os.environ.get("OPENAI_API_KEY")
         if not api_key:
             raise Exception("no key")
         chat = LlmChat(api_key=api_key, session_id=f"auto-{uuid.uuid4()}",

@@ -7,7 +7,9 @@ const origin = apiOrigin(process.env.NUA_WINDOWS_API_ORIGIN);
 const source = path.resolve(__dirname, '../../../frontend/build');
 const target = path.resolve(__dirname, '../renderer');
 const manifest = JSON.parse(fs.readFileSync(path.join(source, 'asset-manifest.json')));
-const bundle = fs.readFileSync(path.join(source, manifest.files['main.js'].replace(/^\//, '')), 'utf8');
+// Vite may factor shared modules out of the entry; verify the compiled JS set.
+const bundle = Object.values(manifest.files).filter(name => name.endsWith('.js'))
+  .map(name => fs.readFileSync(path.join(source, name.replace(/^\//, '')), 'utf8')).join('\n');
 if (!bundle.includes(origin)) throw new Error('Build frontend with REACT_APP_BACKEND_URL equal to NUA_WINDOWS_API_ORIGIN');
 fs.rmSync(target, { recursive: true, force: true });
 fs.cpSync(source, target, { recursive: true });
