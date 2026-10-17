@@ -75,7 +75,8 @@
     "test:e2e": "playwright test",
     "android-build": "npm run build && npx cap sync android",
     "preview": "vite preview --host 127.0.0.1",
-    "lint": "eslint src"
+    "lint": "eslint src",
+    "test:native-tools": "node --test scripts/ios-page-eval.test.cjs"
   },
   "browserslist": {
     "production": [
@@ -116,6 +117,6 @@
   },
   "packageManager": "npm@11.9.0",
   "engines": {
-    "node": ">=22.12.0"
+    "node": ">=22.19.0"
   }
 }

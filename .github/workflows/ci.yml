@@ -121,6 +121,8 @@ jobs:
         run: npm test -- --watchAll=false
         env:
           CI: true
+      - name: Native automation async-script contract
+        run: npm run test:native-tools
       - name: Build
         run: npm run build
         env:

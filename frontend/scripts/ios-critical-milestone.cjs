@@ -30,8 +30,8 @@
  * instead. This drives the app through Appium's XCUITest driver (which
  * wraps that protocol via WebDriverAgent), using WebdriverIO's standard
  * element API in the WEBVIEW_* context. IndexedDB reads go through
- * executeAsync (the W3C "synchronous script" endpoint doesn't await
- * promises).
+ * an async function passed to execute (WebdriverIO 10 selects the W3C
+ * asynchronous script endpoint and awaits its result).
  *
  * "Offline" is simulated by stopping the real backend process so already-
  * open keep-alive sockets actually die, not just a device-level radio/
@@ -244,20 +244,8 @@ async function connectWebviewContext(driver, timeoutMs = 60000) {
 }
 
 function makePageDriver(driver) {
-  // W3C WebDriver's "execute script" endpoint runs synchronously and never
-  // awaits a returned promise — executeAsync (the "execute async script"
-  // endpoint) is the one that does, via the extra callback argument every
-  // script implicitly receives as its last argument.
-  async function evalPage(expression) {
-    const outcome = await driver.executeAsync(`
-      var done = arguments[arguments.length - 1];
-      (async function(){ return (${expression}); })()
-        .then((value) => done({ ok: true, value: value }))
-        .catch((error) => done({ ok: false, message: (error && error.message) || String(error) }));
-    `);
-    if (!outcome.ok) throw new Error(`Page eval failed: ${outcome.message}\n${expression}`);
-    return outcome.value;
-  }
+  const evaluatePage = require('./ios-page-eval.cjs');
+  const evalPage = (expression) => evaluatePage(driver, expression);
   async function waitForSelector(selector, timeoutMs = 60000) {
     const el = await driver.$(selector);
     await el.waitForExist({ timeout: timeoutMs, timeoutMsg: `Timed out waiting for selector ${selector}` });
@@ -466,7 +454,7 @@ async function loginWithPin(page, pin) {
   // `window.location.assign('/clock-in')` reload -- all AFTER this click
   // already returned (the click itself is just the tap; none of that is
   // awaited by it). A real CI run reconnected the WEBVIEW context and hit
-  // it with executeAsync before the reload had actually started, getting a
+  // it with async evaluation before the reload had actually started, getting a
   // context mid-teardown and an opaque WebDriverError back. Give the whole
   // chain time to actually finish navigating before anything touches the
   // page again.
@@ -564,7 +552,7 @@ async function main() {
   try {
     // W3C WebDriver sessions default their "script" timeout to near zero
     // unless explicitly set -- every evalPage() call below goes through
-    // executeAsync.
+    // awaited page execution.
     await driver.setTimeout({ script: 60000 });
     await connectWebviewContext(driver);
     let page = makePageDriver(driver);

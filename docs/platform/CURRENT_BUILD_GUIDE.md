@@ -7,7 +7,7 @@ staging API origin for interactive acceptance tests.
 
 ## Shared frontend
 
-Node 22.12+ is required; use the committed npm lockfile.
+Node 22.19+ is required; use the committed npm lockfile.
 
 ```bash
 cd frontend
@@ -60,7 +60,7 @@ or the custom session plugin to resolve a signing problem.
 Use the supported host in `apps/windows`. The former `frontend/electron` scaffold
 and its `build-windows.bat`/`electron-package.json` are retired.
 
-PowerShell on a Windows machine with Node 22.12+ (CI uses Node 24):
+PowerShell on a Windows machine with Node 22.19+ (CI uses Node 24):
 
 ```powershell
 $env:PUBLIC_URL = '/'

@@ -3,9 +3,9 @@
 # NUVA POS — Android APK Build Script
 # ============================================================
 # Prerequisites (on your local machine):
-#   1. Node.js >= 22.12
+#   1. Node.js >= 22.19
 #   2. Android Studio with SDK installed
-#   3. Java JDK 17+
+#   3. Java JDK 21+
 #   4. ANDROID_HOME environment variable set
 #
 # Usage:

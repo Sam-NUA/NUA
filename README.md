@@ -55,7 +55,7 @@
 
 ## Quick start
 
-Use Python 3.11+ and Node 22.12+. Provision an isolated MongoDB database and
+Use Python 3.11+ and Node 22.19+. Provision an isolated MongoDB database and
 server-only environment settings described in [Owner access](docs/OWNER_ACCESS.md).
 
 ```bash
