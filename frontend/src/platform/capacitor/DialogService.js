@@ -12,7 +12,7 @@ export async function confirm(message) {
 }
 
 export async function prompt(message, defaultValue = '') {
-  // eslint-disable-next-line no-restricted-globals
+   
   return window.prompt(message, defaultValue);
 }
 

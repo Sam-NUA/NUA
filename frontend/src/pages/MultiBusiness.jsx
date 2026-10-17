@@ -45,7 +45,7 @@ export default function MultiBusiness() {
       setSummaries(prev => ({ ...prev, [id]: r.data }));
     } catch { /* summary is a nice-to-have, silently skip on failure */ }
   };
-  useEffect(() => { businesses.forEach(b => loadSummary(b.id)); }, [businesses]); // eslint-disable-line
+  useEffect(() => { businesses.forEach(b => loadSummary(b.id)); }, [businesses]);  
 
   const createBusiness = async () => {
     if (!form.name.trim()) { toast.error('Business name required'); return; }

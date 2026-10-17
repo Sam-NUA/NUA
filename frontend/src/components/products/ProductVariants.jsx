@@ -23,7 +23,7 @@ export function ProductVariants({ product, onChanged }) {
     setLoading(true);
     productsAPI.variants(product.id).then(r => setVariants(r.data || [])).catch(() => {}).finally(() => setLoading(false));
   };
-  useEffect(load, [product.id]); // eslint-disable-line
+  useEffect(load, [product.id]);  
 
   const addVariant = async () => {
     if (!form.label.trim()) { toast.error('Give this variant a label, e.g. "Medium / Red"'); return; }

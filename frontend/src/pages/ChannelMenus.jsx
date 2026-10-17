@@ -37,7 +37,7 @@ export default function ChannelMenus() {
   // Load supported channels once
   useEffect(() => { channelMenusAPI.channels().then(r => setChannels(r.data || [])); }, []);
   // Load rows whenever active channel changes
-  useEffect(() => { loadRows(); /* eslint-disable-next-line */ }, [active]);
+  useEffect(() => { loadRows();   }, [active]);
 
   const loadRows = async () => {
     try {

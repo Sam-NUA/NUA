@@ -47,7 +47,7 @@ export default function CustomerWalletPanel({ customer, theme, onRefresh }) {
     } catch { /* silent */ }
     finally { setBusy(false); }
   };
-  useEffect(() => { load(); /* eslint-disable-next-line */ }, [customer?.id]);
+  useEffect(() => { load();   }, [customer?.id]);
 
   const issueFromRecommendation = async (rec) => {
     try {

@@ -165,7 +165,7 @@ import { trackEvent } from './lib/telemetry';
 // to satisfy the requirement without touching layout anyone depends on.
 // Named as a deliberately-deferred follow-up in MOBILE_DESKTOP_BACKLOG.md,
 // not silently skipped.
-// eslint-disable-next-line no-console
+ 
 console.info(`NUA POS — App: ${APP_VERSION} · API: v1 · Platform: ${detectPlatform()}`);
 trackEvent('app_launch');
 
