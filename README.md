@@ -1,6 +1,6 @@
 # Nua — Restaurant OS
 
-> **Updated 14 September 2026**
+> **Updated 17 October 2026**
 >
 > An AI-first restaurant operating system. POS, kitchen, reservations, inventory, accounting, loyalty, social-media marketing — all in one place. Built with React + FastAPI + MongoDB. Themed in NUA's signature orange / purple / pink palette and rebranded as **Nua - Restaurant OS** from iteration 37 onward.
 >

@@ -14,6 +14,7 @@ cd frontend
 npm ci
 npm run lint
 npm test -- --runInBand --watchAll=false
+npm run test:native-tools
 PUBLIC_URL=/ REACT_APP_BACKEND_URL=https://your-staging-origin.example npm run build
 ```
 
