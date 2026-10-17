@@ -1,12 +1,11 @@
 name: CI
 
-# Runs on every PR and every push, on every branch — unlike deploy.yml, which
-# only fires on main/master. This is what a reviewer sees turn red *before*
-# something merges, rather than after it's live on Fly.io.
+# Run the complete quality/security suite on PRs and every branch, including
+# main. Vercel Git integration builds releases; this workflow never deploys
+# to another hosting platform.
 on:
   pull_request:
   push:
-    branches-ignore: [main, master]   # main/master go through deploy.yml's own test job
 
 concurrency:
   group: ci-${{ github.ref }}

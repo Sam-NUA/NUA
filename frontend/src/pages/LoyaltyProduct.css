@@ -1,0 +1,27 @@
+.loyalty-product { width: 100%; }
+.loyalty-hero { padding: 36px 0 24px; max-width: 750px; }
+.loyalty-hero h1 { font-size: clamp(2.4rem, 5vw, 4.1rem); line-height: 1.08; letter-spacing: -.04em; margin: 12px 0 24px; }
+.loyalty-eyebrow { font-size: .72rem; letter-spacing: .16em; font-weight: 700; color: #6b1738; }
+.loyalty-stats { display: grid; grid-template-columns: repeat(3,1fr); gap: 16px; margin: 24px 0; }
+.loyalty-stats > div { background: #fffaf3; padding: 22px; border: 1px solid #e2d6cc; border-radius: 16px; }
+.loyalty-stats strong, .loyalty-stats span { display: block; }
+.loyalty-stats strong { font-size: 1.8rem; color: #6b1738; }
+.loyalty-stats span { font-size: .82rem; margin-top: 6px; }
+.loyalty-product textarea { min-height: 100px; border: 1px solid #cbbdb6; border-radius: 8px; background: white; padding: 12px; color: #25252a; font: inherit; width: 100%; }
+.loyalty-product textarea:focus-visible { outline: 3px solid #6b1738; outline-offset: 2px; }
+.loyalty-rewards { display: grid; grid-template-columns: repeat(auto-fit,minmax(210px,1fr)); gap: 16px; margin: 20px 0; }
+.loyalty-rewards article { padding: 20px; border: 1px solid #e2d6cc; border-radius: 12px; background: #fffaf3; }
+.loyalty-receipt { border-top: 1px solid #e2d6cc; padding: 20px 0; }
+.loyalty-receipt code, .loyalty-link { overflow-wrap: anywhere; }
+.loyalty-confirm { background: #f6eee7; border-left: 4px solid #6b1738; padding: 20px; margin: 20px 0; }
+.loyalty-confirm button { margin-right: 12px; margin-top: 8px; }
+.loyalty-member-card { background: #6b1738; color: #fffaf3; border-radius: 20px; padding: 32px; margin-bottom: 24px; }
+.loyalty-member-card h2 { font-size: 3rem; margin: 16px 0; }
+.loyalty-member-card small { overflow-wrap: anywhere; }
+.loyalty-terms { white-space: pre-wrap; }
+.loyalty-footer { padding: 32px 0; font-size: .8rem; text-align: center; color: #685858; }
+@media(max-width:600px) { .loyalty-stats { grid-template-columns: 1fr; gap: 8px; } .loyalty-stats > div { padding: 16px; } .loyalty-hero { padding-top: 20px; } }
+
+.loyalty-portal-qr { margin: 24px 0; }
+.loyalty-portal-qr svg { display: block; max-width: 100%; height: auto; }
+.loyalty-portal-qr figcaption { margin-top: 8px; color: #685858; }

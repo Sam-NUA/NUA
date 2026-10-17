@@ -12,6 +12,8 @@ import BackButton from './components/BackButton';
 import LicensePage, { LicenseLockScreen, LicenseBanner } from './pages/LicensePage';
 import VersionGateLockScreen from './components/VersionGateLockScreen';
 const Login = lazy(() => import('./pages/Login'));
+const LoyaltyProduct = lazy(() => import("./pages/LoyaltyProduct"));
+const BookingProduct = lazy(() => import('./pages/BookingProduct'));
 const OnboardingWizard = lazy(() => import('./pages/OnboardingWizard'));
 const ResetPassword = lazy(() => import('./pages/ResetPassword'));
 const OwnerRecovery = lazy(() => import('./pages/OwnerRecovery'));
@@ -220,6 +222,8 @@ function ProtectedRoutes() {
     </div>
   );
   if (!user) return <Login />;
+  if (user.businessId?.startsWith("nl_")) return <LoyaltyProduct />;
+  if (user.businessId?.startsWith("nb_")) return <BookingProduct />;
 
   // First-login setup wizard — owner only (a cashier/manager logging in
   // before the owner has finished setup just uses the app normally; there's

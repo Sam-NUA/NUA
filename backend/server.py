@@ -88,6 +88,10 @@ app = FastAPI()
 api_router = APIRouter(prefix="/api")
 
 # Include all route modules
+from routes.booking_product import router as booking_product_router
+api_router.include_router(booking_product_router)
+from routes.loyalty_product import router as loyalty_product_router
+api_router.include_router(loyalty_product_router)
 api_router.include_router(auth_router)
 api_router.include_router(devices_router)
 api_router.include_router(cron_router)
@@ -265,6 +269,8 @@ PUBLIC_API_PREFIXES = (
 )
 
 PUBLIC_API_PATHS = {
+    "/api/booking-product/signup", "/api/booking-product/availability",
+    "/api/loyalty-product/signup", "/api/loyalty-product/availability",
     "/api/", "/api/health", "/api/healthz", "/api/ready",
     "/api/version",                # directive Phase 11 — a client needs this reachable to even find out it's out of date
     "/api/ops/device-status",     # login-screen peripheral status — counts/booleans only
@@ -360,7 +366,7 @@ PUBLIC_API_PATHS = {
 
 
 def _is_public_api(path: str) -> bool:
-    return path in PUBLIC_API_PATHS or path.startswith(PUBLIC_API_PREFIXES)
+    return path in PUBLIC_API_PATHS or path.startswith(PUBLIC_API_PREFIXES) or path.startswith(("/api/booking-product/public/", "/api/loyalty-product/portal/"))
 
 
 class RequireAuthMiddleware(BaseHTTPMiddleware):
@@ -448,6 +454,8 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
     instead of no limit at all.
     """
     PATH_OVERRIDES = {
+        "/api/booking-product/signup": (5, 3600),
+        "/api/loyalty-product/signup": (5, 3600),
         "/api/vouchers/public-check": (10, 60),  # 10 req/min per IP
         # Same rationale as vouchers/public-check — an unauthenticated
         # caller with no identity beyond "some IP" shouldn't get the
@@ -481,6 +489,8 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         # Booking/waitlist creation — a real, moderately-costly write on a
         # fully anonymous surface; same tier as the guest-lookup overrides
         # above.
+        ("/api/booking-product/public/", 10, 60),
+        ("/api/loyalty-product/portal/", 30, 60),
         ("/api/public/book", 10, 60),
         ("/api/public/join-waitlist", 10, 60),
         # The tracking code is the waitlist entry's own id — 8 uppercase hex
@@ -566,6 +576,8 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
 app.add_middleware(RequireAuthMiddleware)
 app.add_middleware(RateLimitMiddleware)
 app.add_middleware(LicenseEnforcementMiddleware)
+from middleware.product_access import ProductAccessMiddleware
+app.add_middleware(ProductAccessMiddleware)
 app.add_middleware(ActorContextMiddleware)
 # Outermost of this group — a client reporting a too-old version is
 # rejected before auth/rate-limit/license do any work at all. Fail-open

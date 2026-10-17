@@ -1,0 +1,140 @@
+import React, { useEffect, useState } from 'react';
+import axios from 'axios';
+import { QRCodeSVG } from 'qrcode.react';
+import { AuthProvider, useAuth } from '../contexts/AuthContext';
+import './BookingProduct.css';
+import './LoyaltyProduct.css';
+import { ProductHeader, ProductFooter, ProductStory, ProductBenefits, MemberBenefits } from '../components/product/ProductStory';
+
+const root = `${process.env.REACT_APP_BACKEND_URL || ''}/api/loyalty-product`;
+const api = axios.create({ baseURL: root });
+const errorText = e => typeof e.response?.data?.detail === 'string' ? e.response.data.detail : 'Please check your details and try again.';
+const merchant = (method, path, data) => api.request({ method, url: path, data, headers: { Authorization: `Bearer ${localStorage.getItem('nua_token') || ''}` } });
+function Field({ label, ...props }) { return <label className="booking-field"><span>{label}</span><input {...props} /></label>; }
+function Area({ label, ...props }) { return <label className="booking-field"><span>{label}</span><textarea {...props} /></label>; }
+function Notice({ error, notice }) { return <>{error && <p role="alert" className="booking-error">{error}</p>}{notice && <p role="status" className="booking-success">{notice}</p>}</>; }
+function download(data, filename) {
+  const url = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }));
+  const a = document.createElement('a'); a.href = url; a.download = filename; a.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+function Ledger({ rows }) { return <div className="booking-table"><table><thead><tr><th>Date</th><th>Reason</th><th>Points</th><th>Balance after</th></tr></thead><tbody>{rows.map((r, i) => <tr key={i}><td>{new Date(r.createdAt).toLocaleString()}</td><td>{r.reason}</td><td>{r.points > 0 ? '+' : ''}{r.points}</td><td>{r.balanceAfter}</td></tr>)}</tbody></table>{!rows.length && <p>No points activity yet.</p>}</div>; }
+function MerchantAccess() {
+  const { login, checkAuth, completeTwoFactor } = useAuth();
+  const [signup, setSignup] = useState(false), [enabled, setEnabled] = useState(false);
+  const [form, setForm] = useState({ name: '', venueName: '', email: '', password: '' });
+  const [challenge, setChallenge] = useState(null), [code, setCode] = useState('');
+  const [busy, setBusy] = useState(false), [error, setError] = useState('');
+  useEffect(() => { api.get('/availability').then(r => setEnabled(r.data.signupEnabled)).catch(e => setError(errorText(e))); }, []);
+  async function submit(e) {
+    e.preventDefault(); setBusy(true); setError('');
+    try {
+      if (challenge) await completeTwoFactor(challenge.challengeToken, code, false);
+      else if (signup) { const r = await api.post('/signup', form); localStorage.setItem('nua_token', r.data.token); await checkAuth(); }
+      else { const r = await login(form.email, form.password); if (r.twoFactor) setChallenge(r.twoFactor); }
+    } catch (e) { setError(errorText(e)); } finally { setBusy(false); }
+  }
+  const field = (name, label, type = 'text') => <Field label={label} type={type} value={form[name]} onChange={e => setForm({ ...form, [name]: e.target.value })} required maxLength={name === 'password' ? 72 : 120} minLength={name === 'password' && signup ? 12 : 1} />;
+  return <><ProductStory product="loyalty" enabled={enabled} onStart={() => { setSignup(true); setError(''); }} /><ProductBenefits product="loyalty" />
+    <form id="product-access" className="booking-card" onSubmit={submit}><h2>{challenge ? 'Verify your sign-in' : signup ? 'Start your 14-day Loyalty pilot' : 'Sign in to NUA Loyalty'}</h2>
+      {challenge ? <Field label="Authenticator or recovery code" value={code} onChange={e => setCode(e.target.value)} required /> : <>{signup && <>{field('name', 'Your name')}{field('venueName', 'Business name')}</>}{field('email', 'Email', 'email')}{field('password', signup ? 'Password (12–72 characters)' : 'Password', 'password')}</>}
+      {signup && <p>No card required. Manual points and venue-fulfilled rewards are included. POS sync and paid plans are not enabled.</p>}
+      <button disabled={busy}>{busy ? 'Please wait…' : challenge ? 'Verify' : signup ? 'Create Loyalty account' : 'Sign in'}</button><Notice error={error} />
+    </form>{!challenge && <button className="booking-secondary" disabled={!signup && !enabled} onClick={() => { setSignup(!signup); setError(''); }}>{signup ? 'Already have an account? Sign in' : enabled ? 'Create a Loyalty account' : 'Pilot registrations are currently closed'}</button>}</>;
+}
+function MerchantWorkspace() {
+  const { logout } = useAuth();
+  const [account, setAccount] = useState(null), [program, setProgram] = useState(null);
+  const [members, setMembers] = useState([]), [total, setTotal] = useState(0), [query, setQuery] = useState(''), [offset, setOffset] = useState(0);
+  const [selected, setSelected] = useState(null), [rewards, setRewards] = useState([]), [receipts, setReceipts] = useState([]), [receiptOffset, setReceiptOffset] = useState(0);
+  const emptyReward = () => ({ id: crypto.randomUUID(), name: '', description: '', points: 100, active: true });
+  const [reward, setReward] = useState(emptyReward);
+  const [adjust, setAdjust] = useState({ requestId: crypto.randomUUID(), points: 100, reason: '' });
+  const [busy, setBusy] = useState(false), [error, setError] = useState(''), [notice, setNotice] = useState(''), [cancel, setCancel] = useState(false);
+  const [resolution, setResolution] = useState(null);
+  const loadAccount = async () => { const r = await merchant('get', '/account'); setAccount(r.data); setProgram(r.data.program); };
+  const loadMembers = async (start = offset) => { const r = await merchant('get', `/members?q=${encodeURIComponent(query)}&offset=${start}`); setMembers(r.data.members); setTotal(r.data.total); setOffset(start); };
+  const loadRewards = async () => setRewards((await merchant('get', '/rewards')).data);
+  const loadReceipts = async (start = receiptOffset) => { setReceipts((await merchant('get', `/redemptions?offset=${start}`)).data); setReceiptOffset(start); };
+  const loadSelected = async id => setSelected((await merchant('get', `/members/${id}`)).data);
+  useEffect(() => { Promise.all([loadAccount(), loadMembers(0), loadRewards(), loadReceipts(0)]).catch(e => setError(errorText(e))); /* initial load only */
+  }, []);
+  async function act(fn) { setBusy(true); setError(''); setNotice(''); try { await fn(); } catch (e) { setError(errorText(e)); } finally { setBusy(false); } }
+  if (!account) return <><Notice error={error} /><p>Loading Loyalty workspace…</p><button onClick={logout}>Sign out</button></>;
+  const canWrite = account.canWrite;
+  const memberOrigin = ['loyalty.nuapos.com.au', 'members.nuapos.com.au'].includes(window.location.hostname)
+    ? 'https://members.nuapos.com.au' : window.location.origin;
+  const memberUrl = new URL(account.memberPath, memberOrigin).href;
+  return <><div className="booking-top"><div><p className="loyalty-eyebrow">LOYALTY WORKSPACE</p><h1>{account.program.name}</h1><p>{canWrite ? '14-day pilot' : 'Read-only'} · Trial ends {new Date(account.products.loyalty.trialEndsAt).toLocaleDateString()}</p></div><button className="booking-secondary" onClick={logout}>Sign out</button></div>
+    <Notice error={error} notice={notice} />{!canWrite && <p className="booking-card">New enrolments, points changes and reward claims are paused. Existing records, exports and pending reward fulfilment remain available.</p>}
+    <div className="loyalty-stats"><div><strong>{total}</strong><span>Members in current search</span></div><div><strong>{rewards.filter(r => r.active).length}</strong><span>Active reward options</span></div><div><strong>{account.program.published && canWrite ? 'Open' : 'Closed'}</strong><span>Member enrolment</span></div></div>
+    <section className="booking-card"><h2>Members</h2><form className="booking-actions" onSubmit={e => { e.preventDefault(); act(() => loadMembers(0)); }}><Field label="Search members" value={query} onChange={e => setQuery(e.target.value)} maxLength={120} /><button disabled={busy}>Search</button><button type="button" disabled={busy} onClick={() => act(async () => download((await merchant('get', '/export')).data, 'nua-loyalty-export.json'))}>Export loyalty data</button></form>
+      <div className="booking-table"><table><thead><tr><th>Member</th><th>Points</th><th>Tier</th><th>Status</th><th /></tr></thead><tbody>{members.map(m => <tr key={m.id}><td>{m.name}<br /><small>{m.email}</small></td><td>{m.points}</td><td>{m.tier}</td><td>{m.status}</td><td><button disabled={busy} onClick={() => act(async () => { await loadSelected(m.id); setAdjust({ requestId: crypto.randomUUID(), points: 100, reason: '' }); })}>Manage {m.name}</button></td></tr>)}</tbody></table></div>{!members.length && <p>No members yet. Publish your program and share the member portal.</p>}
+      <div className="booking-actions"><button disabled={busy || !offset} onClick={() => act(() => loadMembers(Math.max(0, offset - 50)))}>Previous members</button><button disabled={busy || offset + 50 >= total} onClick={() => act(() => loadMembers(offset + 50))}>Next members</button></div>
+    </section>
+    {selected && <section className="booking-card"><h2>{selected.member.name} · Member details</h2><p>{selected.member.points} points · {selected.member.tier} · {selected.member.status}</p><p>Marketing consent: {selected.member.marketingConsent ? 'Yes' : 'No'}</p>
+      <form onSubmit={e => { e.preventDefault(); act(async () => { await merchant('post', `/members/${selected.member.id}/points`, adjust); setAdjust({ requestId: crypto.randomUUID(), points: 100, reason: '' }); await loadSelected(selected.member.id); await loadMembers(); setNotice('Points adjustment recorded.'); }); }}><div className="booking-grid"><Field label="Points adjustment (negative to deduct)" type="number" min="-1000000" max="1000000" required value={adjust.points} onChange={e => setAdjust({ ...adjust, points: Number(e.target.value) })} /><Field label="Adjustment reason / receipt reference" required minLength={3} maxLength={300} value={adjust.reason} onChange={e => setAdjust({ ...adjust, reason: e.target.value })} /></div><p>Record a reason for every change. Check the receipt reference to avoid awarding the same purchase twice. Positive adjustments count toward lifetime tier progress; redemptions do not reduce it.</p><button disabled={busy || !canWrite || selected.member.status !== 'active'}>Record points adjustment</button></form>
+      <p><button className="booking-secondary" disabled={busy || !canWrite} onClick={() => act(async () => { await merchant('put', `/members/${selected.member.id}/status`, { status: selected.member.status === 'active' ? 'paused' : 'active' }); await loadSelected(selected.member.id); await loadMembers(); })}>{selected.member.status === 'active' ? 'Pause membership' : 'Reactivate membership'}</button></p><h3>Latest 100 ledger entries</h3><Ledger rows={selected.ledger} /></section>}
+    <section className="booking-card"><h2>Rewards</h2><p>Points are reserved when a member claims a reward. Fulfil it in person, or cancel the claim to return their points.</p><div className="loyalty-rewards">{rewards.map(r => <article key={r.id}><h3>{r.name}</h3><p>{r.points} points · {r.active ? 'Available' : 'Archived'}</p><p>{r.description}</p><button disabled={busy || !canWrite} onClick={() => setReward({ id: r.id, name: r.name, description: r.description, points: r.points, active: r.active })}>Edit {r.name}</button></article>)}</div>
+      <form onSubmit={e => { e.preventDefault(); act(async () => { const { id, ...data } = reward; await merchant('put', `/rewards/${id}`, data); setReward(emptyReward()); await loadRewards(); setNotice('Reward saved.'); }); }}><h3>Create or edit reward</h3><div className="booking-grid"><Field label="Reward name" value={reward.name} required maxLength={120} onChange={e => setReward({ ...reward, name: e.target.value })} /><Field label="Reward cost in points" type="number" min="1" max="1000000" required value={reward.points} onChange={e => setReward({ ...reward, points: Number(e.target.value) })} /></div><Area label="Reward description" value={reward.description} maxLength={500} onChange={e => setReward({ ...reward, description: e.target.value })} /><label><input type="checkbox" checked={reward.active} onChange={e => setReward({ ...reward, active: e.target.checked })} /> Available to members</label><p className="booking-actions"><button disabled={busy || !canWrite}>Save reward</button><button type="button" className="booking-secondary" onClick={() => setReward(emptyReward())}>New reward</button></p></form>
+    </section>
+    <section className="booking-card"><h2>Reward claims</h2><button disabled={busy} onClick={() => act(() => loadReceipts())}>Refresh claims</button>{receipts.map(r => <article className="loyalty-receipt" key={r.id}><h3>{r.rewardName} · {r.memberName}</h3><p>{r.status} · {r.points} points</p><code>{r.id}</code>{r.status === 'pending' && <div className="booking-actions"><button disabled={busy} onClick={() => setResolution({ id: r.id, action: 'fulfil' })}>Fulfil reward</button><button className="booking-secondary" disabled={busy} onClick={() => setResolution({ id: r.id, action: 'cancel' })}>Cancel and refund points</button></div>}</article>)}{!receipts.length && <p>No claims on this page.</p>}
+      {resolution && <div className="loyalty-confirm"><p>{resolution.action === 'fulfil' ? 'Confirm you have supplied this reward. This action cannot be undone.' : 'Cancel this reward claim and return the points?'} Reference: {resolution.id}</p><button disabled={busy} onClick={() => act(async () => { await merchant('post', `/redemptions/${resolution.id}/resolve`, { action: resolution.action }); setResolution(null); await loadReceipts(); await loadMembers(); if (selected) await loadSelected(selected.member.id); setNotice('Reward claim updated.'); })}>Confirm reward action</button><button className="booking-secondary" onClick={() => setResolution(null)}>Go back</button></div>}
+      <div className="booking-actions"><button disabled={busy || !receiptOffset} onClick={() => act(() => loadReceipts(Math.max(0, receiptOffset - 50)))}>Previous claims</button><button disabled={busy || receipts.length < 50} onClick={() => act(() => loadReceipts(receiptOffset + 50))}>Next claims</button></div>
+    </section>
+    <form className="booking-card" onSubmit={e => { e.preventDefault(); act(async () => { const r = await merchant('put', '/program', program); setAccount(r.data); setProgram(r.data.program); await loadMembers(); setNotice('Program settings saved.'); }); }}><h2>Program and member portal</h2><Field label="Program name" required maxLength={120} value={program.name} onChange={e => setProgram({ ...program, name: e.target.value })} /><Area label="Program description" maxLength={500} value={program.description} onChange={e => setProgram({ ...program, description: e.target.value })} /><Area label="Program terms" required minLength={10} maxLength={5000} value={program.terms} onChange={e => setProgram({ ...program, terms: e.target.value })} /><h3>Lifetime earned-points tiers</h3>{program.tiers.map((t, i) => <div className="booking-grid" key={i}><Field label={`Tier ${i + 1} name`} required value={t.name} onChange={e => setProgram({ ...program, tiers: program.tiers.map((v, j) => j === i ? { ...v, name: e.target.value } : v) })} /><Field label={`Tier ${i + 1} threshold`} type="number" required min="0" max="1000000000" value={t.threshold} onChange={e => setProgram({ ...program, tiers: program.tiers.map((v, j) => j === i ? { ...v, threshold: Number(e.target.value) } : v) })} /></div>)}<label><input type="checkbox" checked={program.published} onChange={e => setProgram({ ...program, published: e.target.checked })} /> Open member enrolment</label><p><button disabled={busy || !canWrite}>Save program settings</button></p><a href={memberUrl} target="_blank" rel="noreferrer">Open member portal</a><p className="loyalty-link">{memberUrl}</p><figure className="loyalty-portal-qr"><QRCodeSVG value={memberUrl} size={180} marginSize={4} title="Scan to open this venue’s member portal" /><figcaption>Scan to join or view your rewards.</figcaption></figure><p>Venue code: <code>{account.businessId}</code></p></form>
+    <section className="booking-card"><h2>Loyalty subscription</h2><p>This no-charge pilot uses manual points updates. No automatic Square sync, cash payments, SMS or email delivery is active. Cancelling closes enrolment and new claims, while existing claims can still be fulfilled or refunded.</p>{canWrite && (cancel ? <div className="booking-actions"><button disabled={busy} onClick={() => act(async () => { await merchant('post', '/cancel'); await loadAccount(); setCancel(false); })}>Confirm trial cancellation</button><button className="booking-secondary" onClick={() => setCancel(false)}>Keep trial</button></div> : <button className="booking-secondary" onClick={() => setCancel(true)}>Cancel Loyalty trial</button>)}</section>
+  </>;
+}
+function MerchantContent() { const { user, loading, logout } = useAuth(); if (loading) return <p>Checking your account…</p>; if (!user) return <MerchantAccess />; if (!user.businessId?.startsWith('nl_')) return <><h1>NUA Loyalty pilot</h1><p>Use a standalone Loyalty owner account for this workspace. Existing POS loyalty stays in your POS account.</p><button onClick={logout}>Sign out</button></>; return <MerchantWorkspace />; }
+function MemberPortal({ businessId }) {
+  const key = `nua_loyalty_member:${businessId}`;
+  const [token, setToken] = useState(() => sessionStorage.getItem(key) || '');
+  const [info, setInfo] = useState(null), [data, setData] = useState(null), [join, setJoin] = useState(false);
+  const [form, setForm] = useState({ name: '', email: '', password: '', acceptTerms: false, marketingConsent: false });
+  const [prefs, setPrefs] = useState({ marketingConsent: false, currentPassword: '', newPassword: '' });
+  const [claim, setClaim] = useState(null), [busy, setBusy] = useState(false), [error, setError] = useState(''), [notice, setNotice] = useState('');
+  const request = (method, path, body, credential = token) => api.request({ method, url: `/portal/${encodeURIComponent(businessId)}${path}`, data: body, headers: { Authorization: credential ? `Bearer ${credential}` : '' } });
+  const clear = () => { sessionStorage.removeItem(key); setToken(''); setData(null); };
+  const refresh = async credential => { const r = await request('get', '/me', undefined, credential); setData(r.data); setPrefs({ marketingConsent: r.data.member.marketingConsent, currentPassword: '', newPassword: '' }); };
+  useEffect(() => { request('get', '').then(r => setInfo(r.data)).catch(e => setError(errorText(e)));
+  }, [businessId]);
+  useEffect(() => { if (token) refresh(token).catch(e => { if (e.response?.status === 401) clear(); setError(errorText(e)); });
+  }, [token]);
+  async function act(fn) { setBusy(true); setError(''); setNotice(''); try { await fn(); } catch (e) { if (e.response?.status === 401 && token) clear(); setError(errorText(e)); } finally { setBusy(false); } }
+  if (!info) return <><Notice error={error} /><p>Loading member portal…</p></>;
+  return <><div className="loyalty-hero"><p className="loyalty-eyebrow">NUA MEMBERS</p><h1>{info.program.name}</h1><p>{info.program.description}</p></div><Notice error={error} notice={notice} />
+    {!token ? <><form className="booking-card" onSubmit={e => { e.preventDefault(); act(async () => { const r = await request('post', join ? '/join' : '/login', join ? form : { email: form.email, password: form.password }); sessionStorage.setItem(key, r.data.token); setToken(r.data.token); setForm({ name: '', email: '', password: '', acceptTerms: false, marketingConsent: false }); }); }}><h2>{join ? 'Join the program' : 'Member sign in'}</h2>{join && <Field label="Your name" required maxLength={120} value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} />}<Field label="Email" type="email" required value={form.email} onChange={e => setForm({ ...form, email: e.target.value })} /><Field label={join ? 'Password (12–72 characters)' : 'Password'} type="password" required minLength={join ? 12 : 1} maxLength={72} autoComplete={join ? 'new-password' : 'current-password'} value={form.password} onChange={e => setForm({ ...form, password: e.target.value })} />{join && <><p className="loyalty-terms">{info.program.terms}</p><p><label><input type="checkbox" required checked={form.acceptTerms} onChange={e => setForm({ ...form, acceptTerms: e.target.checked })} /> I accept the program terms</label></p><p><label><input type="checkbox" checked={form.marketingConsent} onChange={e => setForm({ ...form, marketingConsent: e.target.checked })} /> I agree to receive marketing (optional)</label></p></>}<button disabled={busy || (join && !info.canJoin)}>{join ? 'Join program' : 'Sign in'}</button><p>Forgotten your password? Contact the venue. Self-service email recovery is not enabled in this pilot.</p></form><button className="booking-secondary" disabled={!join && !info.canJoin} onClick={() => { setJoin(!join); setError(''); }}>{join ? 'Already a member? Sign in' : info.canJoin ? 'Join this program' : 'New memberships are closed'}</button></> : !data ? <p>Loading your membership…</p> : <>
+      <section className="loyalty-member-card"><p>Welcome, {data.member.name}</p><h2>{data.member.points} points</h2><p>{data.member.tier}{data.member.nextTier ? ` · ${Math.max(0, data.member.nextTier.threshold - data.member.earnedPoints)} more lifetime points to ${data.member.nextTier.name}` : ' · Highest tier'}</p><small>Member ID: {data.member.id}</small></section>
+      <div className="booking-actions"><button disabled={busy} onClick={() => act(async () => { setInfo((await request('get', '')).data); await refresh(token); })}>Refresh membership</button><button className="booking-secondary" disabled={busy} onClick={() => act(async () => download((await request('get', '/export')).data, 'nua-membership-export.json'))}>Export my data</button><button className="booking-secondary" disabled={busy} onClick={() => act(async () => { await request('post', '/logout'); clear(); })}>Sign out</button></div>
+      {!info.canRedeem && <p>New reward claims are paused. Existing claims and your records remain available.</p>}
+      <section className="booking-card"><h2>Choose your reward</h2><div className="loyalty-rewards">{data.rewards.map(r => <article key={r.id}><h3>{r.name}</h3><p>{r.description}</p><strong>{r.points} points</strong><p><button disabled={busy || !info.canRedeem || data.member.points < r.points} onClick={() => setClaim({ reward: r, requestId: crypto.randomUUID() })}>Claim {r.name}</button></p></article>)}</div>{!data.rewards.length && <p>Rewards will appear here when the venue adds them.</p>}
+        {claim && <div className="loyalty-confirm"><p>Use {claim.reward.points} points for {claim.reward.name}? Show your claim reference to the venue to collect your reward.</p><button disabled={busy} onClick={() => act(async () => { const r = await request('post', `/rewards/${claim.reward.id}/claim`, { requestId: claim.requestId, expectedPoints: claim.reward.points }); setClaim(null); await refresh(token); setNotice(`Reward claimed. Reference: ${r.data.redemptionId}`); })}>Confirm reward claim</button><button className="booking-secondary" disabled={busy} onClick={() => setClaim(null)}>Go back</button></div>}
+      </section><section className="booking-card"><h2>Your reward claims</h2>{data.redemptions.map(r => <article className="loyalty-receipt" key={r.id}><h3>{r.rewardName}</h3><p>{r.status} · {r.points} points</p><code>{r.id}</code>{r.status === 'pending' && <p>Show this reference to staff. Contact the venue to cancel and refund the points.</p>}</article>)}{!data.redemptions.length && <p>No rewards claimed yet.</p>}</section>
+      <section className="booking-card"><h2>Your points history</h2><p>Latest 100 entries. Export your data for the full available history.</p><Ledger rows={data.ledger} /></section>
+      <form className="booking-card" onSubmit={e => { e.preventDefault(); act(async () => { const r = await request('put', '/preferences', { marketingConsent: prefs.marketingConsent, currentPassword: prefs.currentPassword || null, newPassword: prefs.newPassword || null }); if (r.data.signInAgain) { clear(); setNotice('Password changed. Please sign in again.'); } else { await refresh(token); setNotice('Preferences saved.'); } }); }}><h2>Your preferences</h2><p><label><input type="checkbox" checked={prefs.marketingConsent} onChange={e => setPrefs({ ...prefs, marketingConsent: e.target.checked })} /> I agree to receive marketing</label></p><Field label="Current password (to change password)" type="password" autoComplete="current-password" maxLength={72} value={prefs.currentPassword} onChange={e => setPrefs({ ...prefs, currentPassword: e.target.value })} /><Field label="New password (optional, 12–72 characters)" type="password" autoComplete="new-password" minLength={12} maxLength={72} value={prefs.newPassword} onChange={e => setPrefs({ ...prefs, newPassword: e.target.value })} /><button disabled={busy}>Save preferences</button></form><section className="booking-card"><h2>Program terms</h2><p className="loyalty-terms">{info.program.terms}</p></section>
+    </>}
+  </>;
+}
+function MemberEntry() {
+  const [code, setCode] = useState(''), [error, setError] = useState('');
+  function openVenue(e) {
+    e.preventDefault();
+    const venue = code.trim();
+    if (!/^nl_[a-zA-Z0-9-]{1,80}$/.test(venue)) {
+      setError('Enter the venue code supplied by your venue, beginning with nl_.');
+      return;
+    }
+    window.location.assign(`/members/v/${encodeURIComponent(venue)}`);
+  }
+  return <><div className="loyalty-hero"><p className="loyalty-eyebrow">YOUR LOCAL FAVOURITES. YOUR REWARDS.</p><h1>Your usual spot.<br />Your next little reward.</h1><p>The coffee stop. The dinner spot. The place that knows your name. Make your next visit a little more rewarding with your venue’s loyalty program.</p></div>
+    <MemberBenefits /><section className="booking-card"><h2>Open your venue’s rewards</h2><p>Scan the QR code at your venue or follow the membership link they shared with you. Each venue has its own program and member sign-in.</p>
+      <form onSubmit={openVenue}><Field label="Venue code" autoComplete="off" spellCheck={false} value={code} onChange={e => setCode(e.target.value)} placeholder="nl_…" required maxLength={83} /><button>Continue to my venue</button><Notice error={error} /></form>
+      <p>Don’t have a link or code? Ask your venue to share its NUA member portal.</p></section>
+    <p>Run a business? <a href={window.location.hostname === 'members.nuapos.com.au' ? 'https://loyalty.nuapos.com.au/' : '/loyalty-app'}>Manage your loyalty program</a></p></>;
+}
+export default function LoyaltyProduct() {
+  const match = window.location.pathname.match(/^\/members\/v\/(nl_[a-zA-Z0-9-]{1,80})\/?$/);
+  const memberSurface = window.location.hostname === 'members.nuapos.com.au' || /^\/members(?:\/|$)/.test(window.location.pathname);
+  useEffect(() => { document.title = memberSurface ? 'NUA Members | Your next little reward' : 'NUA Loyalty | Give regulars a reason to return'; }, [memberSurface]);
+  return <main className="booking-product loyalty-product"><ProductHeader name={memberSurface ? 'Members' : 'Loyalty'} />{match ? <MemberPortal businessId={match[1]} /> : memberSurface ? <MemberEntry /> : <AuthProvider><MerchantContent /></AuthProvider>}<ProductFooter /></main>;
+}
