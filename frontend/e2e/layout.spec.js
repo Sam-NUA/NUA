@@ -42,20 +42,28 @@ test('every registered staff screen mounts without a rendering exception', async
   test.setTimeout(600_000);
   const fs = require('fs');
   const path = require('path');
-  const app = fs.readFileSync(path.join(__dirname, '../src/App.js'), 'utf8');
+  const app = fs.readFileSync(path.join(__dirname, '../src/App.jsx'), 'utf8');
   const staffRoutes = app.split('<StaffLayout>')[1].split('</StaffLayout>')[0];
   const routes = [...new Set([...staffRoutes.matchAll(/<Route path="([^"]+)" element=\{(?!<Navigate)/g)].map(match => match[1]))];
   const errors = [];
+  const serverErrors = [];
   page.on('pageerror', error => errors.push(error.message));
+  page.on('response', response => {
+    if (response.url().includes('/api/') && response.status() >= 500) {
+      serverErrors.push(`${response.status()} ${response.url()}`);
+    }
+  });
   await loginAsOwner(page);
   for (const route of routes) {
     await test.step(route, async () => {
       errors.length = 0;
+      serverErrors.length = 0;
       await page.goto(route);
       await page.waitForLoadState('networkidle');
       await expect(page.locator('#main-content')).toBeVisible();
       await expect.poll(async () => (await page.locator('#main-content').innerText()).trim().length).toBeGreaterThan(8);
       expect(errors, `Rendering errors on ${route}`).toEqual([]);
+      expect(serverErrors, `API errors on ${route}`).toEqual([]);
       await page.screenshot({ path: `test-results/routes/${route.slice(1)}.png` });
     });
   }

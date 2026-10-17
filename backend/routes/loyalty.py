@@ -110,7 +110,8 @@ async def create_event(event: EventCreate, user: dict = Depends(require_owner_or
 
 @router.put("/events/{event_id}")
 async def update_event(event_id: str, update: dict, user: dict = Depends(require_owner_or_manager)):
-    update_data = {k: v for k, v in update.items() if k != "id"}
+    # Identity and tenant ownership are server-controlled, even on an owned event.
+    update_data = {k: v for k, v in update.items() if k in EventCreate.model_fields}
     result = await db.events.find_one_and_update(
         {"id": event_id, **tenant_scope_filter(user.get("businessId"))}, {"$set": update_data}, return_document=True
     )
@@ -122,13 +123,18 @@ async def update_event(event_id: str, update: dict, user: dict = Depends(require
 @router.post("/events/{event_id}/book")
 async def book_event_ticket(event_id: str, customer_id: Optional[str] = None, quantity: int = 1,
                               user: dict = Depends(get_user)):
+    if quantity <= 0:
+        raise HTTPException(status_code=400, detail="Ticket quantity must be positive")
+    scope = tenant_scope_filter(user.get("businessId"))
     result = await db.events.find_one_and_update(
-        {"id": event_id, **tenant_scope_filter(user.get("businessId"))},
-        {"$inc": {"ticketsBooked": quantity}},
-        return_document=True
-    )
+        {"id": event_id, **scope, "isActive": True,
+         "$expr": {"$lte": [{"$add": [{"$ifNull": ["$ticketsBooked", 0]}, quantity]},
+                             {"$ifNull": ["$capacity", 0]}]}},
+        {"$inc": {"ticketsBooked": quantity}}, return_document=True)
     if not result:
-        raise HTTPException(status_code=404, detail="Event not found")
+        if not await db.events.find_one({"id": event_id, **scope}, {"_id": 0, "id": 1}):
+            raise HTTPException(status_code=404, detail="Event not found")
+        raise HTTPException(status_code=400, detail="Event unavailable or insufficient capacity")
     result.pop("_id", None)
     return {"message": f"{quantity} ticket(s) booked", "event": result}
 

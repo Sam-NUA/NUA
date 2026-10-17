@@ -64,9 +64,9 @@ def _uid(prefix: str) -> str: return f"{prefix}-{uuid.uuid4().hex[:8].upper()}"
 
 async def _llm_json(session_id: str, system: str, user_text: str, model: str = "gpt-5.2"):
     try:
-        from emergentintegrations.llm.chat import LlmChat, UserMessage
+        from services.ai_provider import LlmChat, UserMessage
         chat = LlmChat(
-            api_key=os.environ.get("EMERGENT_LLM_KEY"),
+            api_key=os.environ.get("OPENAI_API_KEY"),
             session_id=session_id, system_message=system,
         ).with_model("openai", model)
         resp = await chat.send_message(UserMessage(text=user_text))

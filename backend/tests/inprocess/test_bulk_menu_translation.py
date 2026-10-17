@@ -23,7 +23,7 @@ def test_bulk_translate_only_touches_products_missing_translations(monkeypatch):
         return {"it": {"name": f"{name} (IT)", "description": ""}}
 
     monkeypatch.setattr(routes.products, "_draft_translations_core", fake_draft)
-    monkeypatch.setenv("EMERGENT_LLM_KEY", "fake-key-for-test")
+    monkeypatch.setenv("OPENAI_API_KEY", "fake-key-for-test")
 
     loop = asyncio.get_event_loop()
     loop.run_until_complete(db.products.insert_many([
@@ -64,7 +64,7 @@ def test_bulk_translate_continues_past_a_single_product_failure(monkeypatch):
         return {"it": {"name": f"{name} (IT)", "description": ""}}
 
     monkeypatch.setattr(routes.products, "_draft_translations_core", flaky_draft)
-    monkeypatch.setenv("EMERGENT_LLM_KEY", "fake-key-for-test")
+    monkeypatch.setenv("OPENAI_API_KEY", "fake-key-for-test")
 
     loop = asyncio.get_event_loop()
     loop.run_until_complete(db.products.insert_many([
@@ -90,7 +90,7 @@ def test_bulk_translate_continues_past_a_single_product_failure(monkeypatch):
 
 def test_bulk_translate_requires_owner_or_manager(client, owner_headers):
     r = req(client, "POST", "/api/products/bulk-auto-translate", headers=owner_headers)
-    # Owner is allowed through the auth dependency — with no EMERGENT_LLM_KEY
+    # Owner is allowed through the auth dependency — with no OPENAI_API_KEY
     # configured in this test environment it should fail cleanly (503), not
     # crash or silently no-op.
     assert r.status_code in (200, 503), r.text[:200]

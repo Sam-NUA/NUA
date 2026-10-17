@@ -193,7 +193,7 @@ async def _create_stripe_session(data: dict, http_request: Request, cashier: dic
     # unconfigured venue (or a deploy where this optional SDK genuinely
     # isn't installed) should see "Stripe not configured", not a raw
     # ModuleNotFoundError surfacing as an unexplained 500.
-    from emergentintegrations.payments.stripe.checkout import StripeCheckout, CheckoutSessionRequest
+    from services.stripe_checkout import StripeCheckout, CheckoutSessionRequest
 
     origin_url = data.get("originUrl", str(http_request.base_url).rstrip("/"))
     client_order_id = data.get("orderId")
@@ -222,7 +222,7 @@ async def _create_stripe_session(data: dict, http_request: Request, cashier: dic
     # uniqueness — "guest" here is just this endpoint's shared fallback
     # bucket for callers with no business of their own, not a weakening of
     # bill_split's actual guarantee.
-    from services.payment_idempotency import claim_or_wait, record_result, fingerprint, IdempotencyConflict
+    from services.payment_idempotency import claim_or_wait, record_result, provider_request_key, fingerprint, IdempotencyConflict
     idempotency_key = f"{cashier.get('businessId') or 'guest'}:{data.get('idempotencyKey') or order_id}"
     # Pinned to amount + the CLIENT-supplied orderId (client_order_id, not
     # order_id — order_id falls back to a fresh random value every call
@@ -241,6 +241,10 @@ async def _create_stripe_session(data: dict, http_request: Request, cashier: dic
     if prior_result is not None:
         return prior_result
 
+    if client_order_id is None:
+        # A response lost after provider creation must reconstruct identical metadata.
+        order_id = "ORD-" + (await provider_request_key("stripe", idempotency_key))[:16].upper()
+
     host_url = str(http_request.base_url).rstrip("/")
     webhook_url = f"{host_url}/api/webhook/stripe"
     stripe_checkout = StripeCheckout(api_key=api_key, webhook_url=webhook_url)
@@ -254,6 +258,7 @@ async def _create_stripe_session(data: dict, http_request: Request, cashier: dic
         success_url=success_url,
         cancel_url=cancel_url,
         metadata={"orderId": order_id, "source": "nua_pos"},
+        idempotency_key=await provider_request_key("stripe", idempotency_key),
     )
 
     session = await stripe_checkout.create_checkout_session(checkout_request)
@@ -316,7 +321,7 @@ async def get_stripe_checkout_status(session_id: str, http_request: Request):
     ever set up (or after a key gets removed) gets a normal response to
     branch on instead of having to catch an exception.
     """
-    from emergentintegrations.payments.stripe.checkout import StripeCheckout
+    from services.stripe_checkout import StripeCheckout
 
     api_key = os.environ.get("STRIPE_API_KEY")
     if not api_key:

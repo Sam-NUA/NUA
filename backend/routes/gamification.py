@@ -211,8 +211,8 @@ async def quarterly_ai_alternatives(data: dict, _: dict = Depends(require_owner)
 
     items = data.get("items", [])
     try:
-        from emergentintegrations.llm.chat import LlmChat, UserMessage
-        api_key = os.environ.get("EMERGENT_LLM_KEY", "")
+        from services.ai_provider import LlmChat, UserMessage
+        api_key = os.environ.get("OPENAI_API_KEY", "")
         chat = LlmChat(api_key=api_key, session_id=f"quarterly-{uuid.uuid4()}", system_message="You are a restaurant menu consultant. Suggest replacement items for underperforming menu items. Be specific with names, pricing, and why they'd perform better. Keep each suggestion to 2-3 sentences.")
         chat.with_model("openai", "gpt-5.2")
 

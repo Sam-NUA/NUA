@@ -821,19 +821,19 @@ async def voice_command(data: dict, request: Request, user: dict = Depends(get_u
     if audio_b64 and not text:
         try:
             from routes.v15_features import voice_order
-            r = await voice_order({"audioBase64": audio_b64, "mime": data.get("mime", "audio/webm")}, request)
+            r = await voice_order({"audioBase64": audio_b64, "mime": data.get("mime", "audio/webm")}, user)
             text = r.get("transcript", "") if isinstance(r, dict) else ""
         except Exception:
-            pass
+            raise HTTPException(status_code=502, detail="Voice transcription unavailable; please retry or enter text") from None
 
     if not text:
         raise HTTPException(status_code=400, detail="text or audioBase64 required")
 
     # Quick intent routing using simple LLM call
     try:
-        from emergentintegrations.llm.chat import LlmChat, UserMessage
+        from services.ai_provider import LlmChat, UserMessage
         chat = LlmChat(
-            api_key=os.environ.get("EMERGENT_LLM_KEY"),
+            api_key=os.environ.get("OPENAI_API_KEY"),
             session_id=f"voice-cmd-{user['id']}-{uuid.uuid4()}",
             system_message=(
                 "Classify this restaurant POS command into one of these intents and return STRICT JSON only: "

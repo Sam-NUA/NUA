@@ -1,7 +1,7 @@
 """
 Ash Agent — multi-turn tool-calling loop.
 
-Uses OpenAI function calling via emergentintegrations. Every step is
+Uses the configured public OpenAI adapter. Every step is
 recorded as an "agent trace" so the frontend can show reasoning.
 """
 from __future__ import annotations
@@ -158,7 +158,7 @@ async def run_agent_turn(user_message: str, *, session_id: str, actor: str = "as
     # Long-term memory context — scope defaults to global
     memory_pack = await nua_memory.context_pack("global")
 
-    # Compose the prompt manually — emergentintegrations wraps OpenAI calls
+    # Compose the prompt manually — the adapter sends bounded OpenAI requests
     # but tool-calling isn't first-class. We'll use text-based JSON contract.
     base_body = f"""
 
@@ -189,10 +189,10 @@ Live context (last 15 audit rows, 10 open insights, 10 pending approvals):
     outcomes_summary: List[Dict[str, Any]] = []
 
     try:
-        from emergentintegrations.llm.chat import LlmChat, UserMessage
-        key = os.environ.get("EMERGENT_LLM_KEY")
+        from services.ai_provider import LlmChat, UserMessage
+        key = os.environ.get("OPENAI_API_KEY")
         if not key:
-            raise RuntimeError("EMERGENT_LLM_KEY missing")
+            raise RuntimeError("OPENAI_API_KEY missing")
         chat = LlmChat(api_key=key, session_id=session_id, system_message=system)\
             .with_model("openai", "gpt-5.2")
 

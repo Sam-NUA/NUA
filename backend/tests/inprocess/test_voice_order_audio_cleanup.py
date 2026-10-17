@@ -2,8 +2,8 @@
 /api/pos/voice-order (routes/v15_features.py's voice_order) wrote decoded
 guest audio to a NamedTemporaryFile(delete=False) and never cleaned it up —
 on any code path, success or failure — leaving raw audio on local disk
-indefinitely. Fixed with a guaranteed finally block; verified here on both
-the success path and an exception raised mid-transcription.
+indefinitely. Audio now remains in memory; verify no local file remains on either
+the success path or an exception raised mid-transcription.
 """
 import base64
 import glob
@@ -21,7 +21,7 @@ class _FakeTranscriptions:
     def __init__(self, should_fail=False):
         self.should_fail = should_fail
 
-    def create(self, model, file):
+    async def create(self, model, file, language):
         if self.should_fail:
             raise RuntimeError("simulated transcription provider failure")
         return _FakeTranscript()
@@ -36,14 +36,21 @@ class _FakeOpenAI:
     def __init__(self, should_fail=False, **kwargs):
         self.audio = _FakeAudio(should_fail=should_fail)
 
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *args):
+        return False
+
 
 def _tmp_count():
     return len(glob.glob(os.path.join(tempfile.gettempdir(), "tmp*")))
 
 
 def test_temp_audio_file_is_deleted_after_a_successful_transcription(client, owner_headers, monkeypatch):
-    import openai
-    monkeypatch.setattr(openai, "OpenAI", lambda **kw: _FakeOpenAI(should_fail=False))
+    from services import ai_provider
+    monkeypatch.setenv("OPENAI_API_KEY", "test-only-audio-cleanup-key")
+    monkeypatch.setattr(ai_provider, "AsyncOpenAI", lambda **kw: _FakeOpenAI(should_fail=False))
 
     audio_b64 = base64.b64encode(b"fake audio bytes for cleanup test").decode()
     before = set(glob.glob(os.path.join(tempfile.gettempdir(), "tmp*")))
@@ -56,8 +63,9 @@ def test_temp_audio_file_is_deleted_after_a_successful_transcription(client, own
 
 
 def test_temp_audio_file_is_deleted_even_when_transcription_raises(client, owner_headers, monkeypatch):
-    import openai
-    monkeypatch.setattr(openai, "OpenAI", lambda **kw: _FakeOpenAI(should_fail=True))
+    from services import ai_provider
+    monkeypatch.setenv("OPENAI_API_KEY", "test-only-audio-cleanup-key")
+    monkeypatch.setattr(ai_provider, "AsyncOpenAI", lambda **kw: _FakeOpenAI(should_fail=True))
 
     audio_b64 = base64.b64encode(b"fake audio bytes for failure cleanup test").decode()
     before = set(glob.glob(os.path.join(tempfile.gettempdir(), "tmp*")))

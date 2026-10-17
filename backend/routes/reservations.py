@@ -407,12 +407,12 @@ async def request_deposit(reservation_id: str, data: dict, http_request: Request
     # deposit — reservation_id is already a stable resource identity, same
     # pattern as the other checkout endpoints' order_id-keyed claim (see
     # services/payment_idempotency.py).
-    from services.payment_idempotency import claim_or_wait, record_result
+    from services.payment_idempotency import claim_or_wait, record_result, provider_request_key
     prior_result = await claim_or_wait("stripe_deposit", reservation_id)
     if prior_result is not None:
         return {"configured": True, **prior_result}
 
-    from emergentintegrations.payments.stripe.checkout import StripeCheckout, CheckoutSessionRequest
+    from services.stripe_checkout import StripeCheckout, CheckoutSessionRequest
     import uuid
 
     origin_url = data.get("originUrl", str(http_request.base_url).rstrip("/"))
@@ -427,6 +427,7 @@ async def request_deposit(reservation_id: str, data: dict, http_request: Request
         amount=amount, currency="aud",
         success_url=success_url, cancel_url=cancel_url,
         metadata={"reservationId": reservation_id, "source": "nua_pos", "kind": "booking_deposit"},
+        idempotency_key=await provider_request_key("stripe_deposit", reservation_id),
     )
     session = await stripe_checkout.create_checkout_session(checkout_request)
 

@@ -18,13 +18,7 @@ RUN apt-get update \
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Optional AI extras, served from a private index. Every import site in the
-# codebase try/excepts this package and degrades to a non-LLM path, so an
-# index outage must never take the build down with it — hence `|| true`
-# and a separate layer rather than `&&` onto the line above.
-RUN pip install --no-cache-dir emergentintegrations \
-      --extra-index-url https://d33sy5i8bnduwe.cloudfront.net/simple/ \
- || echo "emergentintegrations unavailable — continuing without AI extras"
+# AI and hosted checkout use the public SDKs pinned in requirements.txt.
 
 # Copy the app
 COPY . .

@@ -173,12 +173,12 @@ async def _ai_parse(message: str, channel: str):
         "Thanks for the message — could you confirm the date, time, and party size?"
     )
 
-    api_key = os.environ.get("EMERGENT_LLM_KEY") or os.environ.get("OPENAI_API_KEY")
+    api_key = os.environ.get("OPENAI_API_KEY")
     if not api_key:
         return fallback_parsed, fallback_summary, fallback_reply, True
 
     try:
-        from emergentintegrations.llm.chat import LlmChat, UserMessage
+        from services.ai_provider import LlmChat, UserMessage
         prompt = (
             "You are NUA, a restaurant booking assistant. From the inbound "
             f"{channel} message below, extract a JSON object with fields: "

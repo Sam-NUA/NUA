@@ -149,10 +149,10 @@ Propose the plan now (JSON only)."""
 
     parsed: Optional[Dict[str, Any]] = None
     try:
-        from emergentintegrations.llm.chat import LlmChat, UserMessage
-        key = os.environ.get("EMERGENT_LLM_KEY")
+        from services.ai_provider import LlmChat, UserMessage
+        key = os.environ.get("OPENAI_API_KEY")
         if not key:
-            raise RuntimeError("EMERGENT_LLM_KEY missing")
+            raise RuntimeError("OPENAI_API_KEY missing")
         chat = LlmChat(api_key=key, session_id=f"ash-plan-{uuid.uuid4()}", system_message=PLANNER_SYSTEM)\
             .with_model("openai", "gpt-5.2")
         raw = await chat.send_message(UserMessage(text=prompt))
@@ -390,8 +390,8 @@ async def simulate_plan(plan_id: str, *, actor: str) -> Dict[str, Any]:
     # LLM narrative — one call summarising outcomes
     narrative = None
     try:
-        from emergentintegrations.llm.chat import LlmChat, UserMessage
-        key = os.environ.get("EMERGENT_LLM_KEY")
+        from services.ai_provider import LlmChat, UserMessage
+        key = os.environ.get("OPENAI_API_KEY")
         if key:
             chat = LlmChat(api_key=key, session_id=f"ash-sim-{uuid.uuid4()}",
                             system_message="You are Ash's Simulator. Given a proposed plan and simulated outcomes, write 3-5 sentences describing what likely happens if the owner approves. Be concrete about revenue/cost/CSAT and flag any risks.")\

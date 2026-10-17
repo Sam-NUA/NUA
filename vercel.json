@@ -9,15 +9,16 @@
       "fix/mobile-isolation-review": false,
       "fix/terminal-session-durability": false,
       "fix/ios-refresh": false,
-      "fix/native-session-durability": false
+      "fix/native-session-durability": false,
+      "fix/launch-software-gaps": false
     }
   },
   "services": {
     "web": {
       "root": "frontend",
-      "framework": "create-react-app",
-      "installCommand": "yarn install --frozen-lockfile",
-      "buildCommand": "PUBLIC_URL=/ REACT_APP_BACKEND_URL= yarn build",
+      "framework": "vite",
+      "installCommand": "npm ci",
+      "buildCommand": "PUBLIC_URL=/ REACT_APP_BACKEND_URL= npm run build",
       "outputDirectory": "build",
       "routes": [
         {

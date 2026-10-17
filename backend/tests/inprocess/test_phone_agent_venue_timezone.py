@@ -38,7 +38,7 @@ def _install_fake_emergentintegrations(captured):
         async def send_message(self, *args, **kwargs):
             return '{"intent": "other", "details": {}}'
 
-    chat_mod = types.ModuleType("emergentintegrations.llm.chat")
+    chat_mod = types.ModuleType("services.ai_provider")
     chat_mod.LlmChat = _FakeLlmChat
     chat_mod.UserMessage = _FakeUserMessage
     llm_mod = types.ModuleType("emergentintegrations.llm")
@@ -47,7 +47,7 @@ def _install_fake_emergentintegrations(captured):
     root_mod.llm = llm_mod
     sys.modules["emergentintegrations"] = root_mod
     sys.modules["emergentintegrations.llm"] = llm_mod
-    sys.modules["emergentintegrations.llm.chat"] = chat_mod
+    sys.modules["services.ai_provider"] = chat_mod
 
 
 def test_simulate_call_system_prompt_uses_the_venues_own_timezone_not_the_servers(client, owner_headers, monkeypatch):
@@ -72,5 +72,5 @@ def test_simulate_call_system_prompt_uses_the_venues_own_timezone_not_the_server
             f"not the server's real clock — got: {captured['system_message'][:200]}"
         )
     finally:
-        for mod in ("emergentintegrations", "emergentintegrations.llm", "emergentintegrations.llm.chat"):
+        for mod in ("emergentintegrations", "emergentintegrations.llm", "services.ai_provider"):
             sys.modules.pop(mod, None)

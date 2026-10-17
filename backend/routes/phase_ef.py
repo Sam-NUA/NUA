@@ -298,7 +298,7 @@ async def simulate_call(data: dict, user: dict = Depends(get_user)):
     # rejects every later .append(<dict>) call below as attr-defined.
     intent_result: dict[str, Any] = {"intent": "unknown", "actions": []}
     try:
-        from emergentintegrations.llm.chat import LlmChat, UserMessage
+        from services.ai_provider import LlmChat, UserMessage
         # Give the agent the caller's history so it doesn't ask a regular for
         # details the restaurant already knows.
         guest_context = ""
@@ -321,7 +321,7 @@ async def simulate_call(data: dict, user: dict = Depends(get_user)):
         from services.venue_time import venue_now_for_business
         venue_today = (await venue_now_for_business(user.get("businessId"))).date().isoformat()
         chat = LlmChat(
-            api_key=os.environ.get("EMERGENT_LLM_KEY"),
+            api_key=os.environ.get("OPENAI_API_KEY"),
             session_id=f"phone-{call['id']}",
             system_message=(
                 "You are an AI phone agent for NUA restaurant. Given a caller transcript, return STRICT JSON: "
