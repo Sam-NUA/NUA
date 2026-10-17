@@ -8,6 +8,12 @@ Simulator artifacts with the explicit API origin **https://app.nuapos.com.au**.
 CI only builds/packages them. It never launches them or sends acceptance sales
 to the live service. Existing native financial tests keep their isolated servers.
 
+The target API must explicitly configure `NATIVE_APP_CORS_ORIGINS` as
+`https://localhost,capacitor://localhost,nua://app`. These are the three renderer
+origins configured in the native projects. Keep `FRONTEND_URL` as the canonical
+HTTPS web origin for recovery links. Unrecognized origins/wildcards are rejected;
+this setting does not bypass login, device binding or tenant authorization.
+
 ## Obtain the packages
 
 Open GitHub Actions → **Internal native pilot packages** → the successful reviewed
