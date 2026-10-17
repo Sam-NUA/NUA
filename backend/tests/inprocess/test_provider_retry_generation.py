@@ -9,7 +9,8 @@ from conftest import req
 from services import payment_idempotency as claims
 
 
-def test_lost_checkout_response_reuses_provider_key_and_metadata(client, owner_headers, monkeypatch):
+@pytest.mark.parametrize('order_id', [None, ''])
+def test_lost_checkout_response_reuses_provider_key_and_metadata(client, owner_headers, monkeypatch, order_id):
     import stripe
     requests = []
 
@@ -21,7 +22,7 @@ def test_lost_checkout_response_reuses_provider_key_and_metadata(client, owner_h
 
     monkeypatch.setenv('STRIPE_API_KEY', 'test-only-retry-boundary')
     monkeypatch.setattr(stripe.checkout.Session, 'create_async', create)
-    payload = {'originUrl': 'http://testserver', 'amount': 19.5, 'idempotencyKey': 'lost-provider-reply'}
+    payload = {'originUrl': 'http://testserver', 'amount': 19.5, 'idempotencyKey': 'lost-provider-reply', 'orderId': order_id}
     try:
         assert req(client, 'POST', '/api/stripe/checkout', headers=owner_headers, json=payload).status_code == 500
         response = req(client, 'POST', '/api/stripe/checkout', headers=owner_headers, json=payload)

@@ -196,7 +196,7 @@ async def _create_stripe_session(data: dict, http_request: Request, cashier: dic
     from services.stripe_checkout import StripeCheckout, CheckoutSessionRequest
 
     origin_url = data.get("originUrl", str(http_request.base_url).rstrip("/"))
-    client_order_id = data.get("orderId")
+    client_order_id = data.get("orderId") or None
     order_id = client_order_id or f"ORD-{str(uuid.uuid4())[:8].upper()}"
     amount = data.get("amount", 0)
     sale_payload = data.get("sale")
