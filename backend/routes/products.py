@@ -28,7 +28,7 @@ _TRANSLATABLE_LANGUAGES = {
 # page are the menu, and they render before anyone has a session. What a guest
 # must NOT get is the trade side of the catalogue — what each dish costs us and
 # how much of it is in the building — so that gets stripped for guests only.
-GUEST_HIDDEN_PRODUCT_FIELDS = ("cost", "stock", "sku")
+GUEST_HIDDEN_PRODUCT_FIELDS = ("cost", "stock", "stockByLocation", "sku")
 
 
 @router.get("/products", response_model=List[Product])

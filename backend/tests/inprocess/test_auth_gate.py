@@ -239,7 +239,7 @@ def test_login_and_brand_theme_stay_reachable(anon):
 
 # ── The public menu is the menu, not the trade catalogue ────────────────────
 
-TRADE_FIELDS = ("cost", "stock", "sku")
+TRADE_FIELDS = ("cost", "stock", "stockByLocation", "sku")
 
 
 def test_guest_menu_has_the_menu_but_not_the_trade_data(anon):
@@ -262,6 +262,42 @@ def test_staff_still_see_cost_and_stock(client, owner_headers):
     r = req(client, "GET", "/api/products?business=default", headers=owner_headers)
     assert r.status_code == 200
     assert any(p.get("cost") for p in r.json()), "no product carried a cost for a logged-in user"
+
+
+@pytest.mark.parametrize("path", ["/api/products", "/api/online/products"])
+def test_guest_catalogue_hides_location_inventory_while_staff_retain_it(anon, owner_headers, path):
+    import uuid
+    from database import db
+
+    product_id = "private-stock-" + uuid.uuid4().hex
+    category_id = "private-category-" + uuid.uuid4().hex
+    category_name = "Guest stock privacy " + product_id
+    stock = {"Main": 11, "Warehouse": 7}
+    anon.portal.call(db.categories.insert_one, {
+        "id": category_id, "name": category_name, "businessId": "default",
+        "active": True, "channels": ["pickup"],
+    })
+    anon.portal.call(db.products.insert_one, {
+        "id": product_id, "name": "Public dish", "category": category_name,
+        "categoryId": category_id, "businessId": "default", "price": 12,
+        "cost": 5, "stock": 18, "stockByLocation": stock, "sku": "internal-sku",
+    })
+    try:
+        anon.cookies.clear()
+        public = req(anon, "GET", path + "?business=default")
+        assert public.status_code == 200, public.text[:200]
+        dish = next(p for p in public.json() if p["id"] == product_id)
+        assert dish["name"] == "Public dish" and dish["price"] == 12
+        assert not any(dish.get(field) for field in TRADE_FIELDS)
+
+        staff = req(anon, "GET", "/api/products?business=default", headers=owner_headers)
+        assert staff.status_code == 200, staff.text[:200]
+        internal = next(p for p in staff.json() if p["id"] == product_id)
+        assert internal["stockByLocation"] == stock
+        assert internal["stock"] == 18 and internal["cost"] == 5
+    finally:
+        anon.portal.call(db.products.delete_one, {"id": product_id, "businessId": "default"})
+        anon.portal.call(db.categories.delete_one, {"id": category_id, "businessId": "default"})
 
 
 # ── The allowlist itself must point at routes that actually exist ──────────

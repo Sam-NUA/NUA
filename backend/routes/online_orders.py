@@ -237,7 +237,7 @@ async def public_products(business: Optional[str] = None):
         # This is a storefront anyone on the internet can hit, so it hands back
         # the menu and nothing behind it — no unit cost, no on-hand count, no
         # SKU. Those are the same fields /products strips for guests.
-        {"_id": 0, "cost": 0, "stock": 0, "sku": 0},
+        {"_id": 0, "cost": 0, "stock": 0, "stockByLocation": 0, "sku": 0},
     ).to_list(500)
     return products
 
