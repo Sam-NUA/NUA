@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useId } from 'react';
 import { Loader2, Upload, CheckCircle2, XCircle, AlertTriangle, Sparkles, ChevronLeft } from 'lucide-react';
 import { Button } from '../ui/button';
 import { Input } from '../ui/input';
@@ -22,6 +22,7 @@ export default function AIMenuImportReview({ open, onOpenChange, onCommitted }) 
   const [rawResponse, setRawResponse] = useState(null);
   const [committing, setCommitting] = useState(false);
   const [menuText, setMenuText] = useState('');
+  const menuTextId = useId();
 
   const reset = () => {
     setStage('upload'); setItems([]); setKnownCats([]); setKnownMods([]);
@@ -191,7 +192,9 @@ export default function AIMenuImportReview({ open, onOpenChange, onCommitted }) 
               <div className="flex-1 border-t" /> or <div className="flex-1 border-t" />
             </div>
             <div className="space-y-2">
+              <label htmlFor={menuTextId} className="text-sm font-medium">Menu text</label>
               <textarea
+                id={menuTextId}
                 value={menuText}
                 onChange={(e) => setMenuText(e.target.value)}
                 disabled={loading}

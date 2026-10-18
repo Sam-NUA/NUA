@@ -109,16 +109,22 @@ class TestAIMenuImport:
         headers = {"Authorization": f"Bearer {owner_token}"}
         data = {"fileData": "dGVzdCBtZW51IGRhdGE=", "fileType": "image"}
         response = requests.post(f"{BASE_URL}/api/menu/ai-import", json=data, headers=headers)
-        assert response.status_code in (200, 422, 503), f"AI import failed: {response.text}"
+        assert response.status_code in (422, 503), f"Invalid image was not rejected: {response.text}"
+        detail = response.json().get("detail", "")
+        assert ("OPENAI_API_KEY" in detail if response.status_code == 503
+                else detail == "Unsupported image format"), response.text
         print(f"PASS: Owner can access AI import — status {response.status_code}")
 
     def test_ai_import_manager_access(self, manager_token):
         """Manager can reach the AI import endpoint's auth/role gate (see
-        test_ai_import_owner_access for why 200/422/503 are all valid)."""
+        test_ai_import_owner_access for the configuration/validation responses)."""
         headers = {"Authorization": f"Bearer {manager_token}"}
         data = {"fileData": "dGVzdCBtZW51IGRhdGE=", "fileType": "image"}
         response = requests.post(f"{BASE_URL}/api/menu/ai-import", json=data, headers=headers)
-        assert response.status_code in (200, 422, 503), f"Manager AI import failed: {response.text}"
+        assert response.status_code in (422, 503), f"Invalid image was not rejected: {response.text}"
+        detail = response.json().get("detail", "")
+        assert ("OPENAI_API_KEY" in detail if response.status_code == 503
+                else detail == "Unsupported image format"), response.text
         print("PASS: Manager can access AI import")
     
     def test_ai_import_cashier_denied(self, cashier_token):
