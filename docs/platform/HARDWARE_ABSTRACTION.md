@@ -83,19 +83,23 @@ against, nothing more was attempted.
 
 ## Payment terminals
 
-No payment-terminal SDK (Stripe Terminal, Square, Tyro, Zeller, Worldline,
-etc.) is integrated anywhere in this codebase — payments today are
-hosted-checkout/online (Stripe, Coinbase Commerce, Square via the Connect
-framework) plus a separate `services/eftpos_service.py` model for
-in-person terminals that doesn't appear to talk to a real terminal SDK
-(not independently verified in depth this pass — flagged for whoever picks
-up `PAYMENT_TERMINAL_ARCHITECTURE.md`'s actual implementation).
-`frontend/src/platform/*/PaymentTerminalService.js` now exists as a real
-interface (`connect`/`chargeAmount`/`cancelCharge`/`disconnect`), reporting
-`'unsupported'` and rejecting on every platform — per the master
-directive: do not implement an unsupported provider merely to fill the
-interface, so no terminal SDK work was done, only the contract a real
-one would implement against.
+The backend has tenant-scoped EFTPOS routes and partial provider classes for
+Linkly/Tyro/Smartpay (TCP purchase attempts) and Windcave (HTTP purchase attempt),
+plus a test-only simulator. This corrects the old claim that no communication
+code exists, but does not establish vendor compatibility or merchant support.
+
+The four non-simulator classes inherit unimplemented refund/cancel/settlement
+methods. Tyro/Smartpay/Windcave also inherit an unimplemented disconnect;
+a successful purchase followed by that failure can be reported as an error.
+The shared settings UI exposes configuration/diagnostics, not an integrated
+POS purchase call. A cloud backend's ability to reach a venue LAN must also be
+proved. See [payment terminal architecture](PAYMENT_TERMINAL_ARCHITECTURE.md)
+for the exact limits and remaining vendor/topology/reconciliation work.
+
+`frontend/src/platform/*/PaymentTerminalService.js` reports `unsupported` on
+all platforms. No client terminal SDK or new guessed protocol is added here.
+Choose the actual venue hardware and approved specification before completing
+that integration; do not treat the simulator as evidence of a card charge.
 
 ## Biometric reauthentication (directive Phase 5)
 
@@ -119,5 +123,5 @@ reviewed.
 | Cash drawer | Interface exists (`CashDrawerService`), reports `'unsupported'` everywhere — not implemented anywhere, new work. |
 | QR generation | Works unchanged (pure rendering). |
 | Camera QR/barcode scanning | Works via `getUserMedia`, now behind `ScannerService.isCameraScanAvailable()`; honestly `false` on Electron (host denies camera permission outright) where the old direct check would have lied. Permission-flow hardening is still backlog. |
-| Payment terminal SDKs | Interface exists (`PaymentTerminalService`), reports `'unsupported'` everywhere — not implemented, explicitly out of scope per directive (no unsupported-provider stubs). |
+| Payment terminal SDKs | Server-side tenant-scoped routes and partial, unverified adapters exist; not merchant-ready. Client `PaymentTerminalService` reports `unsupported` everywhere. See provider/lifecycle/topology limits above. |
 | Biometric reauthentication | Interface exists (`BiometricService`), reports unavailable everywhere; PIN-based server-verified reauth is the real gate, wired into refunds only so far. |
