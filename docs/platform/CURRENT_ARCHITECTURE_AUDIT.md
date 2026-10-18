@@ -1,5 +1,12 @@
 # NUA POS — Current Architecture Audit (Phase 0)
 
+> **Partly superseded.** This is a point-in-time snapshot from the date
+> below — left as-is rather than rewritten, like any other dated audit.
+> One finding has since changed: the AI section further down describes
+> `emergentintegrations`/`EMERGENT_LLM_KEY`, which this repo's menu/AI
+> routes no longer use. The current adapter is the public OpenAI SDK
+> (`backend/services/ai_provider.py`), keyed by `OPENAI_API_KEY`.
+
 Date: 2026-10-12
 Branch: `feat/multiplatform-foundation`
 Baseline: `main` @ `9963583` (see "Baseline verification" below — this differs

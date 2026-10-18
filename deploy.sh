@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+# HISTORICAL: Fly.io is a retired hosting alternative — the requested
+# target is Vercel only (see docs/VERCEL_ONLY.md). This script also still
+# prompts for EMERGENT_LLM_KEY, which the backend no longer reads (the AI
+# adapter is now the public OpenAI SDK, keyed by OPENAI_API_KEY).
+#
 # Nua → Fly.io one-click deploy.
 # Usage:
 #   ./deploy.sh           # deploys both backend + frontend
