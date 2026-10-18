@@ -1,11 +1,11 @@
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from deps import require_owner_or_manager
 from database import db
 from middleware.actor_context import tenant_scope_filter
 from datetime import datetime, timezone
 from difflib import SequenceMatcher
 from typing import Any, Dict, List
-import uuid, os, base64
+import uuid, os
 
 router = APIRouter()
 
@@ -66,35 +66,34 @@ async def _run_vision_extraction(file_data: str, file_type: str) -> Dict[str, An
         "If cost is not on the menu, estimate at 30–35% of price. Include description only if the menu shows one."
     )
 
-    from services.ai_provider import LlmChat, UserMessage, ImageContent
-    api_key = os.environ.get("OPENAI_API_KEY", "")
+    from services.ai_provider import LlmChat, UserMessage, ImageContent, PdfContent, AIProviderError
+    api_key = os.environ.get("OPENAI_API_KEY", "").strip()
     if not api_key:
-        return {"items": [], "message": "LLM key not configured"}
+        raise HTTPException(status_code=503, detail="Menu reading is not configured. Ask your administrator to configure OPENAI_API_KEY on the server.")
 
     chat = LlmChat(
         api_key=api_key,
         session_id=f"menu-import-{uuid.uuid4()}",
         system_message=system_msg,
-    ).with_model("openai", "gpt-5.2")
+    ).with_model("openai", "gpt-5.2").with_max_tokens(16384).with_reasoning_effort("low")
 
     if file_type == "pdf":
-        try:
-            import pypdf, io
-            pdf_bytes = base64.b64decode(file_data)
-            reader = pypdf.PdfReader(io.BytesIO(pdf_bytes))
-            pdf_text = "\n\n".join((page.extract_text() or "") for page in reader.pages).strip()
-            if not pdf_text:
-                return {"items": [], "message": "Could not read any text from the PDF. Try uploading a photo of the menu instead."}
-            user_msg = UserMessage(text=f"Parse this menu text and return the JSON array of items:\n\n{pdf_text[:12000]}")
-        except Exception as pdf_err:
-            return {"items": [], "message": f"PDF parse failed: {pdf_err}"}
+        # Send the actual pages: text-only extraction silently loses scanned
+        # menus, layout and everything beyond the old 12,000-character slice.
+        user_msg = UserMessage(
+            text="Extract every menu item from all pages of this PDF and return the JSON array.",
+            file_contents=[PdfContent(file_base64=file_data)],
+        )
     else:
         user_msg = UserMessage(
             text="Extract every menu item from this image and return the JSON array.",
             file_contents=[ImageContent(image_base64=file_data)],
         )
 
-    response = await chat.send_message(user_msg)
+    try:
+        response = await chat.send_message(user_msg)
+    except AIProviderError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from None
 
     text = (response or "").strip()
     if text.startswith("```"):
@@ -106,7 +105,7 @@ async def _run_vision_extraction(file_data: str, file_type: str) -> Dict[str, An
     try:
         parsed = _json.loads(text)
     except Exception:
-        return {"items": [], "message": "Could not auto-parse the LLM response.", "rawResponse": response}
+        raise HTTPException(status_code=502, detail="Menu reading returned an incomplete or invalid response. Try fewer pages or a clearer image.") from None
 
     if isinstance(parsed, list):
         items = parsed
@@ -115,7 +114,7 @@ async def _run_vision_extraction(file_data: str, file_type: str) -> Dict[str, An
     else:
         items = []
 
-    return {"items": items, "message": ""}
+    return {"items": [item for item in items if isinstance(item, dict)], "message": ""}
 
 
 # ============ AI MENU IMPORT — PREVIEW (no DB writes) ============

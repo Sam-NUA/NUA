@@ -33,8 +33,14 @@ export default function AIMenuImportReview({ open, onOpenChange, onCommitted }) 
   };
 
   const handleFileUpload = async (e) => {
-    const file = e.target.files?.[0];
+    const input = e.target;
+    const file = input.files?.[0];
     if (!file) return;
+    if (file.size > 3_000_000) {
+      toast.error('Choose a menu file under 3 MB. Split larger PDFs into fewer pages or use a smaller photo.');
+      input.value = '';
+      return;
+    }
     setLoading(true);
     setRawResponse(null);
     try {
@@ -59,10 +65,12 @@ export default function AIMenuImportReview({ open, onOpenChange, onCommitted }) 
       setKnownMods(d.knownModifiers || []);
       setStage('review');
     } catch (err) {
-      toast.error(err?.response?.data?.detail || err?.message || 'Preview failed');
+      toast.error(err?.response?.status === 413
+        ? 'Menu file is too large. Choose a file under 3 MB.'
+        : err?.response?.data?.detail || err?.message || 'Preview failed');
     } finally {
       setLoading(false);
-      e.target.value = '';
+      input.value = '';
     }
   };
 
@@ -143,12 +151,13 @@ export default function AIMenuImportReview({ open, onOpenChange, onCommitted }) 
               <p className="text-sm text-gray-600 mb-3">Drop your menu file here or click to browse</p>
               <input
                 type="file"
-                accept=".pdf,.jpg,.jpeg,.png,.webp,image/*,application/pdf"
+                accept=".pdf,.jpg,.jpeg,.png,.webp,.gif,application/pdf,image/jpeg,image/png,image/webp,image/gif"
                 onChange={handleFileUpload}
+                disabled={loading}
                 className="w-full text-sm"
                 data-testid="menu-file-input"
               />
-              <p className="text-[11px] text-gray-400 mt-3">Supports JPG, PNG, WebP, PDF · Vision-powered by GPT-5.2</p>
+              <p className="text-[11px] text-gray-400 mt-3">JPG, PNG, WebP, GIF or PDF (including scans) · Maximum 3 MB</p>
             </div>
             {loading && (
               <div className="flex items-center justify-center gap-2 text-sm text-gray-500" data-testid="preview-loading">
