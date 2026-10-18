@@ -1,3 +1,5 @@
+> Historical. Written for deployment to the Emergent platform itself (`*.emergent.sh`), superseded by the Vercel-only pivot — see `docs/VERCEL_ONLY.md` for the actual current hosting target and `docs/platform/CURRENT_BUILD_GUIDE.md` for current build/deploy steps.
+
 # 📥 NUA POS - Deployment & Access Guide
 
 **Version:** 2.0.0

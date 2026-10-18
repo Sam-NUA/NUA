@@ -1,3 +1,5 @@
+> Historical. Written for the CRA + Supervisor preview-env era, before the Vercel-only pivot (`docs/VERCEL_ONLY.md`) and the Vite/native-platform work in `docs/platform/`. Use `docs/platform/CURRENT_BUILD_GUIDE.md` and `docs/platform/INTERNAL_PILOT_BUILDS.md` for current build/deploy steps; `EMERGENT_LLM_KEY` below is retired — the AI adapter is now the public OpenAI SDK, keyed by `OPENAI_API_KEY` (see `services/ai_provider.py`).
+
 # For Sam — Nua Restaurant OS Deployment Guide
 
 This document is your single source of truth for getting **Nua – Restaurant OS** in front of real users on **Windows desktops, Android tablets/phones, and the open Web**. Every section ends with a smoke-test checklist so you can sign off cleanly.

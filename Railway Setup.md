@@ -1,3 +1,5 @@
+> Historical alternative. The requested hosting target is Vercel only — see `docs/VERCEL_ONLY.md`. Railway is not required and this guide's `EMERGENT_LLM_KEY` references predate the OpenAI SDK migration (now `OPENAI_API_KEY`, see `docs/platform/CURRENT_ARCHITECTURE_AUDIT.md`).
+
 # Nua on Railway — The 5-Year-Old Deployment Guide
 
 Railway is like having a **friendly helper who reads your code and figures everything out**. You just point Railway at your GitHub repo, click some buttons, and ~10 minutes later your app is live. No Linux commands needed.

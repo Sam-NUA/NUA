@@ -26,10 +26,15 @@ cd nua
 ```
 
 ### 2. Create your `.env`
+There's no `.env.example` to copy — create `.env` in the repo root directly,
+with whichever of `docker-compose.yml`'s backend `environment:` vars you
+need (the only one most people want locally is the AI key):
 ```bash
-cp .env.example .env
+echo 'OPENAI_API_KEY=sk-...' > .env
 ```
-Open `.env` and paste your `EMERGENT_LLM_KEY` (otherwise AI features fall back to templates — still usable).
+`OPENAI_API_KEY` is the public OpenAI SDK, see `services/ai_provider.py`;
+`EMERGENT_LLM_KEY` is retired and no longer read. Without it, AI-backed
+features return a clear "not configured" error rather than a result.
 
 ### 3. Launch!
 ```bash
