@@ -53,9 +53,29 @@ class ImageContent:
 
 
 @dataclass
+class PdfContent:
+    file_base64: str
+
+    def part(self):
+        value = self.file_base64
+        if value.startswith("data:"):
+            value = value.split(",", 1)[-1]
+        if len(value) > 4_000_000:
+            raise AIProviderError("Menu PDF is too large; use a file under 3 MB")
+        try:
+            raw = base64.b64decode(value, validate=True)
+        except (ValueError, binascii.Error):
+            raise AIProviderError("Invalid base64 PDF") from None
+        if not raw.startswith(b"%PDF-"):
+            raise AIProviderError("Invalid PDF file")
+        return {"type": "file", "file": {"filename": "menu.pdf",
+                "file_data": f"data:application/pdf;base64,{value}"}}
+
+
+@dataclass
 class UserMessage:
     text: str
-    file_contents: list[ImageContent] = field(default_factory=list)
+    file_contents: list[ImageContent | PdfContent] = field(default_factory=list)
 
 
 class LlmChat:
@@ -64,6 +84,7 @@ class LlmChat:
         self.system = system_message
         self.model = "gpt-5.2"
         self.max_tokens = 4096
+        self.reasoning_effort = None
         self.history = []
 
     def with_model(self, provider, model):
@@ -76,6 +97,10 @@ class LlmChat:
         self.max_tokens = max(1, min(int(limit), 16384))
         return self
 
+    def with_reasoning_effort(self, effort):
+        self.reasoning_effort = effort
+        return self
+
     async def send_message(self, message):
         content = [{"type": "text", "text": message.text}]
         content.extend(image.part() for image in message.file_contents)
@@ -83,11 +108,15 @@ class LlmChat:
                     {"role": "user", "content": content}]
         try:
             async with _client() as client:
+                model = os.environ.get("NUA_AI_MODEL") or self.model
+                options = {"reasoning_effort": self.reasoning_effort} if self.reasoning_effort and model.startswith(("gpt-5", "o3", "o4")) else {}
                 response = await client.chat.completions.create(
-                    model=os.environ.get("NUA_AI_MODEL") or self.model, messages=messages,
-                    max_completion_tokens=self.max_tokens, store=False)
+                    model=model, messages=messages,
+                    max_completion_tokens=self.max_tokens, store=False, **options)
         except APIError as error:
             raise AIProviderError(f"AI provider request failed (status {getattr(error, 'status_code', None) or 'unavailable'})") from None
+        if response.choices and response.choices[0].finish_reason == "length":
+            raise AIProviderError("AI response was too long; upload fewer menu pages at a time")
         if not response.choices or not response.choices[0].message.content:
             raise AIProviderError("AI provider returned no usable content")
         answer = response.choices[0].message.content
