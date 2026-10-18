@@ -88,7 +88,8 @@ def test_missing_configuration_is_actionable(client, owner_headers, monkeypatch)
     assert response.status_code == 503 and "OPENAI_API_KEY" in response.json()["detail"]
 
 
-@pytest.mark.parametrize("data", ["!!!!", base64.b64encode(b"not a pdf").decode(), "A" * 4_000_004])
+@pytest.mark.parametrize("data", ["!!!!", base64.b64encode(b"not a pdf").decode(), "A" * 4_000_004],
+                         ids=["invalid-base64", "not-a-pdf", "oversized-pdf"])
 def test_invalid_pdf_is_rejected_before_provider_call(client, owner_headers, monkeypatch, data):
     captured = _provider(monkeypatch, content="[]")
     response = _upload(client, owner_headers, data, "pdf")

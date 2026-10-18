@@ -614,17 +614,11 @@ app.add_middleware(NuaAliasMiddleware)
 # fall back to a wildcard WITHOUT credentials — Bearer-token auth still works,
 # but any-origin-with-cookies (a CSRF vector) does not.
 frontend_url = os.environ.get("FRONTEND_URL", "").strip()
-if frontend_url:
-    cors_origins = [o.strip().rstrip("/") for o in frontend_url.split(",") if o.strip()]
-    cors_origins += ["http://localhost:3000", "http://127.0.0.1:3000"]
-    cors_credentials = True
-else:
-    cors_origins = ["*"]
-    cors_credentials = False
+from utils.cors import cors_options
+cors_config = cors_options(frontend_url, os.environ.get("NATIVE_APP_CORS_ORIGINS", ""))
 app.add_middleware(
     CORSMiddleware,
-    allow_credentials=cors_credentials,
-    allow_origins=cors_origins,
+    **cors_config,
     allow_methods=["*"],
     allow_headers=["*"],
     # Custom headers the SPA reads (e.g. AI fallback flag on booking inbox).

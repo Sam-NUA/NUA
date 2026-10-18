@@ -5,6 +5,9 @@ root-level Electron/CRA packaging instructions. These commands build artifacts;
 they do not deploy or authorize production API calls. Use an explicitly authorized
 staging API origin for interactive acceptance tests.
 
+For connected internal packages, use [internal pilot builds](INTERNAL_PILOT_BUILDS.md).
+Foundation CI artifacts deliberately use test-only API origins and are not venue installers.
+
 ## Shared frontend
 
 Node 22.19+ is required; use the committed npm lockfile.

@@ -1,0 +1,166 @@
+name: Internal native pilot packages
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/internal-pilot.yml'
+      - 'scripts/pilot_build_manifest.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# This is an explicitly approved live API target for internal packages.
+# Build only: never launch these packages or run financial tests in CI.
+# Foundation and critical-acceptance workflows keep their isolated origins.
+env:
+  REACT_APP_BACKEND_URL: https://app.nuapos.com.au
+  PUBLIC_URL: /
+  CI: 'false'
+
+jobs:
+  android-pilot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - run: npm ci
+        working-directory: frontend
+      - run: npm run build
+        working-directory: frontend
+      - run: npx cap sync android
+        working-directory: frontend
+      - name: Install the already-verified Android SDK toolchain
+        run: |
+          set -eu
+          curl -fsSL -o "$RUNNER_TEMP/nua-cmdline-tools.zip" https://dl.google.com/android/repository/commandlinetools-linux-15859902_latest.zip
+          mkdir -p "$RUNNER_TEMP/nua-android-sdk/cmdline-tools"
+          unzip -q "$RUNNER_TEMP/nua-cmdline-tools.zip" -d "$RUNNER_TEMP/nua-android-sdk/cmdline-tools"
+          mv "$RUNNER_TEMP/nua-android-sdk/cmdline-tools/cmdline-tools" "$RUNNER_TEMP/nua-android-sdk/cmdline-tools/latest"
+          echo "ANDROID_HOME=$RUNNER_TEMP/nua-android-sdk" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$RUNNER_TEMP/nua-android-sdk" >> "$GITHUB_ENV"
+          echo "$RUNNER_TEMP/nua-android-sdk/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
+      - name: Install platform and build tools
+        run: |
+          set -eu
+          yes | sdkmanager --licenses >/dev/null
+          sdkmanager "platform-tools" "platforms;android-36" "build-tools;36.0.0"
+      - run: ./gradlew assembleDebug --no-daemon
+        working-directory: frontend/android
+      - name: Collect and identify APK
+        run: |
+          mkdir -p internal-pilot/android
+          cp frontend/android/app/build/outputs/apk/debug/*.apk internal-pilot/android/
+          python scripts/pilot_build_manifest.py --platform android --artifact-dir internal-pilot/android --bundle-dir frontend/android/app/src/main/assets/public
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nua-pos-android-internal-pilot
+          path: internal-pilot/android/
+          if-no-files-found: error
+          retention-days: 30
+
+  windows-pilot:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    env:
+      NUA_WINDOWS_API_ORIGIN: https://app.nuapos.com.au
+      CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: npm ci
+        working-directory: frontend
+      - run: npm ci
+        working-directory: apps/windows
+      - run: npm test
+        working-directory: apps/windows
+      - run: npm run build
+        working-directory: frontend
+      - run: npm run prepare:renderer
+        working-directory: apps/windows
+      - run: npm run dist
+        working-directory: apps/windows
+      - name: Collect and identify installer
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force internal-pilot/windows | Out-Null
+          Copy-Item apps/windows/dist/*.exe internal-pilot/windows/
+          python scripts/pilot_build_manifest.py --platform windows --artifact-dir internal-pilot/windows --bundle-dir apps/windows/renderer
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nua-pos-windows-internal-pilot
+          path: internal-pilot/windows/
+          if-no-files-found: error
+          retention-days: 30
+
+  ios-simulator-pilot:
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: npm ci
+        working-directory: frontend
+      - run: npm run build
+        working-directory: frontend
+      - run: npx cap sync ios
+        working-directory: frontend
+      - run: xcodebuild -resolvePackageDependencies -project App.xcodeproj
+        working-directory: frontend/ios/App
+      - name: Pick an available iPhone simulator
+        id: device
+        run: |
+          xcrun simctl list devices available -j > "$RUNNER_TEMP/nua-ios-devices.json"
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          devices = json.loads((Path(os.environ["RUNNER_TEMP"]) / "nua-ios-devices.json").read_text())
+          udid = next(d["udid"] for group in devices["devices"].values() for d in group if d.get("isAvailable") and d["name"].startswith("iPhone"))
+          with open(os.environ["GITHUB_OUTPUT"], "a") as out:
+              out.write(f"udid={udid}\n")
+          PY
+      - name: Build the verified native project for Simulator
+        working-directory: frontend/ios/App
+        run: |
+          xcodebuild build -project App.xcodeproj -scheme App -configuration Debug -sdk iphonesimulator -destination "platform=iOS Simulator,id=${{ steps.device.outputs.udid }}" -derivedDataPath "$RUNNER_TEMP/nua-ios-build" CODE_SIGNING_ALLOWED=NO
+      - name: Collect and identify Simulator app
+        run: |
+          mkdir -p internal-pilot/ios
+          ditto -c -k --sequesterRsrc --keepParent "$RUNNER_TEMP/nua-ios-build/Build/Products/Debug-iphonesimulator/App.app" internal-pilot/ios/NUA-POS-iOS-Simulator.zip
+          python scripts/pilot_build_manifest.py --platform ios-simulator --artifact-dir internal-pilot/ios --bundle-dir "$RUNNER_TEMP/nua-ios-build/Build/Products/Debug-iphonesimulator/App.app/public"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nua-pos-ios-simulator-internal-pilot
+          path: internal-pilot/ios/
+          if-no-files-found: error
+          retention-days: 30

@@ -32,6 +32,7 @@ Configure these server-only variables once per deployment:
 | Variable | Purpose |
 | --- | --- |
 | `FRONTEND_URL` | Canonical HTTPS app origin, with no path/query. Production NUA POS uses `https://app.nuapos.com.au`. |
+| `NATIVE_APP_CORS_ORIGINS` | Optional explicit native renderer allowlist: `https://localhost,capacitor://localhost,nua://app`. Keep these separate from the canonical recovery URL; arbitrary origins and wildcards are rejected. |
 | `SENDGRID_API_KEY` | Secret for the configured email provider. |
 | `SENDGRID_FROM_EMAIL` | Sender verified with that provider. |
 | `OWNER_RECOVERY_KEY` | Optional emergency operator secret, separate from account passwords. |
