@@ -67,3 +67,42 @@ it('shows an actionable error for a platform payload rejection', async () => {
   await upload({ name: 'menu.pdf', type: 'application/pdf', size: 100 });
   expect(toast.error).toHaveBeenCalledWith(expect.stringContaining('under 3 MB'));
 });
+
+function textarea() {
+  return host.querySelector('[data-testid="menu-text-input"]');
+}
+
+// Setting `.value` directly on a controlled React input doesn't trigger its
+// onChange — React patches the native value setter to detect a real change,
+// so the write has to go through that same setter before the event fires.
+async function typeInto(el, value) {
+  const setValue = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set;
+  await act(async () => {
+    setValue.call(el, value);
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+}
+
+it('disables the pasted-text submit button until there is text to send', async () => {
+  const submit = host.querySelector('[data-testid="menu-text-submit"]');
+  expect(submit.disabled).toBe(true);
+  await typeInto(textarea(), 'Flat White - $5.50');
+  expect(submit.disabled).toBe(false);
+});
+
+it('sends pasted menu text to preview with fileType text', async () => {
+  menuFeaturesAPI.aiPreviewMenu.mockResolvedValueOnce({ data: { count: 1, items: [
+    { tempId: 'one', name: 'Flat White', category: 'Coffee', price: 5.5, cost: 2, include: true },
+  ] } });
+  await typeInto(textarea(), 'Flat White - $5.50');
+  await act(async () => host.querySelector('[data-testid="menu-text-submit"]').click());
+  expect(menuFeaturesAPI.aiPreviewMenu).toHaveBeenCalledWith({ fileData: 'Flat White - $5.50', fileType: 'text' });
+  expect(host.querySelector('[data-testid="review-stage"]')).not.toBeNull();
+});
+
+it('shows an actionable error when pasted text is too long', async () => {
+  menuFeaturesAPI.aiPreviewMenu.mockRejectedValueOnce({ response: { status: 413 } });
+  await typeInto(textarea(), 'x');
+  await act(async () => host.querySelector('[data-testid="menu-text-submit"]').click());
+  expect(toast.error).toHaveBeenCalledWith(expect.stringContaining('too long'));
+});

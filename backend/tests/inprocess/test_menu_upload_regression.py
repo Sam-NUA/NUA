@@ -117,3 +117,44 @@ def test_model_override_without_reasoning_support(client, owner_headers, monkeyp
     assert response.status_code == 200
     assert captured[0]["model"] == "gpt-4.1"
     assert "reasoning_effort" not in captured[0]
+
+
+def test_pasted_text_menu_reaches_the_provider_as_plain_text_and_review_can_commit(client, owner_headers, monkeypatch):
+    menu_text = "Flat White - $5.50\nLong Black - $4.80\nCroissant - $6.00"
+    captured = _provider(monkeypatch, content=json.dumps([
+        {"name": "Flat White", "category": "Coffee", "price": 5.5},
+        {"name": "Long Black", "category": "Coffee", "price": 4.8},
+        {"name": "Croissant", "category": "Bakery", "price": 6.0}]))
+    from database import db
+    before = client.portal.call(db.products.count_documents, {})
+    response = _upload(client, owner_headers, menu_text, "text")
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["count"] == 3
+    assert client.portal.call(db.products.count_documents, {}) == before
+    # A text upload has no file part at all — just the pasted text inline.
+    part = captured[0]["messages"][-1]["content"]
+    assert len(part) == 1 and part[0]["type"] == "text" and menu_text in part[0]["text"]
+    item = body["items"][0]
+    response = req(client, "POST", "/api/menu/ai-commit", headers=owner_headers,
+                   json={"items": [{**item, "skipIfDuplicate": False}]})
+    assert response.status_code == 200, response.text
+    saved = response.json()["items"][0]
+    assert saved["name"] == "Flat White" and saved["price"] == 5.5
+    client.portal.call(db.products.delete_one, {"id": saved["id"]})
+
+
+def test_empty_pasted_text_is_a_clean_no_items_response_not_a_provider_call(client, owner_headers, monkeypatch):
+    captured = _provider(monkeypatch, content="[]")
+    response = _upload(client, owner_headers, "   ", "text")
+    assert response.status_code == 200
+    assert response.json()["count"] == 0
+    assert not captured, "blank pasted text must never reach the provider"
+
+
+def test_oversized_pasted_text_is_rejected_before_the_provider_call(client, owner_headers, monkeypatch):
+    captured = _provider(monkeypatch, content="[]")
+    response = _upload(client, owner_headers, "A" * 100_001, "text")
+    assert response.status_code == 413
+    assert "too long" in response.json()["detail"]
+    assert not captured

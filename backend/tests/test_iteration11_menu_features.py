@@ -94,24 +94,37 @@ class TestAIMenuImport:
     """Test AI Menu Import endpoint - POST /api/menu/ai-import"""
     
     def test_ai_import_owner_access(self, owner_token):
-        """Owner can access AI import endpoint"""
+        """Owner can reach the AI import endpoint's auth/role gate.
+
+        "dGVzdCBtZW51IGRhdGE=" decodes to the literal text "test menu data",
+        not a real image — it was never going to produce menu items. This
+        used to assert an unconditional 200 ("accept it even if AI parsing
+        fails"), which stopped being true once menu_features.py started
+        giving honest, specific errors: 503 if OPENAI_API_KEY isn't
+        configured on the server under test, 422 if it is and the payload
+        is rejected as an invalid image before any provider call. Either
+        is a real, correct response — only a role-check failure (401/403)
+        would mean the owner couldn't even reach the endpoint.
+        """
         headers = {"Authorization": f"Bearer {owner_token}"}
-        # Send minimal base64 data - endpoint should accept it even if AI parsing fails
         data = {"fileData": "dGVzdCBtZW51IGRhdGE=", "fileType": "image"}
         response = requests.post(f"{BASE_URL}/api/menu/ai-import", json=data, headers=headers)
-        # Should return 200 even if AI parsing fails (returns error message in response)
-        assert response.status_code == 200, f"AI import failed: {response.text}"
-        result = response.json()
-        # Response should have items array (may be empty if parsing failed)
-        assert "items" in result or "error" in result or "message" in result
-        print(f"PASS: Owner can access AI import - response: {result.get('message', result.get('error', 'OK'))}")
-    
+        assert response.status_code in (422, 503), f"Invalid image was not rejected: {response.text}"
+        detail = response.json().get("detail", "")
+        assert ("OPENAI_API_KEY" in detail if response.status_code == 503
+                else detail == "Unsupported image format"), response.text
+        print(f"PASS: Owner can access AI import — status {response.status_code}")
+
     def test_ai_import_manager_access(self, manager_token):
-        """Manager can access AI import endpoint"""
+        """Manager can reach the AI import endpoint's auth/role gate (see
+        test_ai_import_owner_access for the configuration/validation responses)."""
         headers = {"Authorization": f"Bearer {manager_token}"}
         data = {"fileData": "dGVzdCBtZW51IGRhdGE=", "fileType": "image"}
         response = requests.post(f"{BASE_URL}/api/menu/ai-import", json=data, headers=headers)
-        assert response.status_code == 200, f"Manager AI import failed: {response.text}"
+        assert response.status_code in (422, 503), f"Invalid image was not rejected: {response.text}"
+        detail = response.json().get("detail", "")
+        assert ("OPENAI_API_KEY" in detail if response.status_code == 503
+                else detail == "Unsupported image format"), response.text
         print("PASS: Manager can access AI import")
     
     def test_ai_import_cashier_denied(self, cashier_token):
