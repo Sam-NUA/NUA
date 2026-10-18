@@ -1,111 +1,74 @@
 # App release strategy
 
-Nothing in this document has been executed — per the directive, "Do not
-publish anything during this assignment." This records the intended
-channels so a future pass (or a human) has a plan to follow, not a
-decision log of things already done.
+Reviewed 19 October 2026. Use [current build commands](CURRENT_BUILD_GUIDE.md)
+and [internal pilot builds](INTERNAL_PILOT_BUILDS.md) for supported procedures.
+The old statement that only scaffolding exists is superseded by actual native
+CI builds and acceptance runs. Builds, connected pilot packages and signed
+store distribution are distinct milestones.
 
-## Channels (per the master directive)
+## Current evidence
 
-```text
-development → internal → staging → production
-```
+The [connected pilot run](https://github.com/Sam-NUA/NUA/actions/runs/39139075241)
+succeeded on deployed main `40cbe54a5413f0e6457f403c43d29593e5688b6f`.
+All three manifests identify `https://app.nuapos.com.au` as the API origin and
+`storeRelease: false`. The workflow builds/packages only: it does not launch
+these artifacts or send financial acceptance requests to production.
 
-### Android
+| Platform | Current package | Distribution still required |
+| --- | --- | --- |
+| Android | Debug-key-signed internal APK | Publisher account, controlled release signing, Play listing/data-safety material and physical-device acceptance before Play testing/release. |
+| Windows | Unsigned x64 NSIS installer from `apps/windows` | Signing identity, distribution/update policy and physical venue acceptance before merchant distribution. The retired `frontend/electron` scaffold is not the release host. |
+| iOS/iPadOS | Unsigned Simulator app ZIP, built on macOS CI | Apple team/enrollment, certificate, provisioning, physical-device build/acceptance and App Store assets before TestFlight/App Store. The Simulator ZIP cannot install on an iPhone/iPad. |
 
-```text
-Internal APK (sideload, for the team) →
-Google Play Internal Testing →
-Closed Testing →
-Production
-```
+Artifacts are retained for 30 days and include manifests with source SHA,
+API origin, signing state, file size and SHA-256. Verify the manifest and hash
+before installation; download links and instructions are in the pilot guide.
 
-Prerequisites not yet in place: a Google Play Developer account, an app
-signing keystore (NOT to be committed to git — `frontend/android/.gitignore`
-already excludes `local.properties` and keystore-adjacent files by
-Capacitor's default template; verify a real keystore stays out of version
-control when one is generated), a Play Console listing (icon, screenshots,
-privacy policy, data-safety declaration — this app handles payment and
-customer PII, so the data-safety form needs real care, not a placeholder).
+## Native acceptance
 
-### Windows
+`.github/workflows/android.yml` builds a real APK, boots an AVD and exercises
+cash checkout, outage, process restart and exactly-once replay against an
+isolated backend. `ios.yml` uses `macos-latest`, Xcode and a booted Simulator;
+its Appium critical acceptance covers PIN/device binding, refresh fault
+injection and restart/replay. `windows-foundation.yml` launches the packaged
+Electron app on Windows CI and tests restart/account-switch/exactly-once replay
+against an isolated loopback backend. Native checks on the reviewed frontend
+commit `f6d62d0eb64bf344b49c289b16f4997f7ba52587` passed before integration.
 
-```text
-Internal installer (apps/windows's electron-builder NSIS output, CI-built, unsigned) →
-Signed staging build →
-Production installer
-```
+These are automated emulator/simulator/Windows CI results, not physical venue
+hardware acceptance. The native workflows run on matching pull requests or
+manual dispatch; they do not run on every push. Foundation artifacts use test
+origins and must not be mistaken for connected pilot installers.
 
-The real Windows foundation (`apps/windows/`, built on `feat/windows-
-foundation` and taken over into this branch — see `WINDOWS_ARCHITECTURE.md`)
-supersedes the older, stalled `frontend/electron/` scaffold referenced by
-any earlier `WINDOWS_BUILD_GUIDE.md`-family doc — that scaffold is not
-used to release this and never loaded its own preload script correctly
-(see `CURRENT_ARCHITECTURE_AUDIT.md`'s W01). CI
-(`.github/workflows/windows-foundation.yml`) already builds and uploads
-an unsigned NSIS artifact on every push, as a review/CI artifact only —
-not a release channel yet.
+`frontend/ios/App/App/PrivacyInfo.xcprivacy` already exists. Its presence does
+not itself establish App Store privacy compliance; review declared API usage,
+privacy policy, support URL and real screenshots before submission.
 
-Prerequisites not yet in place: a code-signing certificate (unsigned
-Windows installers trigger SmartScreen warnings that erode trust fast for
-a POS system businesses are trusting with payments), a real distribution
-mechanism and update-check service (nothing in `apps/windows` implements
-auto-update), a device-pairing credential beyond the identity registry
-itself (see `CURRENT_ARCHITECTURE_AUDIT.md`'s W09), and the still-open
-decision of whether `packages/platform-core`'s cash queue gets wired into
-the live app before release (see `OFFLINE_SYNC_ARCHITECTURE.md`).
+## Versioning already implemented
 
-### iOS
+`frontend/src/version.js` and `backend/version.py` supply the version.
+Native API requests send `X-App-Version`. `VersionGateMiddleware` returns 426
+for an unsupported supplied version; requests without that header remain
+compatible, and version/health endpoints are exempt. The frontend handles 426
+with `VersionGateLockScreen`; Settings terminal management shows app/platform/
+device information. Do not describe the gate or readout as unimplemented.
 
-```text
-Development → TestFlight → App Store
-```
+An automatic native binary updater is not implemented. Version rejection does
+not install an update, and raising the minimum must wait for a usable approved
+distribution channel. Keep frontend/backend version changes coordinated.
 
-The native iOS project (`frontend/ios/`, `@capacitor/ios`) now exists —
-generated this pass via `npx cap add ios`, which succeeds without Xcode
-since Capacitor's iOS plugin resolution is Swift-Package-Manager-based.
-`frontend/ios/App/App/PrivacyInfo.xcprivacy` **has since been created**
-— that prerequisite is done, not open.
+## Release sequence
 
-**Correction — a macOS build environment already exists in CI**: an
-earlier version of this paragraph said nothing past scaffolding could
-happen without a real Mac, a macOS CI runner, or a cloud Mac-build
-service, and called that "the hardest one." That's no longer true.
-`.github/workflows/ios.yml` runs on a real `macos-latest` GitHub Actions
-runner, builds the actual native project for Simulator, and launches it
-on a real booted iOS Simulator — its `critical-acceptance-milestone` job
-goes further, driving a full Appium-based PIN-login, device-binding, and
-cold-restart fault-injection acceptance run against that same real
-Simulator. `internal-pilot.yml` reuses the same runner to produce an
-unsigned Simulator-app ZIP as a review artifact. None of that is a
-TestFlight upload or an App Store submission — those still need Apple
-Developer Program enrollment, a real signing certificate and provisioning
-profile (CI only builds for Simulator, which needs no signing), and the
-App Store assets below — but "can't build or run past scaffolding
-without a Mac" is false; this sandbox itself still can't run Xcode (it's
-Linux), but the deployment as a whole already can, in CI, on every push.
-Remaining prerequisites, per `IOS_IPADOS_ARCHITECTURE.md`: an Apple
-Developer Program enrollment, a real (non-Simulator) signing certificate
-and provisioning profile, and App Store assets (privacy policy URL,
-support URL, per-device screenshots).
+1. Keep source/CI evidence tied to the exact commit and package manifest.
+2. Use a dedicated test venue for supervised pilot acceptance. Confirm owner
+   email/PIN/MFA, real provider delivery/import and independent retained-backup
+   restore without overwriting production.
+3. Validate selected printer/scanner/drawer/terminal equipment and network
+   topology. Partial EFTPOS adapters are not merchant-ready; see
+   [payment terminal limits](PAYMENT_TERMINAL_ARCHITECTURE.md).
+4. Complete publisher/signing custody and controlled distribution before store
+   release. Never commit signing keys or embed provider/account credentials.
 
-## Versioning (directive Phase 11 — not yet implemented)
-
-No version-identification UI or minimum-supported-version gate exists
-anywhere in the app yet (checked: no "App: x.y.z / Build: n / API: v1 /
-Platform: ... / Device: ..." surface found in the frontend). This is
-real, named work for a later pass — a `GET /api/version` endpoint plus a
-small always-visible (or Settings-tucked) version readout, and a
-`minSupportedVersion` check the backend could enforce the same way
-`LicenseEnforcementMiddleware` already gates other things.
-
-## What this pass actually shipped toward this
-
-Nothing publish-facing — git commits on `feat/multiplatform-foundation`
-only. No signing keys, no store listings, no production deploy or
-Railway/Vercel change. One real exception, narrowly scoped: Windows now
-has a CI pipeline (`windows-foundation.yml`) that builds an **unsigned**
-NSIS installer and uploads it as a 7-day GitHub Actions artifact on every
-push — a review/QA artifact, not a release channel. It has no signing
-identity, isn't linked to any distribution mechanism, and nothing in this
-pass treated it as one.
+Current release evidence and unresolved operator gates are tracked in
+[the launch report](https://github.com/Sam-NUA/NUA/pull/34). No signed store
+release, physical-hardware acceptance or live provider payment is claimed here.

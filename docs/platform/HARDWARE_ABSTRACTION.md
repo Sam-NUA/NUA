@@ -83,33 +83,23 @@ against, nothing more was attempted.
 
 ## Payment terminals
 
-**Correction**: an earlier pass through this file said no payment-terminal
-integration existed anywhere in this codebase. Reading
-`backend/services/eftpos_service.py` directly shows that's wrong on the
-server side — it's a real, tenant-scoped integration wired to live
-`/api/eftpos/*` routes (`backend/routes/settings.py`), supporting four
-actual provider protocols (**Linkly**, **Tyro**, **Smartpay** over raw
-TCP; **Windcave** over its documented HTTPS API) plus a `simulator`
-provider for testing without real hardware. None of the four real
-providers' protocols have been checked against that vendor's actual
-certified spec — that's the real remaining driver work, not "build an
-integration from scratch." See `PAYMENT_TERMINAL_ARCHITECTURE.md` for the
-full account, including which five other providers (Westpac Presto, ANZ
-Worldline, NAB Transact, CBA Albert, Square Terminal) an earlier version
-of this doc wrongly implied were supported but have no code at all.
+The backend has tenant-scoped EFTPOS routes and partial provider classes for
+Linkly/Tyro/Smartpay (TCP purchase attempts) and Windcave (HTTP purchase attempt),
+plus a test-only simulator. This corrects the old claim that no communication
+code exists, but does not establish vendor compatibility or merchant support.
 
-What genuinely doesn't exist is a *client-side* terminal SDK —
-`frontend/src/platform/*/PaymentTerminalService.js` is a real interface
-(`connect`/`chargeAmount`/`cancelCharge`/`disconnect`), reporting
-`'unsupported'` and rejecting on every platform, because no specific
-tablet-attached-card-reader SDK (Stripe Terminal, Square Reader, etc.)
-was named as a target — per the master directive, don't implement an
-unsupported provider merely to fill the interface. That's a different gap
-from the backend integration above: `eftpos_service.py` talks to a
-network terminal from the server, which is how Linkly/Tyro/Smartpay/
-Windcave terminals actually get deployed in venues here; a client SDK
-would only matter if a venue needs a card reader physically attached to
-the POS tablet/phone itself instead.
+The four non-simulator classes inherit unimplemented refund/cancel/settlement
+methods. Tyro/Smartpay/Windcave also inherit an unimplemented disconnect;
+a successful purchase followed by that failure can be reported as an error.
+The shared settings UI exposes configuration/diagnostics, not an integrated
+POS purchase call. A cloud backend's ability to reach a venue LAN must also be
+proved. See [payment terminal architecture](PAYMENT_TERMINAL_ARCHITECTURE.md)
+for the exact limits and remaining vendor/topology/reconciliation work.
+
+`frontend/src/platform/*/PaymentTerminalService.js` reports `unsupported` on
+all platforms. No client terminal SDK or new guessed protocol is added here.
+Choose the actual venue hardware and approved specification before completing
+that integration; do not treat the simulator as evidence of a card charge.
 
 ## Biometric reauthentication (directive Phase 5)
 
@@ -133,5 +123,5 @@ reviewed.
 | Cash drawer | Interface exists (`CashDrawerService`), reports `'unsupported'` everywhere — not implemented anywhere, new work. |
 | QR generation | Works unchanged (pure rendering). |
 | Camera QR/barcode scanning | Works via `getUserMedia`, now behind `ScannerService.isCameraScanAvailable()`; honestly `false` on Electron (host denies camera permission outright) where the old direct check would have lied. Permission-flow hardening is still backlog. |
-| Payment terminal SDKs | Server-side: a real, tenant-scoped integration (`eftpos_service.py` + `/api/eftpos/*`) for Linkly/Tyro/Smartpay/Windcave exists and is wired in, unverified against real vendor hardware/accounts. Client-side (`PaymentTerminalService`, for a tablet-attached card reader): interface exists, reports `'unsupported'` everywhere — not implemented, explicitly out of scope per directive (no unsupported-provider stubs). |
+| Payment terminal SDKs | Server-side tenant-scoped routes and partial, unverified adapters exist; not merchant-ready. Client `PaymentTerminalService` reports `unsupported` everywhere. See provider/lifecycle/topology limits above. |
 | Biometric reauthentication | Interface exists (`BiometricService`), reports unavailable everywhere; PIN-based server-verified reauth is the real gate, wired into refunds only so far. |

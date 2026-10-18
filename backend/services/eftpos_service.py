@@ -1,8 +1,8 @@
 """EFTPOS Integration Service for NUA POS
 
 Four providers actually have a class and a wire protocol below — Linkly,
-Tyro and Smartpay over a raw TCP socket, Windcave over its documented
-HTTPS API — plus SimulatorProvider, a deterministic fake terminal for
+Tyro and Smartpay over a raw TCP socket, Windcave via an attempted
+HTTPS API call — plus SimulatorProvider, a deterministic fake terminal for
 testing without real hardware or a vendor account. None of the four real
 providers' protocols have been verified against each vendor's actual
 certified spec (no hardware/account was available to test against); see
@@ -10,7 +10,11 @@ docs/platform/PAYMENT_TERMINAL_ARCHITECTURE.md for what that leaves as
 remaining work. Westpac Presto, ANZ Worldline, NAB Transact, CBA Albert
 and Square Terminal are NOT implemented — no class, no entry in
 EFTPOSService.PROVIDERS — despite an earlier version of this docstring
-listing them; add a provider here before claiming support for one.
+listing them. These are partial, unverified adapters, not certified terminal
+support: the four non-simulator classes inherit refund/cancel/settlement
+methods that raise NotImplementedError, and Tyro/Smartpay/Windcave also
+inherit the unimplemented disconnect method. Merely registering another
+class does not establish support.
 """
 
 import socket
