@@ -1,3 +1,5 @@
+> Historical alternative. The requested hosting target is Vercel only — see `docs/VERCEL_ONLY.md`. Fly.io is not required and this guide's `EMERGENT_LLM_KEY` references predate the OpenAI SDK migration (now `OPENAI_API_KEY`, see `docs/platform/CURRENT_ARCHITECTURE_AUDIT.md`).
+
 # Nua on Fly.io — The 5-Year-Old Deployment Guide
 
 Fly.io is like renting two tiny robots:

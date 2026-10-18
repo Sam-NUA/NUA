@@ -45,6 +45,48 @@ def test_storage_unconfigured_has_no_local_fallback(monkeypatch):
         run(durable_backups.retain(b'archive'))
 
 
+def test_a_retained_backup_can_be_restored_to_disposable_scratch_storage(monkeypatch):
+    """The live-backup path (create_backup -> restore_into) already has its
+    own drill proving this in test_backup.py. The Blob-retained path never
+    did: retain()/read() only proved the bytes round-tripped through
+    (mocked) Blob, never that those bytes are an actually-restorable
+    backup. This chains retain() -> read() -> restore_into() against a
+    disposable scratch database — the same "never overwrite production"
+    boundary run_restore_drill() already uses — so a retained archive is
+    proven restorable, not just proven stored."""
+    import vercel.blob
+    from database import client as mongo_client
+
+    # A tenant-scoped backup only carries rows that actually carry that
+    # businessId — seed one so the scoped archive below has something real.
+    run(db.suppliers.insert_one({"id": "SUP-DURABLE-RESTORE", "name": "Durable Restore Supplier",
+                                  "businessId": "durable-restore-tenant"}))
+    archive = run(backup.create_backup(business_id="durable-restore-tenant"))
+
+    monkeypatch.setenv('BLOB_READ_WRITE_TOKEN', 'test-private-storage')
+    put = AsyncMock(return_value=SimpleNamespace(
+        url='https://unit.private.blob.vercel-storage.com/durable-restore', pathname='durable-restore'))
+    get = AsyncMock(return_value=SimpleNamespace(status_code=200, content=archive))
+    monkeypatch.setattr(vercel.blob, 'put_async', put)
+    monkeypatch.setattr(vercel.blob, 'get_async', get)
+    metadata, _ = run(durable_backups.retain(archive, 'durable-restore-tenant'))
+
+    retrieved = run(durable_backups.read(metadata['id'], 'durable-restore-tenant'))
+    assert retrieved == archive
+
+    scratch = mongo_client['durable_backup_restore_probe']
+    run(mongo_client.drop_database('durable_backup_restore_probe'))
+    try:
+        report = run(backup.restore_into(retrieved, scratch, wipe=True))
+        assert report.get("suppliers") == 1, report
+        row = run(scratch.suppliers.find_one({"id": "SUP-DURABLE-RESTORE"}, {"_id": 0}))
+        assert row == {"id": "SUP-DURABLE-RESTORE", "name": "Durable Restore Supplier",
+                        "businessId": "durable-restore-tenant"}
+    finally:
+        run(mongo_client.drop_database('durable_backup_restore_probe'))
+        run(db.suppliers.delete_one({"id": "SUP-DURABLE-RESTORE"}))
+
+
 def test_uploads_survive_new_read_and_are_tenant_scoped(client, owner_headers):
     response = client.post('/api/product-images', headers=owner_headers, json={
         'name': 'durable-probe', 'contentType': 'image/png', 'dataUrl': 'data:image/png;base64,AA=='})
