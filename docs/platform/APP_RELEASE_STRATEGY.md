@@ -64,16 +64,30 @@ Development → TestFlight → App Store
 The native iOS project (`frontend/ios/`, `@capacitor/ios`) now exists —
 generated this pass via `npx cap add ios`, which succeeds without Xcode
 since Capacitor's iOS plugin resolution is Swift-Package-Manager-based.
-Prerequisites still not in place, per `IOS_IPADOS_ARCHITECTURE.md`: an
-Apple Developer Program enrollment, signing certificate and provisioning
-profile, a `PrivacyInfo.xcprivacy` privacy manifest (not yet created —
-required for App Store submission since the app uses `UserDefaults`, one
-of Apple's "required reason" APIs, via `@capacitor/preferences`), App
-Store assets (privacy policy URL, support URL, per-device screenshots),
-and — the hardest one — **a macOS build environment**. This sandbox is
-Linux; Xcode categorically does not run on it. Nothing past scaffolding
-(no build, no TestFlight upload, no simulator run) can happen until a
-real Mac, a macOS CI runner, or a cloud Mac-build service is available.
+`frontend/ios/App/App/PrivacyInfo.xcprivacy` **has since been created**
+— that prerequisite is done, not open.
+
+**Correction — a macOS build environment already exists in CI**: an
+earlier version of this paragraph said nothing past scaffolding could
+happen without a real Mac, a macOS CI runner, or a cloud Mac-build
+service, and called that "the hardest one." That's no longer true.
+`.github/workflows/ios.yml` runs on a real `macos-latest` GitHub Actions
+runner, builds the actual native project for Simulator, and launches it
+on a real booted iOS Simulator — its `critical-acceptance-milestone` job
+goes further, driving a full Appium-based PIN-login, device-binding, and
+cold-restart fault-injection acceptance run against that same real
+Simulator. `internal-pilot.yml` reuses the same runner to produce an
+unsigned Simulator-app ZIP as a review artifact. None of that is a
+TestFlight upload or an App Store submission — those still need Apple
+Developer Program enrollment, a real signing certificate and provisioning
+profile (CI only builds for Simulator, which needs no signing), and the
+App Store assets below — but "can't build or run past scaffolding
+without a Mac" is false; this sandbox itself still can't run Xcode (it's
+Linux), but the deployment as a whole already can, in CI, on every push.
+Remaining prerequisites, per `IOS_IPADOS_ARCHITECTURE.md`: an Apple
+Developer Program enrollment, a real (non-Simulator) signing certificate
+and provisioning profile, and App Store assets (privacy policy URL,
+support URL, per-device screenshots).
 
 ## Versioning (directive Phase 11 — not yet implemented)
 

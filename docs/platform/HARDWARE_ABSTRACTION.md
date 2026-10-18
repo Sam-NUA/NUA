@@ -83,19 +83,33 @@ against, nothing more was attempted.
 
 ## Payment terminals
 
-No payment-terminal SDK (Stripe Terminal, Square, Tyro, Zeller, Worldline,
-etc.) is integrated anywhere in this codebase — payments today are
-hosted-checkout/online (Stripe, Coinbase Commerce, Square via the Connect
-framework) plus a separate `services/eftpos_service.py` model for
-in-person terminals that doesn't appear to talk to a real terminal SDK
-(not independently verified in depth this pass — flagged for whoever picks
-up `PAYMENT_TERMINAL_ARCHITECTURE.md`'s actual implementation).
-`frontend/src/platform/*/PaymentTerminalService.js` now exists as a real
-interface (`connect`/`chargeAmount`/`cancelCharge`/`disconnect`), reporting
-`'unsupported'` and rejecting on every platform — per the master
-directive: do not implement an unsupported provider merely to fill the
-interface, so no terminal SDK work was done, only the contract a real
-one would implement against.
+**Correction**: an earlier pass through this file said no payment-terminal
+integration existed anywhere in this codebase. Reading
+`backend/services/eftpos_service.py` directly shows that's wrong on the
+server side — it's a real, tenant-scoped integration wired to live
+`/api/eftpos/*` routes (`backend/routes/settings.py`), supporting four
+actual provider protocols (**Linkly**, **Tyro**, **Smartpay** over raw
+TCP; **Windcave** over its documented HTTPS API) plus a `simulator`
+provider for testing without real hardware. None of the four real
+providers' protocols have been checked against that vendor's actual
+certified spec — that's the real remaining driver work, not "build an
+integration from scratch." See `PAYMENT_TERMINAL_ARCHITECTURE.md` for the
+full account, including which five other providers (Westpac Presto, ANZ
+Worldline, NAB Transact, CBA Albert, Square Terminal) an earlier version
+of this doc wrongly implied were supported but have no code at all.
+
+What genuinely doesn't exist is a *client-side* terminal SDK —
+`frontend/src/platform/*/PaymentTerminalService.js` is a real interface
+(`connect`/`chargeAmount`/`cancelCharge`/`disconnect`), reporting
+`'unsupported'` and rejecting on every platform, because no specific
+tablet-attached-card-reader SDK (Stripe Terminal, Square Reader, etc.)
+was named as a target — per the master directive, don't implement an
+unsupported provider merely to fill the interface. That's a different gap
+from the backend integration above: `eftpos_service.py` talks to a
+network terminal from the server, which is how Linkly/Tyro/Smartpay/
+Windcave terminals actually get deployed in venues here; a client SDK
+would only matter if a venue needs a card reader physically attached to
+the POS tablet/phone itself instead.
 
 ## Biometric reauthentication (directive Phase 5)
 
@@ -119,5 +133,5 @@ reviewed.
 | Cash drawer | Interface exists (`CashDrawerService`), reports `'unsupported'` everywhere — not implemented anywhere, new work. |
 | QR generation | Works unchanged (pure rendering). |
 | Camera QR/barcode scanning | Works via `getUserMedia`, now behind `ScannerService.isCameraScanAvailable()`; honestly `false` on Electron (host denies camera permission outright) where the old direct check would have lied. Permission-flow hardening is still backlog. |
-| Payment terminal SDKs | Interface exists (`PaymentTerminalService`), reports `'unsupported'` everywhere — not implemented, explicitly out of scope per directive (no unsupported-provider stubs). |
+| Payment terminal SDKs | Server-side: a real, tenant-scoped integration (`eftpos_service.py` + `/api/eftpos/*`) for Linkly/Tyro/Smartpay/Windcave exists and is wired in, unverified against real vendor hardware/accounts. Client-side (`PaymentTerminalService`, for a tablet-attached card reader): interface exists, reports `'unsupported'` everywhere — not implemented, explicitly out of scope per directive (no unsupported-provider stubs). |
 | Biometric reauthentication | Interface exists (`BiometricService`), reports unavailable everywhere; PIN-based server-verified reauth is the real gate, wired into refunds only so far. |
