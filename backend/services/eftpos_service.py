@@ -304,18 +304,19 @@ class SimulatorProvider(EFTPOSProvider):
     }
     TIMEOUT_CENTS = 300
 
-    # EFTPOSService.get_provider() builds a brand-new provider instance for
-    # every single call (see process_transaction below) — nothing about this
-    # object survives between a purchase and the refund that follows it. A
-    # per-instance ledger would make refund() unable to ever find the
-    # purchase it's meant to reverse. Keyed by terminal so two configured
-    # simulator terminals don't share state, this dict lives at module scope
-    # instead, alongside every other instance of this class.
-    _ledgers: Dict[str, Dict[str, Dict[str, Any]]] = {}
+    # Providers are rebuilt per request. Retain the test ledger only for the
+    # exact tenant and persisted configuration, never a merchant-entered label.
+    # Both labels and terminal IDs can repeat across venues/configurations.
+    _ledgers: Dict[tuple[str, str], Dict[str, Dict[str, Any]]] = {}
 
     def __init__(self, config: Dict[str, Any]):
         super().__init__(config)
-        self._ledger = self._ledgers.setdefault(self.terminal_id or "default", {})
+        business_id = config.get("businessId")
+        config_id = config.get("id")
+        if (not isinstance(business_id, str) or not business_id.strip()
+                or not isinstance(config_id, str) or not config_id.strip()):
+            raise ValueError("Simulator requires a scoped terminal identity")
+        self._ledger = self._ledgers.setdefault((business_id, config_id), {})
 
     async def connect(self) -> bool:
         return True
