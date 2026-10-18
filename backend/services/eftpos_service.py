@@ -313,8 +313,8 @@ class SimulatorProvider(EFTPOSProvider):
         super().__init__(config)
         business_id = config.get("businessId")
         config_id = config.get("id")
-        if not all(isinstance(value, str) and value.strip()
-                   for value in (business_id, config_id)):
+        if (not isinstance(business_id, str) or not business_id.strip()
+                or not isinstance(config_id, str) or not config_id.strip()):
             raise ValueError("Simulator requires a scoped terminal identity")
         self._ledger = self._ledgers.setdefault((business_id, config_id), {})
 
