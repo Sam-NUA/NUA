@@ -48,15 +48,27 @@ def _suggest_modifiers(category_name: str, mods: List[Dict[str, Any]]) -> List[s
     return out
 
 
+MAX_MENU_TEXT_CHARS = 100_000
+
+
 async def _run_vision_extraction(file_data: str, file_type: str) -> Dict[str, Any]:
-    """Shared: pull items out of an image/pdf. Returns {items, message, rawResponse?}."""
+    """Shared: pull items out of pasted text, an image, or a PDF. Returns
+    {items, message, rawResponse?}."""
     import json as _json
 
-    # Normalise base64 — strip any leading data URL prefix
-    if "," in file_data and file_data.startswith("data:"):
-        file_data = file_data.split(",", 1)[1]
-    if not file_data:
-        return {"items": [], "message": "No file data received"}
+    if file_type == "text":
+        menu_text = file_data.strip()
+        if not menu_text:
+            return {"items": [], "message": "No menu text received"}
+        if len(menu_text) > MAX_MENU_TEXT_CHARS:
+            raise HTTPException(status_code=413,
+                detail=f"Menu text is too long; paste under {MAX_MENU_TEXT_CHARS:,} characters at a time")
+    else:
+        # Normalise base64 — strip any leading data URL prefix
+        if "," in file_data and file_data.startswith("data:"):
+            file_data = file_data.split(",", 1)[1]
+        if not file_data:
+            return {"items": [], "message": "No file data received"}
 
     system_msg = (
         "You are a menu extraction expert. Extract EVERY menu item you can see.\n"
@@ -77,7 +89,11 @@ async def _run_vision_extraction(file_data: str, file_type: str) -> Dict[str, An
         system_message=system_msg,
     ).with_model("openai", "gpt-5.2").with_max_tokens(16384).with_reasoning_effort("low")
 
-    if file_type == "pdf":
+    if file_type == "text":
+        user_msg = UserMessage(
+            text=f"Extract every menu item from this menu text and return the JSON array:\n\n{menu_text}",
+        )
+    elif file_type == "pdf":
         # Send the actual pages: text-only extraction silently loses scanned
         # menus, layout and everything beyond the old 12,000-character slice.
         user_msg = UserMessage(

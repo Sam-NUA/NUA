@@ -21,10 +21,11 @@ export default function AIMenuImportReview({ open, onOpenChange, onCommitted }) 
   const [knownMods, setKnownMods] = useState([]);
   const [rawResponse, setRawResponse] = useState(null);
   const [committing, setCommitting] = useState(false);
+  const [menuText, setMenuText] = useState('');
 
   const reset = () => {
     setStage('upload'); setItems([]); setKnownCats([]); setKnownMods([]);
-    setRawResponse(null); setLoading(false); setCommitting(false);
+    setRawResponse(null); setLoading(false); setCommitting(false); setMenuText('');
   };
 
   const handleClose = (v) => {
@@ -71,6 +72,33 @@ export default function AIMenuImportReview({ open, onOpenChange, onCommitted }) 
     } finally {
       setLoading(false);
       input.value = '';
+    }
+  };
+
+  const handleTextSubmit = async () => {
+    const text = menuText.trim();
+    if (!text) return;
+    setLoading(true);
+    setRawResponse(null);
+    try {
+      const res = await menuFeaturesAPI.aiPreviewMenu({ fileData: text, fileType: 'text' });
+      const d = res.data || {};
+      if (!d.count) {
+        toast.error(d.message || 'No items detected');
+        setRawResponse(d.rawResponse || null);
+        setLoading(false);
+        return;
+      }
+      setItems(d.items || []);
+      setKnownCats(d.knownCategories || []);
+      setKnownMods(d.knownModifiers || []);
+      setStage('review');
+    } catch (err) {
+      toast.error(err?.response?.status === 413
+        ? 'Menu text is too long. Paste a shorter section.'
+        : err?.response?.data?.detail || err?.message || 'Preview failed');
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -138,7 +166,7 @@ export default function AIMenuImportReview({ open, onOpenChange, onCommitted }) 
             {stage === 'done' && <Badge className="ml-2 bg-emerald-100 text-emerald-700">Done</Badge>}
           </DialogTitle>
           <DialogDescription>
-            {stage === 'upload' && 'Upload a menu image or PDF — NUA will detect items, guess categories, and suggest modifiers. You review before anything is saved.'}
+            {stage === 'upload' && 'Upload a menu image or PDF, or paste menu text — NUA will detect items, guess categories, and suggest modifiers. You review before anything is saved.'}
             {stage === 'review' && `Detected ${items.length} item${items.length === 1 ? '' : 's'}. Edit anything you like, tick modifiers, then commit only what you want.`}
             {stage === 'done' && 'Import complete. Items are now available in Products and on the POS.'}
           </DialogDescription>
@@ -158,6 +186,23 @@ export default function AIMenuImportReview({ open, onOpenChange, onCommitted }) 
                 data-testid="menu-file-input"
               />
               <p className="text-[11px] text-gray-400 mt-3">JPG, PNG, WebP, GIF or PDF (including scans) · Maximum 3 MB</p>
+            </div>
+            <div className="flex items-center gap-2 text-[11px] text-gray-400">
+              <div className="flex-1 border-t" /> or <div className="flex-1 border-t" />
+            </div>
+            <div className="space-y-2">
+              <textarea
+                value={menuText}
+                onChange={(e) => setMenuText(e.target.value)}
+                disabled={loading}
+                placeholder="Paste your menu text here…"
+                rows={5}
+                className="w-full text-sm border rounded-lg p-2 resize-none"
+                data-testid="menu-text-input"
+              />
+              <Button size="sm" onClick={handleTextSubmit} disabled={loading || !menuText.trim()} data-testid="menu-text-submit">
+                Extract from pasted text
+              </Button>
             </div>
             {loading && (
               <div className="flex items-center justify-center gap-2 text-sm text-gray-500" data-testid="preview-loading">
