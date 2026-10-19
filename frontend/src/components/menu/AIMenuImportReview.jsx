@@ -54,7 +54,10 @@ export default function AIMenuImportReview({ open, onOpenChange, onCommitted }) 
       });
       const b64 = typeof buf === 'string' && buf.includes(',') ? buf.split(',')[1] : buf;
       const isPdf = file.type?.includes('pdf') || /\.pdf$/i.test(file.name);
-      const res = await menuFeaturesAPI.aiPreviewMenu({ fileData: b64, fileType: isPdf ? 'pdf' : 'image' });
+      const isXlsx = file.type?.includes('spreadsheet') || /\.xlsx$/i.test(file.name);
+      const isXls = !isXlsx && (file.type === 'application/vnd.ms-excel' || /\.xls$/i.test(file.name));
+      const fileType = isPdf ? 'pdf' : isXlsx ? 'xlsx' : isXls ? 'xls' : 'image';
+      const res = await menuFeaturesAPI.aiPreviewMenu({ fileData: b64, fileType });
       const d = res.data || {};
       if (!d.count) {
         toast.error(d.message || 'No items detected');
@@ -167,7 +170,7 @@ export default function AIMenuImportReview({ open, onOpenChange, onCommitted }) 
             {stage === 'done' && <Badge className="ml-2 bg-emerald-100 text-emerald-700">Done</Badge>}
           </DialogTitle>
           <DialogDescription>
-            {stage === 'upload' && 'Upload a menu image or PDF, or paste menu text — NUA will detect items, guess categories, and suggest modifiers. You review before anything is saved.'}
+            {stage === 'upload' && 'Upload a menu image, PDF or spreadsheet, or paste menu text — NUA will detect items, guess categories, and suggest modifiers. You review before anything is saved.'}
             {stage === 'review' && `Detected ${items.length} item${items.length === 1 ? '' : 's'}. Edit anything you like, tick modifiers, then commit only what you want.`}
             {stage === 'done' && 'Import complete. Items are now available in Products and on the POS.'}
           </DialogDescription>
@@ -180,13 +183,14 @@ export default function AIMenuImportReview({ open, onOpenChange, onCommitted }) 
               <p className="text-sm text-gray-600 mb-3">Drop your menu file here or click to browse</p>
               <input
                 type="file"
-                accept=".pdf,.jpg,.jpeg,.png,.webp,.gif,application/pdf,image/jpeg,image/png,image/webp,image/gif"
+                accept=".pdf,.jpg,.jpeg,.png,.webp,.gif,.xlsx,.xls,application/pdf,image/jpeg,image/png,image/webp,image/gif,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel"
                 onChange={handleFileUpload}
                 disabled={loading}
                 className="w-full text-sm"
                 data-testid="menu-file-input"
               />
-              <p className="text-[11px] text-gray-400 mt-3">JPG, PNG, WebP, GIF or PDF (including scans) · Maximum 3 MB</p>
+              <p className="text-[11px] text-gray-400 mt-3">JPG, PNG, WebP, GIF, PDF (including scans) or XLSX/XLS · Maximum 3 MB</p>
+              <p className="text-[11px] text-gray-400">XLSX/XLS and text-based PDFs are read instantly without AI; a photo or scanned PDF needs AI reading configured.</p>
             </div>
             <div className="flex items-center gap-2 text-[11px] text-gray-400">
               <div className="flex-1 border-t" /> or <div className="flex-1 border-t" />

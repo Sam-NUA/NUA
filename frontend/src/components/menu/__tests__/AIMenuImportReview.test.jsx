@@ -68,6 +68,23 @@ it('shows an actionable error for a platform payload rejection', async () => {
   expect(toast.error).toHaveBeenCalledWith(expect.stringContaining('under 3 MB'));
 });
 
+it('sends an .xlsx file to preview with fileType xlsx', async () => {
+  menuFeaturesAPI.aiPreviewMenu.mockResolvedValueOnce({ data: { count: 1, items: [
+    { tempId: 'one', name: 'Flat White', category: 'Coffee', price: 5.5, cost: 2, include: true },
+  ] } });
+  await upload({ name: 'menu.xlsx', type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', size: 100 });
+  expect(menuFeaturesAPI.aiPreviewMenu).toHaveBeenCalledWith({ fileData: 'JVBERi0=', fileType: 'xlsx' });
+  expect(host.querySelector('[data-testid="review-stage"]')).not.toBeNull();
+});
+
+it('sends a legacy .xls file to preview with fileType xls', async () => {
+  menuFeaturesAPI.aiPreviewMenu.mockResolvedValueOnce({ data: { count: 1, items: [
+    { tempId: 'one', name: 'Flat White', category: 'Coffee', price: 5.5, cost: 2, include: true },
+  ] } });
+  await upload({ name: 'menu.xls', type: 'application/vnd.ms-excel', size: 100 });
+  expect(menuFeaturesAPI.aiPreviewMenu).toHaveBeenCalledWith({ fileData: 'JVBERi0=', fileType: 'xls' });
+});
+
 function textarea() {
   return host.querySelector('[data-testid="menu-text-input"]');
 }
