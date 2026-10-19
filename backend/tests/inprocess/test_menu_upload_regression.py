@@ -165,21 +165,60 @@ def test_oversized_pasted_text_is_rejected_before_the_provider_call(client, owne
 # provider at all — only a scanned/photographed PDF or an actual photo
 # does, since reading a picture has no deterministic alternative.
 
-def _text_pdf_base64():
-    """A real PDF with embedded, selectable text (unlike the blank-page
-    PDF above, which has none) — built the same way a menu exported from
-    Word/Canva/a POS system would be."""
+def _minimal_text_pdf(lines):
+    """A real, valid single-page PDF with embedded, selectable text —
+    built from nothing but stdlib bytes (no reportlab/fpdf dependency,
+    unlike the blank-page PDF above, which has no text at all)."""
     import io as _io
-    from reportlab.pdfgen import canvas
+    content_ops = ["BT", "/F1 12 Tf", "50 750 Td"]
+    for i, line in enumerate(lines):
+        if i:
+            content_ops.append("0 -18 Td")
+        escaped = line.replace("\\", r"\\").replace("(", r"\(").replace(")", r"\)")
+        content_ops.append(f"({escaped}) Tj")
+    content_ops.append("ET")
+    content = "\n".join(content_ops).encode("latin-1")
+
+    objects = [
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        b"<< /Type /Page /Parent 2 0 R /Resources << /Font << /F1 4 0 R >> >> "
+        b"/MediaBox [0 0 400 800] /Contents 5 0 R >>",
+        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+        b"<< /Length %d >>\nstream\n" % len(content) + content + b"\nendstream",
+    ]
+
     buf = _io.BytesIO()
-    c = canvas.Canvas(buf, pagesize=(300, 400))
-    c.drawString(20, 380, "COFFEE")
-    c.drawString(20, 360, "Flat White .......... $5.50")
-    c.drawString(20, 340, "Long Black .......... $4.80")
-    c.drawString(20, 320, "BAKERY")
-    c.drawString(20, 300, "Croissant 6.00")
-    c.save()
-    return base64.b64encode(buf.getvalue()).decode()
+    buf.write(b"%PDF-1.4\n")
+    offsets = [0]
+    for idx, obj in enumerate(objects, start=1):
+        offsets.append(buf.tell())
+        buf.write(f"{idx} 0 obj\n".encode())
+        buf.write(obj)
+        buf.write(b"\nendobj\n")
+    xref_offset = buf.tell()
+    n = len(objects) + 1
+    buf.write(f"xref\n0 {n}\n".encode())
+    buf.write(b"0000000000 65535 f \n")
+    for off in offsets[1:]:
+        buf.write(f"{off:010d} 00000 n \n".encode())
+    buf.write(b"trailer\n")
+    buf.write(f"<< /Size {n} /Root 1 0 R >>\n".encode())
+    buf.write(b"startxref\n")
+    buf.write(f"{xref_offset}\n".encode())
+    buf.write(b"%%EOF")
+    return buf.getvalue()
+
+
+def _text_pdf_base64():
+    pdf_bytes = _minimal_text_pdf([
+        "COFFEE",
+        "Flat White .......... $5.50",
+        "Long Black .......... $4.80",
+        "BAKERY",
+        "Croissant 6.00",
+    ])
+    return base64.b64encode(pdf_bytes).decode()
 
 
 def test_text_pdf_is_parsed_deterministically_without_any_api_key(client, owner_headers, monkeypatch):
@@ -220,13 +259,8 @@ def test_scanned_pdf_with_no_embedded_text_still_requires_the_api_key(client, ow
 
 def test_text_pdf_with_no_priced_lines_degrades_gracefully_without_a_key(client, owner_headers, monkeypatch):
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-    import io as _io
-    from reportlab.pdfgen import canvas
-    buf = _io.BytesIO()
-    c = canvas.Canvas(buf, pagesize=(300, 400))
-    c.drawString(20, 380, "Welcome to our restaurant, please see staff for today's specials")
-    c.save()
-    encoded = base64.b64encode(buf.getvalue()).decode()
+    encoded = base64.b64encode(_minimal_text_pdf(
+        ["Welcome to our restaurant, please see staff for today's specials"])).decode()
     response = _upload(client, owner_headers, encoded, "pdf")
     assert response.status_code == 200, response.text
     body = response.json()
@@ -236,13 +270,8 @@ def test_text_pdf_with_no_priced_lines_degrades_gracefully_without_a_key(client,
 
 def test_text_pdf_with_no_priced_lines_tries_ai_when_a_key_is_configured(client, owner_headers, monkeypatch):
     captured = _provider(monkeypatch, content=json.dumps([{"name": "Chef's Special", "price": 22.0}]))
-    import io as _io
-    from reportlab.pdfgen import canvas
-    buf = _io.BytesIO()
-    c = canvas.Canvas(buf, pagesize=(300, 400))
-    c.drawString(20, 380, "Welcome to our restaurant, please see staff for today's specials")
-    c.save()
-    encoded = base64.b64encode(buf.getvalue()).decode()
+    encoded = base64.b64encode(_minimal_text_pdf(
+        ["Welcome to our restaurant, please see staff for today's specials"])).decode()
     response = _upload(client, owner_headers, encoded, "pdf")
     assert response.status_code == 200, response.text
     assert response.json()["count"] == 1
