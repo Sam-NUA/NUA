@@ -158,3 +158,157 @@ def test_oversized_pasted_text_is_rejected_before_the_provider_call(client, owne
     assert response.status_code == 413
     assert "too long" in response.json()["detail"]
     assert not captured
+
+
+# ============ DETERMINISTIC, NO-API-KEY PATHS (PDF text / XLSX / XLS) ============
+# A spreadsheet, or a PDF with real embedded text, never needs the AI
+# provider at all — only a scanned/photographed PDF or an actual photo
+# does, since reading a picture has no deterministic alternative.
+
+def _text_pdf_base64():
+    """A real PDF with embedded, selectable text (unlike the blank-page
+    PDF above, which has none) — built the same way a menu exported from
+    Word/Canva/a POS system would be."""
+    import io as _io
+    from reportlab.pdfgen import canvas
+    buf = _io.BytesIO()
+    c = canvas.Canvas(buf, pagesize=(300, 400))
+    c.drawString(20, 380, "COFFEE")
+    c.drawString(20, 360, "Flat White .......... $5.50")
+    c.drawString(20, 340, "Long Black .......... $4.80")
+    c.drawString(20, 320, "BAKERY")
+    c.drawString(20, 300, "Croissant 6.00")
+    c.save()
+    return base64.b64encode(buf.getvalue()).decode()
+
+
+def test_text_pdf_is_parsed_deterministically_without_any_api_key(client, owner_headers, monkeypatch):
+    captured = _provider(monkeypatch, content="[]")
+    # _provider() sets OPENAI_API_KEY as a side effect of configuring the
+    # mock transport — undo that so this test genuinely has no key.
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    response = _upload(client, owner_headers, _text_pdf_base64(), "pdf")
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["count"] == 3
+    names = {item["name"] for item in body["items"]}
+    assert names == {"Flat White", "Long Black", "Croissant"}
+    flat_white = next(i for i in body["items"] if i["name"] == "Flat White")
+    # categoryMatched/category reflect the usual fuzzy-match-to-existing-
+    # category step, same as any other extraction path — proposedCategory
+    # is what the deterministic parser itself actually read off the PDF.
+    assert flat_white["price"] == 5.5 and flat_white["proposedCategory"] == "COFFEE"
+    assert not captured, "a text-based PDF must never reach the AI provider"
+
+
+def test_scanned_pdf_with_no_embedded_text_still_requires_the_api_key(client, owner_headers, monkeypatch):
+    # The existing blank-page PDF test above proves the *success* path
+    # with a key configured; this proves the no-key failure path gives an
+    # accurate, specific message rather than the generic one.
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    import io as _io
+    from pypdf import PdfWriter
+    writer = PdfWriter()
+    writer.add_blank_page(width=300, height=300)
+    buf = _io.BytesIO()
+    writer.write(buf)
+    response = _upload(client, owner_headers, base64.b64encode(buf.getvalue()).decode(), "pdf")
+    assert response.status_code == 503
+    detail = response.json()["detail"]
+    assert "scanned or photographed" in detail and "OPENAI_API_KEY" in detail
+
+
+def test_text_pdf_with_no_priced_lines_degrades_gracefully_without_a_key(client, owner_headers, monkeypatch):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    import io as _io
+    from reportlab.pdfgen import canvas
+    buf = _io.BytesIO()
+    c = canvas.Canvas(buf, pagesize=(300, 400))
+    c.drawString(20, 380, "Welcome to our restaurant, please see staff for today's specials")
+    c.save()
+    encoded = base64.b64encode(buf.getvalue()).decode()
+    response = _upload(client, owner_headers, encoded, "pdf")
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["count"] == 0
+    assert "couldn't automatically detect priced items" in body["message"]
+
+
+def test_text_pdf_with_no_priced_lines_tries_ai_when_a_key_is_configured(client, owner_headers, monkeypatch):
+    captured = _provider(monkeypatch, content=json.dumps([{"name": "Chef's Special", "price": 22.0}]))
+    import io as _io
+    from reportlab.pdfgen import canvas
+    buf = _io.BytesIO()
+    c = canvas.Canvas(buf, pagesize=(300, 400))
+    c.drawString(20, 380, "Welcome to our restaurant, please see staff for today's specials")
+    c.save()
+    encoded = base64.b64encode(buf.getvalue()).decode()
+    response = _upload(client, owner_headers, encoded, "pdf")
+    assert response.status_code == 200, response.text
+    assert response.json()["count"] == 1
+    assert captured, "a text PDF with no parseable items may opportunistically use AI when a key IS configured"
+
+
+def _xlsx_base64(rows, headers=("Name", "Category", "Price", "Cost", "Description")):
+    import io as _io
+    from openpyxl import Workbook
+    wb = Workbook()
+    ws = wb.active
+    ws.append(list(headers))
+    for row in rows:
+        ws.append(list(row))
+    buf = _io.BytesIO()
+    wb.save(buf)
+    return base64.b64encode(buf.getvalue()).decode()
+
+
+def test_xlsx_is_parsed_deterministically_without_any_api_key(client, owner_headers, monkeypatch):
+    captured = _provider(monkeypatch, content="[]")
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    encoded = _xlsx_base64([
+        ("Flat White", "Coffee", 5.5, 2.0, "Milky espresso"),
+        ("Croissant", "Bakery", 6.0, 2.1, ""),
+    ])
+    response = _upload(client, owner_headers, encoded, "xlsx")
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["count"] == 2
+    flat_white = next(i for i in body["items"] if i["name"] == "Flat White")
+    assert flat_white["price"] == 5.5 and flat_white["cost"] == 2.0 and flat_white["proposedCategory"] == "Coffee"
+    assert not captured, "an xlsx upload must never reach the AI provider"
+
+
+def test_xls_legacy_binary_is_parsed_deterministically_without_any_api_key(client, owner_headers, monkeypatch):
+    captured = _provider(monkeypatch, content="[]")
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    import io as _io
+    import xlwt
+    wb = xlwt.Workbook()
+    ws = wb.add_sheet("Menu")
+    for col, header in enumerate(["Item", "Category", "Price", "Cost"]):
+        ws.write(0, col, header)
+    ws.write(1, 0, "Long Black")
+    ws.write(1, 1, "Coffee")
+    ws.write(1, 2, 4.8)
+    ws.write(1, 3, 1.5)
+    buf = _io.BytesIO()
+    wb.save(buf)
+    encoded = base64.b64encode(buf.getvalue()).decode()
+    response = _upload(client, owner_headers, encoded, "xls")
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["count"] == 1
+    assert body["items"][0]["name"] == "Long Black" and body["items"][0]["price"] == 4.8
+    assert not captured, "an xls upload must never reach the AI provider"
+
+
+def test_xlsx_without_a_recognizable_header_is_a_clean_no_items_response(client, owner_headers, monkeypatch):
+    captured = _provider(monkeypatch, content="[]")
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    encoded = _xlsx_base64([("some", "random", "data")], headers=("Foo", "Bar", "Baz"))
+    response = _upload(client, owner_headers, encoded, "xlsx")
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["count"] == 0
+    assert "No recognizable item rows" in body["message"]
+    assert not captured
