@@ -44,8 +44,8 @@ jobs:
       - name: Build shared React app
         working-directory: ./frontend
         run: |
-          python3 scripts/generate_app_icons.py
-          cd frontend && npm run build
+          python3 ../scripts/generate_app_icons.py
+          npm run build
       - uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
@@ -242,8 +242,8 @@ jobs:
       - name: Build shared React app against the throwaway backend
         working-directory: ./frontend
         run: |
-          python3 scripts/generate_app_icons.py
-          cd frontend && npm run build
+          python3 ../scripts/generate_app_icons.py
+          npm run build
       - uses: actions/setup-java@v4
         with:
           distribution: 'temurin'

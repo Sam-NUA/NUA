@@ -105,7 +105,7 @@ async function start() {
     try { allowed ||= [origin, origin.replace('https:', 'wss:')].includes(new URL(details.url).origin); } catch {}
     callback({ cancel: !allowed });
   });
-  mainWindow = new BrowserWindow({ width: 1400, height: 950, minWidth: 1024, minHeight: 768, title: 'NUA POS', icon: path.join(__dirname, '../build/icon.ico'), autoHideMenuBar: true, webPreferences: { preload: path.join(__dirname, 'preload.cjs'), session: hostSession, sandbox: true, contextIsolation: true, nodeIntegration: false, webSecurity: true, devTools: !app.isPackaged } });
+  mainWindow = new BrowserWindow({ width: 1400, height: 950, minWidth: 1024, minHeight: 768, title: 'NUA POS', icon: path.join(__dirname, '../renderer/favicon.ico'), autoHideMenuBar: true, webPreferences: { preload: path.join(__dirname, 'preload.cjs'), session: hostSession, sandbox: true, contextIsolation: true, nodeIntegration: false, webSecurity: true, devTools: !app.isPackaged } });
   restrict(mainWindow.webContents);
   Menu.setApplicationMenu(null);
   guarded('nua:info', () => ({ version: app.getVersion(), bridgeVersion: 1, platform: 'windows', inputMode, releaseChannel: 'foundation', updates: 'manual-review-only', secureAuthIntegrated: true, offlineSyncIntegrated: true, hostname: os.hostname() }));
