@@ -19,6 +19,19 @@
   };
   applyWindowState(await native.getWindowState());
   native.onWindowStateChanged(applyWindowState);
+  // Windows can change full-screen state through OS shortcuts without a
+  // corresponding Electron event. Reconcile the host toolbar with the
+  // authoritative BrowserWindow state so the restore control never stays stale.
+  let checkingState = false;
+  const reconcileWindowState = async () => {
+    if (checkingState) return;
+    checkingState = true;
+    try { applyWindowState(await native.getWindowState()); }
+    catch { /* keep last known state until the host recovers */ }
+    finally { checkingState = false; }
+  };
+  window.setInterval(reconcileWindowState, 500);
+  window.addEventListener('focus', reconcileWindowState);
   fullscreen.onclick = async () => {
     fullscreen.disabled = true;
     try {
