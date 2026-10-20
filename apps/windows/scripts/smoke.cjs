@@ -32,10 +32,10 @@ const { _electron } = require('../../../frontend/node_modules/playwright-core');
     // must always agree with the native window, not a stale JS toggle variable.
     await page.locator('#nua-desktop-bar button').first().click();
     await page.waitForFunction(async () => (await window.nuaDesktop.getWindowState()).fullscreen);
-    assert.equal(await page.locator('#nua-desktop-bar button').first().getAttribute('aria-pressed'), 'true');
+    await page.waitForFunction(() => document.querySelector('#nua-desktop-bar button')?.getAttribute('aria-pressed') === 'true');
     await page.keyboard.press('Escape');
     await page.waitForFunction(async () => !(await window.nuaDesktop.getWindowState()).fullscreen);
-    assert.equal(await page.locator('#nua-desktop-bar button').first().getAttribute('aria-pressed'), 'false');
+    await page.waitForFunction(() => document.querySelector('#nua-desktop-bar button')?.getAttribute('aria-pressed') === 'false');
     await page.keyboard.press('F11');
     await page.waitForFunction(async () => (await window.nuaDesktop.getWindowState()).fullscreen);
     await page.keyboard.press('F11');

@@ -131,9 +131,11 @@ async function start() {
     if (input.key === 'F11') {
       event.preventDefault();
       mainWindow.setFullScreen(!mainWindow.isFullScreen());
+      notifyWindowState();
     } else if (input.key === 'Escape' && mainWindow.isFullScreen()) {
       event.preventDefault();
       mainWindow.setFullScreen(false);
+      notifyWindowState();
     }
   });
   guarded('nua:printers', async () => (await mainWindow.webContents.getPrintersAsync()).map(p => ({ name: p.name, displayName: p.displayName, isDefault: p.isDefault })));
