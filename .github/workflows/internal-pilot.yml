@@ -40,6 +40,7 @@ jobs:
           java-version: '21'
       - run: npm ci
         working-directory: frontend
+      - run: python scripts/generate_app_icons.py
       - run: npm run build
         working-directory: frontend
       - run: npx cap sync android
@@ -95,6 +96,7 @@ jobs:
         working-directory: apps/windows
       - run: npm test
         working-directory: apps/windows
+      - run: python scripts/generate_app_icons.py
       - run: npm run build
         working-directory: frontend
       - run: npm run prepare:renderer
@@ -131,6 +133,7 @@ jobs:
           python-version: '3.12'
       - run: npm ci
         working-directory: frontend
+      - run: python scripts/generate_app_icons.py
       - run: npm run build
         working-directory: frontend
       - run: npx cap sync ios

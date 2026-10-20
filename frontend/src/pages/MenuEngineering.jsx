@@ -24,14 +24,18 @@ const CLASS_CONFIG = {
 export default function MenuEngineering() {
   const { theme } = useTheme();
   const [data, setData] = useState(null);
+  const [matrixError, setMatrixError] = useState(false);
   const [tab, setTab] = useState('matrix');
   const [showImport, setShowImport] = useState(false);
   const [showPriceAdjust, setShowPriceAdjust] = useState(false);
   const [priceForm, setPriceForm] = useState({ category: '', type: 'percentage', amount: '', direction: 'increase' });
 
-  useEffect(() => {
-    analyticsAPI.getMenuEngineering().then(r => setData(r.data)).catch(console.error);
-  }, []);
+  const reloadMatrix = () => {
+    setMatrixError(false);
+    analyticsAPI.getMenuEngineering().then(r => setData(r.data))
+      .catch(() => setMatrixError(true));
+  };
+  useEffect(() => { reloadMatrix(); }, []);
 
   const onCommitted = () => {
     analyticsAPI.getMenuEngineering().then(r => setData(r.data)).catch(() => {});
@@ -50,7 +54,23 @@ export default function MenuEngineering() {
     } catch { toast.error('Failed'); }
   };
 
-  if (!data) return <div className="flex items-center justify-center h-64 text-gray-400">Analyzing menu performance...</div>;
+  // Import is intentionally accessible when analytics is unavailable or
+  // this venue has not generated sales yet: import is how the menu gets started.
+  if (!data) return (
+    <div className="space-y-4" data-testid="menu-engineering-page">
+      <div className="flex flex-wrap justify-between items-center gap-3">
+        <h1 className="text-2xl font-bold" style={{ color: theme.text }}>Menu Matrix</h1>
+        <Button onClick={() => setShowImport(true)} data-testid="ai-import-btn">
+          <Upload size={16} className="mr-1" /> Import menu
+        </Button>
+      </div>
+      <p role={matrixError ? 'alert' : 'status'} className="text-sm text-gray-600">
+        {matrixError ? 'Menu performance is unavailable. You can still import items below.' : 'Analyzing menu performance…'}
+      </p>
+      {matrixError && <Button variant="outline" onClick={reloadMatrix}>Retry analysis</Button>}
+      <AIMenuImportReview open={showImport} onOpenChange={setShowImport} onCommitted={onCommitted} />
+    </div>
+  );
 
   const { items, categories, summary } = data;
   const totalRevenue = items.reduce((s, i) => s + i.revenue, 0);

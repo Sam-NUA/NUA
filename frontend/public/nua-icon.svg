@@ -1,8 +1,8 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" role="img" aria-label="NUA">
-  <title>NUA Pulse Grid</title>
-  <rect x="6" y="6" width="40" height="40" rx="10" fill="#f58c14"/>
-  <rect x="54" y="6" width="40" height="40" rx="10" fill="#8b5cf6"/>
-  <rect x="6" y="54" width="40" height="40" rx="10" fill="#ec4899"/>
-  <rect x="54" y="54" width="40" height="40" rx="10" fill="#1c1917"/>
-  <polyline points="60,27 65,27 68,17 72,39 75,27 88,27" fill="none" stroke="#ffffff" stroke-width="4.2" stroke-linecap="round" stroke-linejoin="round"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="NUA POS app icon">
+<title>NUA POS</title>
+<rect width="512" height="512" rx="90" fill="#3c0b21"/>
+<text x="256" y="263" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="144" font-weight="900" letter-spacing="-3" fill="#f6f0e5">NUA</text>
+<path d="M138 304h236" stroke="#8b5cf6" stroke-width="8" stroke-linecap="round"/>
+<text x="256" y="402" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="87" font-weight="800" letter-spacing="14" fill="#f6f0e5">POS</text>
+<circle cx="415" cy="97" r="18" fill="#8b5cf6"/>
 </svg>
