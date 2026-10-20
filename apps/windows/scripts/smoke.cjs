@@ -28,24 +28,31 @@ const { _electron } = require('../../../frontend/node_modules/playwright-core');
       return safeStorage.decryptString(encrypted) === 'non-secret-test-value';
     });
     assert.equal(encryption,true);
-    // Real packaged host regression: UI toggle, F11, Escape and recovery
-    // must always agree with the native window, not a stale JS toggle variable.
-    console.log('WIN-SMOKE before toggle', JSON.stringify(await page.evaluate(async () => ({state:await window.nuaDesktop.getWindowState(), toolbar:document.querySelector('#nua-desktop-bar button')?.getAttribute('aria-pressed')}))));
+    // Poll via Playwright's normal page.evaluate() bridge, not
+    // waitForFunction's isolated execution context; preload methods are
+    // exposed by Electron contextBridge to the application main world.
+    const waitForWindow = async (expected, stage) => {
+      let last;
+      for (let attempt = 0; attempt < 50; attempt++) {
+        last = await page.evaluate(async () => ({
+          state: await window.nuaDesktop.getWindowState(),
+          toolbar: document.querySelector('#nua-desktop-bar button')?.getAttribute('aria-pressed'),
+        }));
+        if (last.state.fullscreen === expected && last.toolbar === String(expected)) return;
+        await new Promise(resolve => setTimeout(resolve, 100));
+      }
+      throw new Error(`Window state did not settle after ${stage}: ${JSON.stringify(last)}`);
+    };
+    // Native toggle and keyboard access must roundtrip through the window
+    // state and toolbar. No hardware/device APIs are invoked by this test.
     await page.locator('#nua-desktop-bar button').first().click();
-    console.log('WIN-SMOKE after toggle', JSON.stringify(await page.evaluate(async () => ({state:await window.nuaDesktop.getWindowState(), toolbar:document.querySelector('#nua-desktop-bar button')?.getAttribute('aria-pressed')}))));
-    await page.waitForFunction(async () => (await window.nuaDesktop.getWindowState()).fullscreen);
-    await page.waitForFunction(() => document.querySelector('#nua-desktop-bar button')?.getAttribute('aria-pressed') === 'true');
-    console.log('WIN-SMOKE before Escape', JSON.stringify(await page.evaluate(async () => ({state:await window.nuaDesktop.getWindowState(), toolbar:document.querySelector('#nua-desktop-bar button')?.getAttribute('aria-pressed')}))));
+    await waitForWindow(true, 'toolbar full screen');
     await page.keyboard.press('Escape');
-    console.log('WIN-SMOKE after Escape', JSON.stringify(await page.evaluate(async () => ({state:await window.nuaDesktop.getWindowState(), toolbar:document.querySelector('#nua-desktop-bar button')?.getAttribute('aria-pressed')}))));
-    await page.waitForFunction(async () => !(await window.nuaDesktop.getWindowState()).fullscreen);
-    await page.waitForFunction(() => document.querySelector('#nua-desktop-bar button')?.getAttribute('aria-pressed') === 'false');
-    console.log('WIN-SMOKE before F11', JSON.stringify(await page.evaluate(async () => ({state:await window.nuaDesktop.getWindowState(), toolbar:document.querySelector('#nua-desktop-bar button')?.getAttribute('aria-pressed')}))));
+    await waitForWindow(false, 'Escape');
     await page.keyboard.press('F11');
-    console.log('WIN-SMOKE after F11', JSON.stringify(await page.evaluate(async () => ({state:await window.nuaDesktop.getWindowState(), toolbar:document.querySelector('#nua-desktop-bar button')?.getAttribute('aria-pressed')}))));
-    await page.waitForFunction(async () => (await window.nuaDesktop.getWindowState()).fullscreen);
+    await waitForWindow(true, 'F11 fullscreen');
     await page.keyboard.press('F11');
-    await page.waitForFunction(async () => !(await window.nuaDesktop.getWindowState()).fullscreen);
+    await waitForWindow(false, 'F11 restore');
     console.log('PASS: Windows Electron bridge, touch mode, routing, sandbox, popup/navigation denial and OS crypto roundtrip');
   } finally { await host.close(); }
 })().catch(error => { console.error(error.message); process.exitCode=1; });
