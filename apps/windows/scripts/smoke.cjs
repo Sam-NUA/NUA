@@ -28,6 +28,18 @@ const { _electron } = require('../../../frontend/node_modules/playwright-core');
       return safeStorage.decryptString(encrypted) === 'non-secret-test-value';
     });
     assert.equal(encryption,true);
+    // Real packaged host regression: UI toggle, F11, Escape and recovery
+    // must always agree with the native window, not a stale JS toggle variable.
+    await page.locator('#nua-desktop-bar button').first().click();
+    await page.waitForFunction(async () => (await window.nuaDesktop.getWindowState()).fullscreen);
+    assert.equal(await page.locator('#nua-desktop-bar button').first().getAttribute('aria-pressed'), 'true');
+    await page.keyboard.press('Escape');
+    await page.waitForFunction(async () => !(await window.nuaDesktop.getWindowState()).fullscreen);
+    assert.equal(await page.locator('#nua-desktop-bar button').first().getAttribute('aria-pressed'), 'false');
+    await page.keyboard.press('F11');
+    await page.waitForFunction(async () => (await window.nuaDesktop.getWindowState()).fullscreen);
+    await page.keyboard.press('F11');
+    await page.waitForFunction(async () => !(await window.nuaDesktop.getWindowState()).fullscreen);
     console.log('PASS: Windows Electron bridge, touch mode, routing, sandbox, popup/navigation denial and OS crypto roundtrip');
   } finally { await host.close(); }
 })().catch(error => { console.error(error.message); process.exitCode=1; });

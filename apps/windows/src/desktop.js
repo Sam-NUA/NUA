@@ -8,15 +8,27 @@
   bar.id = 'nua-desktop-bar';
   bar.setAttribute('aria-label', 'Windows controls');
   const status = document.createElement('span');
-  status.textContent = `Windows foundation ${info.version} · ${info.inputMode} · Hardware certification pending`;
+  status.textContent = `NUA POS ${info.version} · ${info.inputMode} · Hardware certification pending`;
   const fullscreen = document.createElement('button');
   fullscreen.type = 'button';
-  fullscreen.textContent = 'Full screen';
-  let expanded = false;
-  fullscreen.onclick = async () => {
-    expanded = await native.setFullscreen(!expanded);
-    fullscreen.textContent = expanded ? 'Exit full screen' : 'Full screen';
+  fullscreen.setAttribute('aria-label', 'Toggle full screen (F11; Escape to exit)');
+  const applyWindowState = (state) => {
+    const expanded = !!state?.fullscreen;
+    fullscreen.textContent = expanded ? 'Restore window (Esc)' : 'Full screen (F11)';
     fullscreen.setAttribute('aria-pressed', String(expanded));
+  };
+  applyWindowState(await native.getWindowState());
+  native.onWindowStateChanged(applyWindowState);
+  fullscreen.onclick = async () => {
+    fullscreen.disabled = true;
+    try {
+      const state = await native.getWindowState();
+      applyWindowState(await native.setFullscreen(!state.fullscreen));
+    } catch {
+      status.textContent = 'Window mode could not be changed. Try F11 or Escape.';
+    } finally {
+      fullscreen.disabled = false;
+    }
   };
   const print = document.createElement('button');
   print.type = 'button';
