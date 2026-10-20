@@ -30,13 +30,19 @@ const { _electron } = require('../../../frontend/node_modules/playwright-core');
     assert.equal(encryption,true);
     // Real packaged host regression: UI toggle, F11, Escape and recovery
     // must always agree with the native window, not a stale JS toggle variable.
+    console.log('WIN-SMOKE before toggle', JSON.stringify(await page.evaluate(async () => ({state:await window.nuaDesktop.getWindowState(), toolbar:document.querySelector('#nua-desktop-bar button')?.getAttribute('aria-pressed')}))));
     await page.locator('#nua-desktop-bar button').first().click();
+    console.log('WIN-SMOKE after toggle', JSON.stringify(await page.evaluate(async () => ({state:await window.nuaDesktop.getWindowState(), toolbar:document.querySelector('#nua-desktop-bar button')?.getAttribute('aria-pressed')}))));
     await page.waitForFunction(async () => (await window.nuaDesktop.getWindowState()).fullscreen);
     await page.waitForFunction(() => document.querySelector('#nua-desktop-bar button')?.getAttribute('aria-pressed') === 'true');
+    console.log('WIN-SMOKE before Escape', JSON.stringify(await page.evaluate(async () => ({state:await window.nuaDesktop.getWindowState(), toolbar:document.querySelector('#nua-desktop-bar button')?.getAttribute('aria-pressed')}))));
     await page.keyboard.press('Escape');
+    console.log('WIN-SMOKE after Escape', JSON.stringify(await page.evaluate(async () => ({state:await window.nuaDesktop.getWindowState(), toolbar:document.querySelector('#nua-desktop-bar button')?.getAttribute('aria-pressed')}))));
     await page.waitForFunction(async () => !(await window.nuaDesktop.getWindowState()).fullscreen);
     await page.waitForFunction(() => document.querySelector('#nua-desktop-bar button')?.getAttribute('aria-pressed') === 'false');
+    console.log('WIN-SMOKE before F11', JSON.stringify(await page.evaluate(async () => ({state:await window.nuaDesktop.getWindowState(), toolbar:document.querySelector('#nua-desktop-bar button')?.getAttribute('aria-pressed')}))));
     await page.keyboard.press('F11');
+    console.log('WIN-SMOKE after F11', JSON.stringify(await page.evaluate(async () => ({state:await window.nuaDesktop.getWindowState(), toolbar:document.querySelector('#nua-desktop-bar button')?.getAttribute('aria-pressed')}))));
     await page.waitForFunction(async () => (await window.nuaDesktop.getWindowState()).fullscreen);
     await page.keyboard.press('F11');
     await page.waitForFunction(async () => !(await window.nuaDesktop.getWindowState()).fullscreen);
