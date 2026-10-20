@@ -479,6 +479,9 @@ export const coursingAPI = {
   voidItems: (id, data, config) => api.post(`/coursing/orders/${id}/void`, data, config),
   // SSE endpoint — consumed via EventSource, not axios.
   setPrintTarget: (printer, data) => api.put(`/print-targets/${encodeURIComponent(printer)}`, data),
+  getPrintTargets: () => api.get('/print-targets'),
+  setPrintTarget: (printer, config) => api.put(`/print-targets/${encodeURIComponent(printer)}`, config),
+  printProfiles: () => api.get('/print-profiles'),
   printHealth: () => api.get('/print-targets/health'),
   printSelfTest: (printer) => api.post(`/print-targets/${encodeURIComponent(printer)}/test`),
   analytics: (days = 7) => api.get('/coursing/analytics', { params: { days } }),
