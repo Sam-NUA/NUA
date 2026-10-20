@@ -32,6 +32,22 @@
   };
   window.setInterval(reconcileWindowState, 500);
   window.addEventListener('focus', reconcileWindowState);
+  // Some Windows keyboards / Chromium routes do not forward Escape to
+  // Electron's before-input-event while full-screen. A capture-phase app
+  // handler provides an independent exit path. In windowed mode, Escape
+  // remains available for normal modal/dialog dismissal.
+  document.addEventListener('keydown', async (event) => {
+    if (event.key !== 'F11' && event.key !== 'Escape') return;
+    try {
+      const current = await native.getWindowState();
+      if (event.key === 'Escape' && !current.fullscreen) return;
+      event.preventDefault();
+      event.stopPropagation();
+      applyWindowState(await native.setFullscreen(event.key === 'F11' ? !current.fullscreen : false));
+    } catch {
+      status.textContent = 'Could not change window mode. Use the on-screen restore control.';
+    }
+  }, true);
   fullscreen.onclick = async () => {
     fullscreen.disabled = true;
     try {
