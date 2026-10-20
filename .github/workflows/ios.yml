@@ -38,7 +38,9 @@ jobs:
         run: npm ci
       - name: Build shared React app
         working-directory: ./frontend
-        run: npm run build
+        run: |
+          python3 scripts/generate_app_icons.py
+          cd frontend && npm run build
       - name: Sync Capacitor iOS project
         working-directory: ./frontend
         run: npx cap sync ios
@@ -176,7 +178,9 @@ jobs:
         run: npm ci
       - name: Build shared React app against the throwaway backend
         working-directory: ./frontend
-        run: npm run build
+        run: |
+          python3 scripts/generate_app_icons.py
+          cd frontend && npm run build
       - name: Sync Capacitor iOS project
         working-directory: ./frontend
         run: npx cap sync ios

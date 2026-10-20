@@ -2,7 +2,7 @@
   "name": "@nua/windows",
   "version": "0.1.0",
   "private": true,
-  "description": "NUA Windows foundation \u2014 unsigned review builds only",
+  "description": "NUA Windows foundation — unsigned review builds only",
   "author": "NUA",
   "main": "src/main.cjs",
   "scripts": {
@@ -17,7 +17,7 @@
   },
   "build": {
     "appId": "com.nua.pos.windows.foundation",
-    "productName": "NUA POS Foundation",
+    "productName": "NUA POS",
     "asar": true,
     "directories": {
       "output": "dist"
@@ -35,7 +35,8 @@
             "x64"
           ]
         }
-      ]
+      ],
+      "icon": "build/icon.ico"
     },
     "nsis": {
       "oneClick": false,
