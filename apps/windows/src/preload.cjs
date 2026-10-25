@@ -26,5 +26,7 @@ contextBridge.exposeInMainWorld('nuaDesktop', Object.freeze({
   getDeviceMap: () => ipcRenderer.invoke('nua:device-map-get'),
   setDeviceMap: value => ipcRenderer.invoke('nua:device-map-set', value),
   getDeviceId: () => ipcRenderer.invoke('nua:device-id-get'),
+  getFleetConfig: business => ipcRenderer.invoke('nua:fleet-config-get', business),
+  setFleetConfig: (business, config) => ipcRenderer.invoke('nua:fleet-config-set', business, config),
   setDeviceId: value => ipcRenderer.invoke('nua:device-id-set', value),
 }));

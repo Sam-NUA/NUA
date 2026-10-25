@@ -189,6 +189,20 @@ async function start() {
         || Object.entries(map).some(([business, id]) => !business || typeof id !== 'string' || !id || id.length > 200)) throw new Error('Invalid terminal identities');
     return secureStore.write('device-map', value);
   });
+  guarded('nua:fleet-config-get', business => {
+    if (typeof business !== 'string' || !/^[a-zA-Z0-9_-]{1,100}$/.test(business))
+      throw new Error('Invalid business scope');
+    return secureStore.read('printer-fleet-' + business);
+  });
+  guarded('nua:fleet-config-set', (business, value) => {
+    if (typeof business !== 'string' || !/^[a-zA-Z0-9_-]{1,100}$/.test(business) ||
+        typeof value !== 'string' || value.length > 32000) throw new Error('Invalid printer configuration');
+    const config = JSON.parse(value);
+    if (!config || !Array.isArray(config.devices) || config.devices.length > 32 ||
+        typeof config.gatewayId !== 'string' || config.gatewayId.length > 100)
+      throw new Error('Malformed printer configuration');
+    return secureStore.write('printer-fleet-' + business, value);
+  });
   guarded('nua:device-id-get', () => secureStore.read('device-id'));
   guarded('nua:device-id-set', value => {
     if (typeof value !== 'string' || !value || value.length > 200) throw new Error('Invalid device id');
