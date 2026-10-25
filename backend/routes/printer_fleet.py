@@ -58,6 +58,14 @@ async def enqueue_for_station(job):
             }},
             upsert=True,
         )
+    if targets:
+        # Prevent the older manual /print-jobs/{id}/escpos action from
+        # treating the source as a still-queued backend printer job and
+        # double-printing after the local gateway has claimed its copies.
+        await db.print_jobs.update_one(
+            {"id": job["id"], **scope},
+            {"$set": {"status": "fleet_dispatched", "printedVia": "native-fleet"}},
+        )
     return bool(targets)
 
 
@@ -187,6 +195,20 @@ async def complete_delivery(body: dict, user: dict = Depends(get_user)):
     )
     if changed.modified_count != 1:
         raise HTTPException(409, "Delivery already acknowledged or claim no longer valid")
+    # The source ticket reaches fleet_submitted only once every physical
+    # target has acknowledged a driver/interface write. It is never labelled
+    # physically printed based on network/spooler return values alone.
+    if status == "submitted":
+        source = await db.printer_fleet_deliveries.find_one(
+            {"id": delivery_id, **scope}, {"_id": 0})
+        if source:
+            pending = await db.printer_fleet_deliveries.count_documents(
+                {"jobId": source["jobId"], "status": {"$ne": "submitted"}, **scope})
+            if pending == 0:
+                await db.print_jobs.update_one(
+                    {"id": source["jobId"], "status": "fleet_dispatched", **scope},
+                    {"$set": {"status": "fleet_submitted", "submittedAt": _now()}},
+                )
     return {"status": status}
 
 
