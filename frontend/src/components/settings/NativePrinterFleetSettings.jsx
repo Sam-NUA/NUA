@@ -41,9 +41,9 @@ export default function NativePrinterFleetSettings() {
       setConfig(cfg);
       const devices = await discover();
       setDiscovered(devices);
-      const status = await printerFleetAPI.status();
-      setDeliveryStatus(status.data || []);
-      setError('');
+      const status = await printerFleetAPI.status().catch(() => null);
+      setDeliveryStatus(status?.data || []);
+      setError(status ? '' : 'Backend printer gateway not yet deployed; local test printing is available.');
     } catch (err) {
       setError(err.response?.data?.detail || err.message || 'Cannot load native printer settings');
     }
@@ -78,11 +78,19 @@ export default function NativePrinterFleetSettings() {
         port: Number(form.port), width: Number(form.width) };
       const next = { ...config, devices: [...config.devices, device] };
       if (next.devices.length > 32) throw new Error('Maximum 32 printers per gateway');
-      await registerFleetDevice(next, { ...device, enabled: next.enabled && device.enabled });
-      await saveFleetConfig(business, next);
-      setConfig(next);
+      // Persist the local device even when the matching backend routes have
+      // not been deployed yet: direct USB/Bluetooth/LAN self-tests still need
+      // to work in a non-production pilot. Never enable automatic jobs on a
+      // server that has not accepted the explicit registration.
+      await saveFleetConfig(business, { ...next, enabled: false });
+      setConfig({ ...next, enabled: false });
       setForm(baseDevice());
-      toast.success('Printer added; configure and verify a physical test before service');
+      try {
+        await registerFleetDevice({ ...next, enabled: false }, { ...device, enabled: false });
+        toast.success('Printer added. Verify it with a physical test before service.');
+      } catch {
+        toast('Printer saved locally for hardware testing. Server gateway not ready; automatic order printing stays disabled.');
+      }
     } catch (err) { toast.error(err.response?.data?.detail || err.message); }
     finally { setBusy(false); }
   };
@@ -91,8 +99,11 @@ export default function NativePrinterFleetSettings() {
     if (!config) return;
     setBusy(true);
     try {
-      await printerFleetAPI.disableDevice(device.id);
       const next = { ...config, devices: config.devices.filter(d => d.id !== device.id) };
+      // The backend must be disabled first if this is a live gateway:
+      // otherwise a lost device would keep receiving queued deliveries.
+      if (config.enabled) await printerFleetAPI.disableDevice(device.id);
+      else await printerFleetAPI.disableDevice(device.id).catch(() => {});
       await saveFleetConfig(business, next);
       setConfig(next);
       toast.success('Printer disconnected from this NUA gateway');
