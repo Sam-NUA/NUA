@@ -15,6 +15,7 @@ import PermissionsPanel from '../components/settings/PermissionsPanel';
 import CoursingSettings from '../components/settings/CoursingSettings';
 import PrinterHealthPanel from '../components/settings/PrinterHealthPanel';
 import StationPrinterConnections from '../components/settings/StationPrinterConnections';
+import NativePrinterFleetSettings from '../components/settings/NativePrinterFleetSettings';
 import SecurityPanel from '../components/settings/SecurityPanel';
 import OpsHealthPanel from '../components/settings/OpsHealthPanel';
 import BackupPanel from '../components/settings/BackupPanel';
@@ -408,6 +409,7 @@ const Settings = () => {
       {activeTab === 'hardware' && (
         <div className="space-y-4">
           {['owner', 'manager'].includes(user?.role) && <DeviceManagementPanel key={`${user.businessId}:${user.id}`} />}
+          {['owner', 'manager'].includes(user?.role) && <NativePrinterFleetSettings />}
           {['owner', 'manager'].includes(user?.role) && <StationPrinterConnections />}
           <Card><CardHeader><CardTitle>Printer registry (legacy)</CardTitle></CardHeader>
           <CardContent className="space-y-3">
