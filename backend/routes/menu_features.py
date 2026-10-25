@@ -5,7 +5,7 @@ from middleware.actor_context import tenant_scope_filter
 from datetime import datetime, timezone
 from difflib import SequenceMatcher
 from typing import Any, Dict, List
-import uuid, os
+import io, re, uuid, os
 
 router = APIRouter()
 
@@ -50,11 +50,161 @@ def _suggest_modifiers(category_name: str, mods: List[Dict[str, Any]]) -> List[s
 
 MAX_MENU_TEXT_CHARS = 100_000
 
+# Deterministic PDF text parsing — matches a trailing price (either
+# "$12.50"-style, or a bare "12.50" two-decimal number) at the end of a
+# line, and takes everything before it as the item name. Lines with no
+# digits, short enough to be a heading, become the running category.
+_PDF_PRICE_DOLLAR_RE = re.compile(r"\$\s*(\d{1,4}(?:[.,]\d{1,2})?)\s*$")
+_PDF_PRICE_BARE_RE = re.compile(r"(?<!\d)(\d{1,3}\.\d{2})\s*$")
+_PDF_LEADER_RE = re.compile(r"[.\-·•\s]{2,}$")
+
+
+def _extract_pdf_items(file_b64: str) -> List[Dict[str, Any]] | None:
+    """Deterministic, no-AI extraction for PDFs that carry real embedded
+    text — the common case for menus exported from Word/Canva/a POS
+    system. Returns None when the PDF has no usable embedded text at all
+    (a scanned/photographed page), so the caller can fall back to AI
+    vision — the only way to actually read a picture of a menu.
+    """
+    import base64 as _b64
+    from pypdf import PdfReader
+
+    try:
+        raw = _b64.b64decode(file_b64, validate=True)
+        reader = PdfReader(io.BytesIO(raw))
+        pages_text = [page.extract_text() or "" for page in reader.pages]
+        text = "\n".join(pages_text)
+    except Exception:
+        return None
+
+    if len(text.strip()) < 20:
+        return None  # no meaningful embedded text — scanned/photographed PDF
+
+    items: List[Dict[str, Any]] = []
+    current_category = ""
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        match = _PDF_PRICE_DOLLAR_RE.search(line) or _PDF_PRICE_BARE_RE.search(line)
+        if match:
+            try:
+                price = float(match.group(1).replace(",", "."))
+            except ValueError:
+                continue
+            name_part = _PDF_LEADER_RE.sub("", line[:match.start()]).strip(" -.·•")
+            if not name_part:
+                continue
+            items.append({"name": name_part, "category": current_category, "price": price})
+        elif len(line) <= 40 and not any(ch.isdigit() for ch in line):
+            current_category = line.rstrip(":").strip()
+
+    return items
+
+
+_SPREADSHEET_NAME_KEYS = ("name", "item", "product", "dish", "menu item")
+_SPREADSHEET_CATEGORY_KEYS = ("category", "section", "type", "group")
+_SPREADSHEET_PRICE_KEYS = ("price", "sell", "retail", "menu price", "sale price")
+_SPREADSHEET_COST_KEYS = ("cost", "cogs", "wholesale")
+_SPREADSHEET_DESC_KEYS = ("description", "desc", "notes", "details")
+
+
+def _find_spreadsheet_column(header_row: tuple, keys: tuple) -> int | None:
+    for idx, cell in enumerate(header_row):
+        label = str(cell or "").strip().lower()
+        if any(key in label for key in keys):
+            return idx
+    return None
+
+
+def _parse_spreadsheet_items(file_b64: str, file_type: str) -> Dict[str, Any]:
+    """Deterministic, no-AI extraction for a spreadsheet export — never
+    calls the AI provider, so it works with no OPENAI_API_KEY at all.
+    Looks for a header row with a recognizable item-name column (and
+    optionally category/price/cost/description) on every sheet.
+    """
+    import base64 as _b64
+
+    if not file_b64:
+        return {"items": [], "message": "No file data received"}
+    try:
+        raw = _b64.b64decode(file_b64, validate=True)
+    except Exception:
+        return {"items": [], "message": "Could not read that spreadsheet file"}
+
+    sheets: List[List[tuple]] = []
+    try:
+        if file_type == "xls":
+            import xlrd
+            book = xlrd.open_workbook(file_contents=raw)
+            for sheet in book.sheets():
+                sheets.append([tuple(sheet.row_values(r)) for r in range(sheet.nrows)])
+        else:
+            from openpyxl import load_workbook
+            wb = load_workbook(io.BytesIO(raw), data_only=True, read_only=True)
+            for ws in wb.worksheets:
+                sheets.append([tuple(row) for row in ws.iter_rows(values_only=True)])
+    except Exception:
+        ext = "xls" if file_type == "xls" else "xlsx"
+        return {"items": [], "message": f"Could not read that spreadsheet file — make sure it's a valid .{ext} file"}
+
+    def cell(row: tuple, idx: int | None):
+        return row[idx] if idx is not None and idx < len(row) else None
+
+    items: List[Dict[str, Any]] = []
+    for rows in sheets:
+        if not rows:
+            continue
+        header, *data_rows = rows
+        name_idx = _find_spreadsheet_column(header, _SPREADSHEET_NAME_KEYS)
+        if name_idx is None:
+            continue  # no recognizable item-name column on this sheet
+        cat_idx = _find_spreadsheet_column(header, _SPREADSHEET_CATEGORY_KEYS)
+        price_idx = _find_spreadsheet_column(header, _SPREADSHEET_PRICE_KEYS)
+        cost_idx = _find_spreadsheet_column(header, _SPREADSHEET_COST_KEYS)
+        desc_idx = _find_spreadsheet_column(header, _SPREADSHEET_DESC_KEYS)
+
+        for row in data_rows:
+            if not row:
+                continue
+            name = str(cell(row, name_idx) or "").strip()
+            if not name:
+                continue
+            try:
+                price = float(cell(row, price_idx) or 0)
+            except (TypeError, ValueError):
+                price = 0.0
+            try:
+                cost = float(cell(row, cost_idx) or 0)
+            except (TypeError, ValueError):
+                cost = 0.0
+            items.append({
+                "name": name,
+                "category": str(cell(row, cat_idx) or "").strip(),
+                "price": price,
+                "cost": cost,
+                "description": str(cell(row, desc_idx) or "").strip(),
+            })
+
+    if not items:
+        return {"items": [], "message": (
+            'No recognizable item rows found. Add a header row with a '
+            '"Name"/"Item" column (and optionally Category/Price/Cost/Description).')}
+    return {"items": items, "message": ""}
+
 
 async def _run_vision_extraction(file_data: str, file_type: str) -> Dict[str, Any]:
-    """Shared: pull items out of pasted text, an image, or a PDF. Returns
-    {items, message, rawResponse?}."""
+    """Shared: pull items out of pasted text, a spreadsheet, a PDF, or an
+    image. Returns {items, message, rawResponse?}.
+
+    Spreadsheets (xlsx/xls) and PDFs with real embedded text are parsed
+    deterministically above — no AI, no OPENAI_API_KEY needed. Only a
+    scanned/photographed PDF or an actual photo falls back to AI vision,
+    since reading a picture has no deterministic alternative.
+    """
     import json as _json
+
+    file_type = (file_type or "image").lower()
 
     if file_type == "text":
         menu_text = file_data.strip()
@@ -70,6 +220,19 @@ async def _run_vision_extraction(file_data: str, file_type: str) -> Dict[str, An
         if not file_data:
             return {"items": [], "message": "No file data received"}
 
+        if file_type in ("xlsx", "xls"):
+            return _parse_spreadsheet_items(file_data, file_type)
+
+    pdf_scanned_no_text = False
+    if file_type == "pdf":
+        pdf_items = _extract_pdf_items(file_data)
+        if pdf_items is None:
+            pdf_scanned_no_text = True
+        elif pdf_items:
+            return {"items": pdf_items, "message": ""}
+        # else: real embedded text, but no price-shaped lines were found —
+        # fall through and try AI below *if configured*, without requiring it.
+
     system_msg = (
         "You are a menu extraction expert. Extract EVERY menu item you can see.\n"
         "Return ONLY a JSON array — no markdown fences, no explanations — with this exact shape:\n"
@@ -81,6 +244,17 @@ async def _run_vision_extraction(file_data: str, file_type: str) -> Dict[str, An
     from services.ai_provider import LlmChat, UserMessage, ImageContent, PdfContent, AIProviderError
     api_key = os.environ.get("OPENAI_API_KEY", "").strip()
     if not api_key:
+        if file_type == "pdf":
+            if pdf_scanned_no_text:
+                raise HTTPException(status_code=503, detail=(
+                    "This PDF has no selectable text (it looks scanned or photographed), "
+                    "so NUA can't read it without photo-reading enabled. Ask your "
+                    "administrator to configure OPENAI_API_KEY, or upload a text-based "
+                    "PDF/XLSX, or paste the menu text instead."))
+            return {"items": [], "message": (
+                "Found text in this PDF but couldn't automatically detect priced items. "
+                "Try pasting the menu text directly instead, or ask your administrator "
+                "to configure OPENAI_API_KEY for smarter reading of unusual layouts.")}
         raise HTTPException(status_code=503, detail="Menu reading is not configured. Ask your administrator to configure OPENAI_API_KEY on the server.")
 
     chat = LlmChat(

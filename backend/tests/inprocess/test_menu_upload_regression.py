@@ -158,3 +158,186 @@ def test_oversized_pasted_text_is_rejected_before_the_provider_call(client, owne
     assert response.status_code == 413
     assert "too long" in response.json()["detail"]
     assert not captured
+
+
+# ============ DETERMINISTIC, NO-API-KEY PATHS (PDF text / XLSX / XLS) ============
+# A spreadsheet, or a PDF with real embedded text, never needs the AI
+# provider at all — only a scanned/photographed PDF or an actual photo
+# does, since reading a picture has no deterministic alternative.
+
+def _minimal_text_pdf(lines):
+    """A real, valid single-page PDF with embedded, selectable text —
+    built from nothing but stdlib bytes (no reportlab/fpdf dependency,
+    unlike the blank-page PDF above, which has no text at all)."""
+    import io as _io
+    content_ops = ["BT", "/F1 12 Tf", "50 750 Td"]
+    for i, line in enumerate(lines):
+        if i:
+            content_ops.append("0 -18 Td")
+        escaped = line.replace("\\", r"\\").replace("(", r"\(").replace(")", r"\)")
+        content_ops.append(f"({escaped}) Tj")
+    content_ops.append("ET")
+    content = "\n".join(content_ops).encode("latin-1")
+
+    objects = [
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        b"<< /Type /Page /Parent 2 0 R /Resources << /Font << /F1 4 0 R >> >> "
+        b"/MediaBox [0 0 400 800] /Contents 5 0 R >>",
+        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+        b"<< /Length %d >>\nstream\n" % len(content) + content + b"\nendstream",
+    ]
+
+    buf = _io.BytesIO()
+    buf.write(b"%PDF-1.4\n")
+    offsets = [0]
+    for idx, obj in enumerate(objects, start=1):
+        offsets.append(buf.tell())
+        buf.write(f"{idx} 0 obj\n".encode())
+        buf.write(obj)
+        buf.write(b"\nendobj\n")
+    xref_offset = buf.tell()
+    n = len(objects) + 1
+    buf.write(f"xref\n0 {n}\n".encode())
+    buf.write(b"0000000000 65535 f \n")
+    for off in offsets[1:]:
+        buf.write(f"{off:010d} 00000 n \n".encode())
+    buf.write(b"trailer\n")
+    buf.write(f"<< /Size {n} /Root 1 0 R >>\n".encode())
+    buf.write(b"startxref\n")
+    buf.write(f"{xref_offset}\n".encode())
+    buf.write(b"%%EOF")
+    return buf.getvalue()
+
+
+def _text_pdf_base64():
+    pdf_bytes = _minimal_text_pdf([
+        "COFFEE",
+        "Flat White .......... $5.50",
+        "Long Black .......... $4.80",
+        "BAKERY",
+        "Croissant 6.00",
+    ])
+    return base64.b64encode(pdf_bytes).decode()
+
+
+def test_text_pdf_is_parsed_deterministically_without_any_api_key(client, owner_headers, monkeypatch):
+    captured = _provider(monkeypatch, content="[]")
+    # _provider() sets OPENAI_API_KEY as a side effect of configuring the
+    # mock transport — undo that so this test genuinely has no key.
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    response = _upload(client, owner_headers, _text_pdf_base64(), "pdf")
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["count"] == 3
+    names = {item["name"] for item in body["items"]}
+    assert names == {"Flat White", "Long Black", "Croissant"}
+    flat_white = next(i for i in body["items"] if i["name"] == "Flat White")
+    # categoryMatched/category reflect the usual fuzzy-match-to-existing-
+    # category step, same as any other extraction path — proposedCategory
+    # is what the deterministic parser itself actually read off the PDF.
+    assert flat_white["price"] == 5.5 and flat_white["proposedCategory"] == "COFFEE"
+    assert not captured, "a text-based PDF must never reach the AI provider"
+
+
+def test_scanned_pdf_with_no_embedded_text_still_requires_the_api_key(client, owner_headers, monkeypatch):
+    # The existing blank-page PDF test above proves the *success* path
+    # with a key configured; this proves the no-key failure path gives an
+    # accurate, specific message rather than the generic one.
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    import io as _io
+    from pypdf import PdfWriter
+    writer = PdfWriter()
+    writer.add_blank_page(width=300, height=300)
+    buf = _io.BytesIO()
+    writer.write(buf)
+    response = _upload(client, owner_headers, base64.b64encode(buf.getvalue()).decode(), "pdf")
+    assert response.status_code == 503
+    detail = response.json()["detail"]
+    assert "scanned or photographed" in detail and "OPENAI_API_KEY" in detail
+
+
+def test_text_pdf_with_no_priced_lines_degrades_gracefully_without_a_key(client, owner_headers, monkeypatch):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    encoded = base64.b64encode(_minimal_text_pdf(
+        ["Welcome to our restaurant, please see staff for today's specials"])).decode()
+    response = _upload(client, owner_headers, encoded, "pdf")
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["count"] == 0
+    assert "couldn't automatically detect priced items" in body["message"]
+
+
+def test_text_pdf_with_no_priced_lines_tries_ai_when_a_key_is_configured(client, owner_headers, monkeypatch):
+    captured = _provider(monkeypatch, content=json.dumps([{"name": "Chef's Special", "price": 22.0}]))
+    encoded = base64.b64encode(_minimal_text_pdf(
+        ["Welcome to our restaurant, please see staff for today's specials"])).decode()
+    response = _upload(client, owner_headers, encoded, "pdf")
+    assert response.status_code == 200, response.text
+    assert response.json()["count"] == 1
+    assert captured, "a text PDF with no parseable items may opportunistically use AI when a key IS configured"
+
+
+def _xlsx_base64(rows, headers=("Name", "Category", "Price", "Cost", "Description")):
+    import io as _io
+    from openpyxl import Workbook
+    wb = Workbook()
+    ws = wb.active
+    ws.append(list(headers))
+    for row in rows:
+        ws.append(list(row))
+    buf = _io.BytesIO()
+    wb.save(buf)
+    return base64.b64encode(buf.getvalue()).decode()
+
+
+def test_xlsx_is_parsed_deterministically_without_any_api_key(client, owner_headers, monkeypatch):
+    captured = _provider(monkeypatch, content="[]")
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    encoded = _xlsx_base64([
+        ("Flat White", "Coffee", 5.5, 2.0, "Milky espresso"),
+        ("Croissant", "Bakery", 6.0, 2.1, ""),
+    ])
+    response = _upload(client, owner_headers, encoded, "xlsx")
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["count"] == 2
+    flat_white = next(i for i in body["items"] if i["name"] == "Flat White")
+    assert flat_white["price"] == 5.5 and flat_white["cost"] == 2.0 and flat_white["proposedCategory"] == "Coffee"
+    assert not captured, "an xlsx upload must never reach the AI provider"
+
+
+def test_xls_legacy_binary_is_parsed_deterministically_without_any_api_key(client, owner_headers, monkeypatch):
+    captured = _provider(monkeypatch, content="[]")
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    import io as _io
+    import xlwt
+    wb = xlwt.Workbook()
+    ws = wb.add_sheet("Menu")
+    for col, header in enumerate(["Item", "Category", "Price", "Cost"]):
+        ws.write(0, col, header)
+    ws.write(1, 0, "Long Black")
+    ws.write(1, 1, "Coffee")
+    ws.write(1, 2, 4.8)
+    ws.write(1, 3, 1.5)
+    buf = _io.BytesIO()
+    wb.save(buf)
+    encoded = base64.b64encode(buf.getvalue()).decode()
+    response = _upload(client, owner_headers, encoded, "xls")
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["count"] == 1
+    assert body["items"][0]["name"] == "Long Black" and body["items"][0]["price"] == 4.8
+    assert not captured, "an xls upload must never reach the AI provider"
+
+
+def test_xlsx_without_a_recognizable_header_is_a_clean_no_items_response(client, owner_headers, monkeypatch):
+    captured = _provider(monkeypatch, content="[]")
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    encoded = _xlsx_base64([("some", "random", "data")], headers=("Foo", "Bar", "Baz"))
+    response = _upload(client, owner_headers, encoded, "xlsx")
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["count"] == 0
+    assert "No recognizable item rows" in body["message"]
+    assert not captured
