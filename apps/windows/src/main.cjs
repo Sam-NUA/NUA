@@ -9,6 +9,7 @@ const { EncryptedStore } = require('./encrypted-store.cjs');
 const { OfflineStore } = require('./offline-store.cjs');
 const { windowsCrypto } = require('./windows-crypto.cjs');
 const { waitForWindowsKey } = require('./crypto-readiness.cjs');
+const { parseJob, rawNetworkSend } = require('./printer-fleet.cjs');
 protocol.registerSchemesAsPrivileged([{ scheme: 'nua', privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true } }]);
 let mainWindow;
 let printing = false;
@@ -139,6 +140,28 @@ async function start() {
     }
   });
   guarded('nua:printers', async () => (await mainWindow.webContents.getPrintersAsync()).map(p => ({ name: p.name, displayName: p.displayName, isDefault: p.isDefault })));
+  guarded('nua:fleet-send', async request => {
+    const job = parseJob(request);
+    if (job.transport === 'wifi') return rawNetworkSend(job);
+    const installed = await mainWindow.webContents.getPrintersAsync();
+    if (!installed.some(p => p.name === job.printerName))
+      throw new Error('Printer is not installed in the Windows spooler');
+    const html = safeHtmlDocument(job.html);
+    // USB and Bluetooth Windows drivers are served by the OS spooler. A
+    // disposable javascript-disabled window, explicitly selected device and
+    // silent mode permit independent printers to run concurrently.
+    const win = new BrowserWindow({ show: false, parent: mainWindow,
+      webPreferences: { nodeIntegration: false, sandbox: true, contextIsolation: true, javascript: false } });
+    restrict(win.webContents);
+    try {
+      await win.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html));
+      return await new Promise(resolve => win.webContents.print({
+        silent: true, deviceName: job.printerName, printBackground: false
+      }, (success, failureReason) => resolve({
+        status: success ? 'submitted' : 'uncertain', reason: failureReason || ''
+      })));
+    } finally { if (!win.isDestroyed()) win.destroy(); }
+  });
   guarded('nua:print-receipt', printReceipt);
   guarded('nua:print-html', printHtml);
   guarded('nua:save-file', saveFile);

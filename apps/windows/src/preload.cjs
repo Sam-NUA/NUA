@@ -16,6 +16,7 @@ contextBridge.exposeInMainWorld('nuaDesktop', Object.freeze({
     return () => ipcRenderer.removeListener('nua:window-state-changed', listener);
   },
   listPrinters: () => ipcRenderer.invoke('nua:printers'),
+  sendFleetJob: request => ipcRenderer.invoke('nua:fleet-send', request),
   printReceipt: (receipt, printerName = '') => ipcRenderer.invoke('nua:print-receipt', receipt, printerName),
   printHtml: (html, printerName = '') => ipcRenderer.invoke('nua:print-html', html, printerName),
   saveFile: (filename, data) => ipcRenderer.invoke('nua:save-file', filename, data),
