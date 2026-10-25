@@ -104,6 +104,8 @@ api_router.include_router(identity_router)
 api_router.include_router(reservations_router)
 api_router.include_router(kitchen_router)
 api_router.include_router(coursing_router)
+from routes.printer_fleet import router as printer_fleet_router
+api_router.include_router(printer_fleet_router)
 api_router.include_router(analytics_router)
 api_router.include_router(settings_router)
 api_router.include_router(loyalty_router)

@@ -1,6 +1,6 @@
 #!/bin/bash
 # ============================================================
-# NUVA POS — Android APK Build Script
+# NUA POS — Android APK Build Script
 # ============================================================
 # Prerequisites (on your local machine):
 #   1. Node.js >= 22.19
@@ -16,7 +16,7 @@
 set -e
 
 echo "========================================"
-echo "  NUVA POS — Android APK Builder"
+echo "  NUA POS — Android APK Builder"
 echo "========================================"
 
 # Step 1: Install dependencies
@@ -26,6 +26,7 @@ npm ci
 # Step 2: Build the React app for production
 echo "[2/6] Building React app..."
 : "${REACT_APP_BACKEND_URL:?Set the target HTTPS API origin before building}"
+python3 ../scripts/generate_app_icons.py
 PUBLIC_URL=/ npm run build
 
 # Step 3: Add Android platform (if not already added)

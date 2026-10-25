@@ -9,6 +9,7 @@ import { LicenseProvider } from './contexts/LicenseContext';
 import { Toaster } from './components/ui/sonner';
 import BottomDock from './components/BottomDock';
 import BackButton from './components/BackButton';
+import PrinterFleetDaemon from './components/PrinterFleetDaemon';
 import LicensePage, { LicenseLockScreen, LicenseBanner } from './pages/LicensePage';
 import VersionGateLockScreen from './components/VersionGateLockScreen';
 const Login = lazy(() => import('./pages/Login'));
@@ -413,6 +414,7 @@ function App() {
         <BusinessProvider>
           <div className="App">
             <VersionGateLockScreen />
+            <PrinterFleetDaemon />
             <BrowserRouter>
               {/* Page components are lazy-loaded (see the const X = lazy(...)
                   imports above) — one Suspense boundary here covers every
