@@ -14,6 +14,7 @@ import WalletCredentialsPanel from '../components/settings/WalletCredentialsPane
 import PermissionsPanel from '../components/settings/PermissionsPanel';
 import CoursingSettings from '../components/settings/CoursingSettings';
 import PrinterHealthPanel from '../components/settings/PrinterHealthPanel';
+import StationPrinterConnections from '../components/settings/StationPrinterConnections';
 import SecurityPanel from '../components/settings/SecurityPanel';
 import OpsHealthPanel from '../components/settings/OpsHealthPanel';
 import BackupPanel from '../components/settings/BackupPanel';
@@ -407,8 +408,10 @@ const Settings = () => {
       {activeTab === 'hardware' && (
         <div className="space-y-4">
           {['owner', 'manager'].includes(user?.role) && <DeviceManagementPanel key={`${user.businessId}:${user.id}`} />}
-          <Card><CardHeader><CardTitle>Printer Configuration</CardTitle></CardHeader>
+          {['owner', 'manager'].includes(user?.role) && <StationPrinterConnections />}
+          <Card><CardHeader><CardTitle>Printer registry (legacy)</CardTitle></CardHeader>
           <CardContent className="space-y-3">
+            <p className="text-xs text-gray-500">The registry records devices for inventory. To configure actual station TCP printing, use Station printer connections above.</p>
             {printers.map(p => (
               <div key={p.id} className="flex items-center justify-between p-3 bg-gray-50 rounded-lg">
                 <div><p className="font-medium text-sm">{p.name}</p><p className="text-xs text-gray-500">{p.type} — {p.connectionType} {p.ipAddress ? `(${p.ipAddress})` : ''}</p></div>

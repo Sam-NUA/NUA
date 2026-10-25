@@ -8,15 +8,56 @@
   bar.id = 'nua-desktop-bar';
   bar.setAttribute('aria-label', 'Windows controls');
   const status = document.createElement('span');
-  status.textContent = `Windows foundation ${info.version} · ${info.inputMode} · Hardware certification pending`;
+  status.textContent = `NUA POS ${info.version} · ${info.inputMode} · Hardware certification pending`;
   const fullscreen = document.createElement('button');
   fullscreen.type = 'button';
-  fullscreen.textContent = 'Full screen';
-  let expanded = false;
-  fullscreen.onclick = async () => {
-    expanded = await native.setFullscreen(!expanded);
-    fullscreen.textContent = expanded ? 'Exit full screen' : 'Full screen';
+  fullscreen.setAttribute('aria-label', 'Toggle full screen (F11; Escape to exit)');
+  const applyWindowState = (state) => {
+    const expanded = !!state?.fullscreen;
+    fullscreen.textContent = expanded ? 'Restore window (Esc)' : 'Full screen (F11)';
     fullscreen.setAttribute('aria-pressed', String(expanded));
+  };
+  applyWindowState(await native.getWindowState());
+  native.onWindowStateChanged(applyWindowState);
+  // Windows can change full-screen state through OS shortcuts without a
+  // corresponding Electron event. Reconcile the host toolbar with the
+  // authoritative BrowserWindow state so the restore control never stays stale.
+  let checkingState = false;
+  const reconcileWindowState = async () => {
+    if (checkingState) return;
+    checkingState = true;
+    try { applyWindowState(await native.getWindowState()); }
+    catch { /* keep last known state until the host recovers */ }
+    finally { checkingState = false; }
+  };
+  window.setInterval(reconcileWindowState, 500);
+  window.addEventListener('focus', reconcileWindowState);
+  // Some Windows keyboards / Chromium routes do not forward Escape to
+  // Electron's before-input-event while full-screen. A capture-phase app
+  // handler provides an independent exit path. In windowed mode, Escape
+  // remains available for normal modal/dialog dismissal.
+  document.addEventListener('keydown', async (event) => {
+    if (event.key !== 'F11' && event.key !== 'Escape') return;
+    try {
+      const current = await native.getWindowState();
+      if (event.key === 'Escape' && !current.fullscreen) return;
+      event.preventDefault();
+      event.stopPropagation();
+      applyWindowState(await native.setFullscreen(event.key === 'F11' ? !current.fullscreen : false));
+    } catch {
+      status.textContent = 'Could not change window mode. Use the on-screen restore control.';
+    }
+  }, true);
+  fullscreen.onclick = async () => {
+    fullscreen.disabled = true;
+    try {
+      const state = await native.getWindowState();
+      applyWindowState(await native.setFullscreen(!state.fullscreen));
+    } catch {
+      status.textContent = 'Window mode could not be changed. Try F11 or Escape.';
+    } finally {
+      fullscreen.disabled = false;
+    }
   };
   const print = document.createElement('button');
   print.type = 'button';

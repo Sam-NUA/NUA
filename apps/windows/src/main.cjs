@@ -24,7 +24,13 @@ function restrict(contents) {
   contents.on('will-redirect', (event, target) => { if (!isAppUrl(target)) event.preventDefault(); });
   contents.on('will-attach-webview', event => event.preventDefault());
 }
-async function printDocument(html) {
+async function printDocument(html, printerName = '') {
+  // A renderer-selected printer must be one of the OS spooler devices.
+  // This remains a user-reviewed print dialog, not unattended silent printing.
+  if (typeof printerName !== 'string' || printerName.length > 255) throw new Error('Invalid printer name');
+  if (printerName && !(await mainWindow.webContents.getPrintersAsync()).some(p => p.name === printerName)) {
+    throw new Error('Selected printer is not installed on this Windows device');
+  }
   if (printing) throw new Error('A print job is already awaiting an outcome');
   printing = true;
   // javascript: false means a malformed or hostile document can distort the
@@ -36,14 +42,14 @@ async function printDocument(html) {
   try {
     await win.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html));
     // Never claim a physical print or retry after an unknown spool outcome.
-    return await new Promise(resolve => win.webContents.print({ silent: false, printBackground: false }, success => resolve({ status: success ? 'submitted' : 'cancelled-or-failed' })));
+    return await new Promise(resolve => win.webContents.print({ silent: false, printBackground: false, ...(printerName ? { deviceName: printerName } : {}) }, success => resolve({ status: success ? 'submitted' : 'cancelled-or-failed' })));
   } finally { win.destroy(); printing = false; }
 }
-async function printReceipt(receipt) {
-  return printDocument(renderReceipt(receipt)); // validation before opening any OS dialog
+async function printReceipt(receipt, printerName) {
+  return printDocument(renderReceipt(receipt), printerName); // validation before opening any OS dialog
 }
-async function printHtml(html) {
-  return printDocument(safeHtmlDocument(html));
+async function printHtml(html, printerName) {
+  return printDocument(safeHtmlDocument(html), printerName);
 }
 async function saveFile(filename, data) {
   safeFilename(filename);
@@ -99,14 +105,38 @@ async function start() {
     try { allowed ||= [origin, origin.replace('https:', 'wss:')].includes(new URL(details.url).origin); } catch {}
     callback({ cancel: !allowed });
   });
-  mainWindow = new BrowserWindow({ width: 1400, height: 950, minWidth: 1024, minHeight: 768, title: 'NUA POS Foundation', autoHideMenuBar: true, webPreferences: { preload: path.join(__dirname, 'preload.cjs'), session: hostSession, sandbox: true, contextIsolation: true, nodeIntegration: false, webSecurity: true, devTools: !app.isPackaged } });
+  mainWindow = new BrowserWindow({ width: 1400, height: 950, minWidth: 1024, minHeight: 768, title: 'NUA POS', icon: path.join(__dirname, '../renderer/favicon.ico'), autoHideMenuBar: true, webPreferences: { preload: path.join(__dirname, 'preload.cjs'), session: hostSession, sandbox: true, contextIsolation: true, nodeIntegration: false, webSecurity: true, devTools: !app.isPackaged } });
   restrict(mainWindow.webContents);
   Menu.setApplicationMenu(null);
   guarded('nua:info', () => ({ version: app.getVersion(), bridgeVersion: 1, platform: 'windows', inputMode, releaseChannel: 'foundation', updates: 'manual-review-only', secureAuthIntegrated: true, offlineSyncIntegrated: true, hostname: os.hostname() }));
+  const windowState = () => ({ fullscreen: mainWindow.isFullScreen(), maximized: mainWindow.isMaximized(), minimized: mainWindow.isMinimized() });
+  const notifyWindowState = () => {
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('nua:window-state-changed', windowState());
+  };
+  for (const change of ['enter-full-screen', 'leave-full-screen', 'maximize', 'unmaximize', 'restore', 'minimize']) {
+    mainWindow.on(change, notifyWindowState);
+  }
+  guarded('nua:window-state', windowState);
   guarded('nua:fullscreen', value => {
     if (typeof value !== 'boolean') throw new Error('Invalid fullscreen value');
+    if (!value && mainWindow.isMinimized()) mainWindow.restore();
     mainWindow.setFullScreen(value);
-    return mainWindow.isFullScreen();
+    if (!value && mainWindow.isMaximized()) mainWindow.unmaximize();
+    notifyWindowState();
+    return windowState();
+  });
+  // A visible and keyboard-accessible escape route even if React fails to mount.
+  mainWindow.webContents.on('before-input-event', (event, input) => {
+    if (input.type !== 'keyDown' || input.isAutoRepeat) return;
+    if (input.key === 'F11') {
+      event.preventDefault();
+      mainWindow.setFullScreen(!mainWindow.isFullScreen());
+      notifyWindowState();
+    } else if (input.key === 'Escape' && mainWindow.isFullScreen()) {
+      event.preventDefault();
+      mainWindow.setFullScreen(false);
+      notifyWindowState();
+    }
   });
   guarded('nua:printers', async () => (await mainWindow.webContents.getPrintersAsync()).map(p => ({ name: p.name, displayName: p.displayName, isDefault: p.isDefault })));
   guarded('nua:print-receipt', printReceipt);
