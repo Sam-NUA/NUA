@@ -90,7 +90,7 @@ export default function TableServiceAlerts() {
   if (!user) return null;
   return (
     <>
-      {enabled && (
+      {(enabled || isManager) && (
         <button type="button" onClick={() => setPanelOpen(true)}
           className="fixed bottom-36 right-5 z-40 flex items-center gap-2 rounded-full border bg-white px-4 py-3 shadow-xl text-slate-800"
           aria-label="Table service attention queue" data-testid="table-service-attention-button">
