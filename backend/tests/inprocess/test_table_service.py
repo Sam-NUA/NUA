@@ -65,8 +65,9 @@ def test_owner_controls_alerts_and_staff_acknowledges(client, owner_headers):
                   headers=owner_headers, json={"action": "acknowledge"})
         assert ack.status_code == 200, ack.text
         assert ack.json()["status"] == "acknowledged"
-        assert req(client, "GET", "/api/table-service/alerts",
-                   headers=owner_headers).json()["openCount"] == 0
+        after_ack = req(client, "GET", "/api/table-service/alerts",
+                        headers=owner_headers).json()["alerts"]
+        assert next(x for x in after_ack if x["id"] == item["id"])["status"] == "acknowledged"
 
         record = req(client, "POST", "/api/table-service/events", headers=owner_headers,
                      json={"tableId": tid, "event": "food_order_taken"})
