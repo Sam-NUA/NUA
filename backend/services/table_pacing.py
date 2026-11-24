@@ -20,6 +20,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
 from database import db
+import uuid
 
 log = logging.getLogger(__name__)
 
@@ -28,14 +29,14 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-async def _table_id_for_number(number: Optional[str]) -> Optional[str]:
+async def _table_id_for_number(number: Optional[str], business_id: str) -> Optional[str]:
     """Pacing state is keyed by floor-plan table id, but a kitchen order only
     knows the table number the server typed."""
     if not number:
         return None
     try:
         from services import floor_tables
-        hit = await floor_tables.resolve_table(number)
+        hit = await floor_tables.resolve_table(number, business_id=business_id)
         return hit[0]["id"] if hit else None
     except Exception as e:                      # pragma: no cover - defensive
         log.warning("pacing: table lookup failed for %r: %s", number, e)
@@ -55,7 +56,10 @@ async def advance_for_course(order: Dict[str, Any], course: int,
     if not pacing_key:
         return None
 
-    table_id = await _table_id_for_number(order.get("tableNumber"))
+    business_id = order.get("businessId")
+    if not business_id:
+        return None
+    table_id = await _table_id_for_number(order.get("tableNumber"), business_id)
     if not table_id:
         return None
 
@@ -64,20 +68,20 @@ async def advance_for_course(order: Dict[str, Any], course: int,
     # empty table all through the meal.
     try:
         from services import floor_tables
-        hit = await floor_tables.resolve_table(order.get("tableNumber"))
+        hit = await floor_tables.resolve_table(order.get("tableNumber"), business_id=business_id)
         if hit and hit[0].get("status") != "occupied":
-            await floor_tables.set_table_status(hit[0]["id"], hit[1], "occupied", order.get("id"))
+            await floor_tables.set_table_status(hit[0]["id"], hit[1], "occupied", order.get("id"), business_id=business_id)
     except Exception as e:
         log.warning("pacing: could not mark table occupied: %s", e)
 
     try:
-        existing = await db.table_states.find_one({"tableId": table_id})
+        existing = await db.table_states.find_one({"tableId": table_id, "businessId": business_id})
         now = _now()
         if not existing:
             # The table was never seated on the floor plan — the kitchen
             # firing food is good evidence someone is sitting there.
             await db.table_states.insert_one({
-                "id": f"TS-{table_id}", "tableId": table_id,
+                "id": str(uuid.uuid4()), "tableId": table_id, "businessId": business_id,
                 "course": pacing_key, "seatedAt": now, "courseStartedAt": now,
                 "createdAt": now, "updatedAt": now,
                 "guestName": order.get("guestName"),
@@ -87,7 +91,7 @@ async def advance_for_course(order: Dict[str, Any], course: int,
         if existing.get("course") == pacing_key:
             return None                          # already there; don't reset the timer
         await db.table_states.update_one(
-            {"tableId": table_id},
+            {"tableId": table_id, "businessId": business_id},
             {"$set": {"course": pacing_key, "courseStartedAt": now, "updatedAt": now}},
         )
         return pacing_key
