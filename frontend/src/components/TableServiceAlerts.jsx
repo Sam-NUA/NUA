@@ -61,7 +61,8 @@ export default function TableServiceAlerts() {
     setActing(alert.id);
     try {
       await tableServiceAPI.action(alert.id, action, minutes);
-      dismissed.current.add(alert.id);
+      if (action === 'snooze') dismissed.current.delete(alert.id);
+      else dismissed.current.add(alert.id);
       await refresh();
       toast.success(action === 'snooze' ? 'Reminder snoozed' :
         action === 'resolve' ? 'Reminder resolved' : 'Reminder acknowledged');
@@ -84,7 +85,7 @@ export default function TableServiceAlerts() {
   const gotoTable = (alert) => {
     dismissed.current.add(alert.id);
     setPanelOpen(false);
-    navigate('/floor-plan?tableId=' + encodeURIComponent(alert.tableId));
+    navigate(alert.category === 'kitchen' && user?.role === 'kitchen' ? '/kitchen' : '/floor-plan?tableId=' + encodeURIComponent(alert.tableId));
   };
 
   if (!user) return null;
