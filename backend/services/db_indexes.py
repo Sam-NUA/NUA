@@ -133,6 +133,14 @@ async def ensure_indexes() -> None:
     # a Python-side check that could itself race).
     await _create_index_safely(db.transactions, "clientOpId", unique=True, sparse=True)
 
+    # Opt-in table service: unique deterministic alert ids are the
+    # concurrency guard when several tablets discover the same overdue table.
+    await _create_index_safely(db.table_service_alerts, "id", unique=True)
+    await _create_index_safely(db.table_service_alerts, [("businessId", 1), ("status", 1)])
+    await _create_index_safely(db.table_service_settings, "businessId", unique=True)
+    await _create_index_safely(db.table_states, [("businessId", 1), ("tableId", 1)])
+    await _create_index_safely(db.kitchen_orders, [("businessId", 1), ("orderType", 1), ("createdAt", -1)])
+
     # Kitchen board: filtered by status constantly (KDS polling/SSE), and
     # sorted by createdAt within a status.
     await _create_index_safely(db.kitchen_orders, [("status", 1), ("createdAt", 1)])
