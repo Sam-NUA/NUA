@@ -299,6 +299,62 @@ export const TableInfoDrawer = ({ open, onClose, table, states, courses, overdue
           </Card>
         )}
 
+        {state && (
+          <Card data-testid="table-server-assignment">
+            <CardContent className="p-3 space-y-2">
+              <div className="text-xs font-semibold">Responsible floor staff</div>
+              <div className="flex flex-wrap items-center gap-2">
+                <Button type="button" size="sm" variant="outline"
+                  disabled={busy || state.serverId === user?.email}
+                  onClick={() => assignServer(user?.email || '')} data-testid="assign-table-to-me">
+                  Assign to me
+                </Button>
+                {isManager && (
+                  <select aria-label="Assign waiter" data-testid="assign-table-server"
+                    className="rounded-md border px-2 py-2 text-xs min-w-0 flex-1"
+                    disabled={busy} value={state.serverId || ''}
+                    onChange={e => assignServer(e.target.value)}>
+                    <option value="">Unassigned — all floor staff</option>
+                    {floorStaff.map(staff => (
+                      <option key={staff.id || staff.email} value={staff.email}>
+                        {staff.name} ({staff.role})
+                      </option>
+                    ))}
+                  </select>
+                )}
+              </div>
+              <p className="text-[10px] text-gray-500">
+                {state.serverId ? 'Alerts go to this staff member and managers.' :
+                  'Unassigned tables appear in the shared floor attention queue.'}
+              </p>
+            </CardContent>
+          </Card>
+        )}
+
+        {state && (
+          <Card data-testid="table-service-events">
+            <CardContent className="p-3 space-y-2">
+              <div className="text-xs font-semibold">Service milestones</div>
+              <p className="text-[10px] text-gray-500">Record these milestones to enable accurate reminders.</p>
+              <div className="grid grid-cols-2 gap-2">
+                {[
+                  ['drinks_served', 'Drinks served'],
+                  ['food_order_taken', 'Food ordered'],
+                  ['bill_requested', 'Bill requested'],
+                  ['bill_completed', 'Bill completed'],
+                  ['service_paused', 'Pause service'],
+                  ['service_resumed', 'Resume service'],
+                ].map(([key, label]) => (
+                  <Button key={key} type="button" size="sm" variant="outline"
+                    disabled={busy} onClick={() => serviceEvent(key)}
+                    data-testid={'service-event-' + key}
+                    className="text-[11px] whitespace-normal h-auto min-h-9">{label}</Button>
+                ))}
+              </div>
+            </CardContent>
+          </Card>
+        )}
+
         {/* Send nudge */}
         <Card data-testid="send-nudge-card">
           <CardContent className="p-3 space-y-2">
