@@ -28,7 +28,9 @@ export default function TableServiceAlerts() {
   const [settings, setSettings] = useState(initial);
   const [busy, setBusy] = useState(false);
   const [acting, setActing] = useState(null);
+  // A dismissed normal reminder must reappear if it later escalates to urgent.
   const dismissed = useRef(new Set());
+  const dismissKey = alert => `${alert.id}:${alert.priority}`;
   const isManager = ['owner', 'manager'].includes(user?.role);
 
   const refresh = useCallback(async () => {
@@ -48,7 +50,7 @@ export default function TableServiceAlerts() {
   }, [refresh]);
 
   const active = useMemo(() => alerts.filter(a => a.status === 'open'), [alerts]);
-  const incoming = active.find(a => !dismissed.current.has(a.id));
+  const incoming = active.find(a => !dismissed.current.has(dismissKey(a)));
   const openSettings = async () => {
     try {
       const response = await tableServiceAPI.getSettings();
@@ -61,8 +63,8 @@ export default function TableServiceAlerts() {
     setActing(alert.id);
     try {
       await tableServiceAPI.action(alert.id, action, minutes);
-      if (action === 'snooze') dismissed.current.delete(alert.id);
-      else dismissed.current.add(alert.id);
+      if (action === 'snooze') dismissed.current.delete(dismissKey(alert));
+      else dismissed.current.add(dismissKey(alert));
       await refresh();
       toast.success(action === 'snooze' ? 'Reminder snoozed' :
         action === 'resolve' ? 'Reminder resolved' : 'Reminder acknowledged');
@@ -113,7 +115,7 @@ export default function TableServiceAlerts() {
               <strong id="service-alert-title">Table {incoming.tableNumber} — {incoming.title}</strong>
             </div>
             <button type="button" className="p-1" aria-label="Dismiss pop-up" onClick={() => {
-              dismissed.current.add(incoming.id);
+              dismissed.current.add(dismissKey(incoming));
               setAlerts(v => [...v]);
             }}><X size={18} /></button>
           </div>
