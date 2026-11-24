@@ -162,3 +162,28 @@ def test_paused_service_excludes_paused_minutes_from_alert_clock():
     assert not _candidates(state, [], DEFAULT, now, "54"), (
         "13 minutes seated with 9 paused = only 4 active minutes, below the 5-minute warning"
     )
+
+
+def test_custom_kitchen_course_keys_drive_mains_alerts():
+    from routes.table_service import _candidates, _kitchen_course_key, DEFAULT, stamp
+    definitions = [
+        {"key": 10, "label": "Drinks"},
+        {"key": 20, "label": "Entrées"},
+        {"key": 30, "label": "Mains"},
+        {"key": 40, "label": "Desserts"},
+    ]
+    main_key = _kitchen_course_key(definitions, ("main",), 2)
+    starter_key = _kitchen_course_key(definitions, ("starter", "entrée", "entree"), 1)
+    assert main_key == "30"
+    assert starter_key == "20"
+    now, state = _fixtures()
+    past = stamp(now - timedelta(minutes=22))
+    ticket = {
+        "id": "CUSTOM-KEYS", "createdAt": past,
+        "items": [{"course": 20}, {"course": 30}],
+        "courses": {"20": {"status": "served", "servedAt": past},
+                    "30": {"status": "held", "heldAt": past}},
+    }
+    alerts = _candidates(state, [ticket], DEFAULT, now, "22",
+                          main_course=main_key, starter_course=starter_key)
+    assert any(a["rule"] == "mains_not_fired" and a["course"] == 30 for a in alerts)
