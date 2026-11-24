@@ -1136,6 +1136,15 @@ export const tableCoursesAPI = {
   send: (data) => api.post('/table-courses/send', data),
 };
 
+// Smart Table Service — opt-in service alerts and auditable staff actions.
+export const tableServiceAPI = {
+  getSettings: () => api.get('/table-service/settings'),
+  saveSettings: (data) => api.put('/table-service/settings', data),
+  listAlerts: () => api.get('/table-service/alerts'),
+  action: (id, action, minutes = 3) => api.post(`/table-service/alerts/${encodeURIComponent(id)}/action`, { action, minutes }),
+  event: (tableId, event) => api.post('/table-service/events', { tableId, event }),
+};
+
 // ── Finalize batch (v27.7): pre-shift, day rules, marketing analytics,
 // channel controls, digital wallet, PDF exports, automation triggers ─────
 export const finalizeAPI = {
