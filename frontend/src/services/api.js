@@ -1139,6 +1139,7 @@ export const tableCoursesAPI = {
 // Smart Table Service — opt-in service alerts and auditable staff actions.
 export const tableServiceAPI = {
   getSettings: () => api.get('/table-service/settings'),
+  listStaff: () => api.get('/table-service/staff'),
   saveSettings: (data) => api.put('/table-service/settings', data),
   listAlerts: () => api.get('/table-service/alerts'),
   action: (id, action, minutes = 3) => api.post(`/table-service/alerts/${encodeURIComponent(id)}/action`, { action, minutes }),
