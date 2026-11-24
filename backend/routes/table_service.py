@@ -71,7 +71,9 @@ async def save_settings(body: SettingsInput, user: dict = Depends(get_user)):
 @router.get("/alerts")
 async def alerts(includeResolved: bool = False, user: dict = Depends(get_user)):
     _floor_staff(user)
-    return {"alerts": await service.alerts_for(user, include_resolved=includeResolved)}
+    cfg = await service.settings_for(_business(user))
+    return {"alerts": await service.alerts_for(user, include_resolved=includeResolved),
+            "enabled": cfg["enabled"], "popupEnabled": cfg["popupEnabled"]}
 
 
 @router.post("/alerts/{alert_id}/acknowledge")

@@ -4,7 +4,7 @@ import { Button } from '../ui/button';
 import { Input } from '../ui/input';
 import { Badge } from '../ui/badge';
 import { X, Send, Clock, Users, Utensils, ChevronRight, Settings2, BellRing, Crown, Loader2 } from 'lucide-react';
-import { tableCoursesAPI, reservationsAPI } from '../../services/api';
+import { tableCoursesAPI, reservationsAPI, tableServiceAPI } from '../../services/api';
 import { useTheme } from '../../contexts/ThemeContext';
 import { toast } from 'sonner';
 import { DialogService } from '../../platform';
@@ -129,6 +129,18 @@ export const TableInfoDrawer = ({ open, onClose, table, states, courses, overdue
       setMsg('');
     } catch {
       toast.error('Failed to send');
+    } finally { setBusy(false); }
+  };
+
+  const markServiceEvent = async event => {
+    if (!state) return;
+    setBusy(true);
+    try {
+      await tableServiceAPI.recordEvent(table.id, event);
+      toast.success('Service milestone recorded');
+      onRefresh && onRefresh();
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || 'Could not record service milestone');
     } finally { setBusy(false); }
   };
 
@@ -263,6 +275,30 @@ export const TableInfoDrawer = ({ open, onClose, table, states, courses, overdue
             </CardContent>
           </Card>
         )}
+
+        {state && <Card data-testid="service-milestones-card">
+          <CardContent className="p-3 space-y-2">
+            <div className="text-xs font-semibold">Record service milestones</div>
+            <p className="text-[11px] text-gray-500">Confirm actual service events for accurate reminders.</p>
+            <div className="flex flex-wrap gap-2">
+              {[
+                ['order_taken', 'Order taken'],
+                ['drinks_served', 'Drinks served'],
+                ['food_order_taken', 'Food ordered'],
+                ['entree_served', 'Entrée served'],
+                ['follow_up_done', 'Table checked'],
+                ['bill_requested', 'Bill requested'],
+                ['bill_delivered', 'Bill delivered'],
+              ].map(([event, label]) => (
+                <Button type="button" key={event} variant="outline" size="sm"
+                  disabled={busy} onClick={() => markServiceEvent(event)}
+                  data-testid={`milestone-${event}`}>
+                  {label}
+                </Button>
+              ))}
+            </div>
+          </CardContent>
+        </Card>}
 
         {/* Send nudge */}
         <Card data-testid="send-nudge-card">

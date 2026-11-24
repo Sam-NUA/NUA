@@ -8,6 +8,7 @@ import { BusinessProvider, useBusiness } from './contexts/BusinessContext';
 import { LicenseProvider } from './contexts/LicenseContext';
 import { Toaster } from './components/ui/sonner';
 import BottomDock from './components/BottomDock';
+import SmartTableAlerts from './components/SmartTableAlerts';
 import BackButton from './components/BackButton';
 import LicensePage, { LicenseLockScreen, LicenseBanner } from './pages/LicensePage';
 import VersionGateLockScreen from './components/VersionGateLockScreen';
@@ -190,6 +191,7 @@ function StaffLayout({ children }) {
       <BottomDock />
       <AshChat />
       <NotificationBell />
+      <SmartTableAlerts />
       <CommandBar />
       <VoiceCommandButton />
     </div>

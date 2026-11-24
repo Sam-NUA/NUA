@@ -94,6 +94,11 @@ async def write_settings(business_id, settings, by):
     await set_scoped_singleton(
         db.table_service_settings, {"scope": "smart-table-service"}, doc, business_id
     )
+    if not settings["enabled"]:
+        await db.table_service_alerts.update_many(
+            {"businessId": business_id, "status": {"$in": ["open", "acknowledged", "snoozed"]}},
+            {"$set": {"status": "resolved", "resolvedAt": iso(now_utc()),
+                      "resolvedReason": "rules_disabled"}})
     return doc
 
 
@@ -135,7 +140,7 @@ def _rule_sources(state, orders, main_keys, starter_keys):
     events = state.get("serviceEvents") or {}
     stage = state.get("course")
     candidates = {}
-    if not orders and not events.get("order_taken"):
+    if not orders and not (events.get("order_taken") or events.get("food_order_taken")):
         candidates["no_order"] = state.get("seatedAt")
 
     if (stage == "drinks" or events.get("drinks_served")) and not _food_present(orders, events):
