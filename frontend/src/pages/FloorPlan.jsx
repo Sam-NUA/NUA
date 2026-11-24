@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { useLocation } from 'react-router-dom';
 import {
   Plus, Save, Trash2, RotateCcw, Maximize2, Circle, Square, RectangleHorizontal,
   Users, ChevronDown, Eye, Settings, Pencil, Crown, BrushCleaning, Layers
@@ -18,6 +19,8 @@ import {
 } from '../components/ui/dropdown-menu';
 import { useTheme } from '../contexts/ThemeContext';
 import { floorPlansAPI, tableCoursesAPI, v15API, reservationFeaturesAPI } from '../services/api';
+import { useAuth } from '../contexts/AuthContext';
+import SmartTableServiceSettings from '../components/settings/SmartTableServiceSettings';
 import { toast } from 'sonner';
 import { TableInfoDrawer } from '../components/floor/TableInfoDrawer';
 import useLiveFeed from '../hooks/useLiveFeed';
@@ -43,6 +46,9 @@ const SECTIONS_COLORS = ['#3B82F6', '#10B981', '#F59E0B', '#EF4444', '#8B5CF6', 
 
 export default function FloorPlan() {
   const { theme, darkMode } = useTheme();
+  const { user } = useAuth();
+  const location = useLocation();
+  const deepLinked = useRef(null);
   const canvasRef = useRef(null);
   const [plans, setPlans] = useState([]);
   const [activePlanId, setActivePlanId] = useState(null);
@@ -64,6 +70,7 @@ export default function FloorPlan() {
   const [overdueColour, setOverdueColour] = useState(DEFAULT_OVERDUE_COLOR);
   const [drawerTable, setDrawerTable] = useState(null);
   const [courseSettingsOpen, setCourseSettingsOpen] = useState(false);
+  const [serviceSettingsOpen, setServiceSettingsOpen] = useState(false);
   const [courseDraft, setCourseDraft] = useState([]);
 
   // Merge tables: multi-select occupied tables on the floor plan and combine
@@ -119,6 +126,18 @@ export default function FloorPlan() {
       toast.success('Combination deleted');
     } catch { toast.error('Failed to delete'); }
   };
+
+  // Alert buttons open the correct table once per navigation, not each poll.
+  useEffect(() => {
+    const target = new URLSearchParams(location.search).get('tableId');
+    if (!target || deepLinked.current === target) return;
+    const found = tables.find(t => t.id === target);
+    if (found) {
+      deepLinked.current = target;
+      setSelectedTable(target);
+      setDrawerTable(found);
+    }
+  }, [tables, location.search]);
 
   const fetchCourses = useCallback(async () => {
     try {
@@ -442,6 +461,12 @@ export default function FloorPlan() {
           <Button variant="outline" onClick={() => setNewPlanDialog(true)} data-testid="new-plan-btn">
             <Plus size={16} className="mr-1" /> New Floor
           </Button>
+          {mode === 'view' && user?.role === 'owner' && (
+            <Button variant="outline" onClick={() => setServiceSettingsOpen(true)}
+              data-testid="smart-service-settings-open">
+              <Settings size={16} className="mr-2" /> Smart Alerts
+            </Button>
+          )}
           {mode === 'view' && (
             <Button variant="outline" onClick={() => { setCombosOpen(true); fetchCombos(); }} data-testid="table-combos-btn">
               <Layers size={16} className="mr-1" /> Table Combinations
@@ -742,6 +767,9 @@ export default function FloorPlan() {
         onRefresh={fetchCourses}
         onOpenCourseSettings={() => { setCourseDraft(courseDefs.map(c => ({ ...c }))); setCourseSettingsOpen(true); }}
       />
+
+      <SmartTableServiceSettings open={serviceSettingsOpen}
+        onClose={() => setServiceSettingsOpen(false)} isOwner={user?.role === 'owner'} />
 
       {/* Course settings dialog */}
       <Dialog open={courseSettingsOpen} onOpenChange={setCourseSettingsOpen}>

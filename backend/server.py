@@ -62,6 +62,7 @@ from routes.inventory_accounting import router as inventory_accounting_router
 from routes.super import router as super_router
 from routes.temperature import router as temperature_router
 from routes.table_courses import router as table_courses_router
+from routes.table_service import router as table_service_router
 from routes.finalize import router as finalize_router
 from routes.payroll import router as payroll_router, _apply_persisted_wallet_credentials
 from routes.commerce_v29 import router as commerce_v29_router
@@ -141,6 +142,7 @@ api_router.include_router(inventory_accounting_router)
 api_router.include_router(super_router)
 api_router.include_router(temperature_router)
 api_router.include_router(table_courses_router)
+api_router.include_router(table_service_router)
 api_router.include_router(finalize_router)
 api_router.include_router(payroll_router)
 api_router.include_router(commerce_v29_router)
