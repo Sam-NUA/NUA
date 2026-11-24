@@ -73,6 +73,7 @@ async def preflight_duplicate_report() -> list:
         ("ash_tool_config", {}, ["toolName", "businessId"]),
         ("business_settings", {}, ["key", "businessId"]),
         ("table_course_settings", {}, ["scope", "businessId"]),
+        ("table_service_settings", {}, ["scope", "businessId"]),
         ("agent_autonomy", {}, ["id", "businessId"]),
         ("businesses", {"inboundVoiceNumber": {"$exists": True, "$ne": None}}, ["inboundVoiceNumber"]),
     ]
@@ -114,6 +115,13 @@ async def preflight_duplicate_report() -> list:
 
 async def ensure_indexes() -> None:
     await _create_index_safely(db.terminal_sessions, "expiresAt", expireAfterSeconds=0)
+    # Smart Table Service reminders expire after the 90-day operational
+    # retention window; business-scoped queries must remain fast at scale.
+    await _create_index_safely(db.table_service_alerts, "expiresAt", expireAfterSeconds=0)
+    await _create_index_safely(db.table_service_alerts,
+                              [("businessId", 1), ("status", 1), ("createdAt", -1)])
+    await _create_index_safely(db.table_service_settings,
+                              [("scope", 1), ("businessId", 1)], unique=True)
     await preflight_duplicate_report()
 
     # Transactions: the busiest collection in the system. timestamp backs

@@ -12,6 +12,7 @@ from typing import Any, Dict, Optional
 from database import db
 from middleware.actor_context import tenant_scope_filter
 from services import floor_tables
+from services.retention import notification_expiry
 from services.tenant_settings import get_scoped_singleton, set_scoped_singleton
 
 DEFAULT_RULES = {
@@ -285,6 +286,7 @@ async def evaluate(business_id, *, clock=None):
                 "eventAt": iso(parse_at(since)),
                 "level": "urgent" if urgent else "warning",
                 "status": "open", "createdAt": iso(now),
+                "expiresAt": notification_expiry(),
                 "acknowledgedBy": None, "snoozedUntil": None,
             }
             # Idempotent insert; a previously resolved/acknowledged alert
