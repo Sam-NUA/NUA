@@ -66,7 +66,7 @@ test('smart table reminders support popup, acknowledgement and owner timing sett
 });
 
 test('POS terminal shows a reminder at its exact service deadline and refreshes during order activity', async ({ page }) => {
-  const dueTime = Date.now() + 5000;
+  let dueTime = Date.now() + 60_000;
   let checks = 0;
   await page.route('**/api/table-service/alerts', route => {
     checks += 1;
@@ -89,6 +89,9 @@ test('POS terminal shows a reminder at its exact service deadline and refreshes 
   const beforeInteraction = checks;
   await page.getByTestId('cart-tab-cart').click();
   await expect.poll(() => checks, { timeout: 6000 }).toBeGreaterThan(beforeInteraction);
+  // Simulate a warning due in the next two seconds while staff continue working.
+  dueTime = Date.now() + 2000;
+  await page.evaluate(() => window.dispatchEvent(new Event('focus')));
   const popup = page.getByTestId('smart-table-popup');
   await expect(popup).toBeVisible({ timeout: 15000 });
   await expect(popup).toContainText('Table 16');
