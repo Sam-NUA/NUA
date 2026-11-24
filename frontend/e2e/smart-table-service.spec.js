@@ -1,5 +1,7 @@
 const { test, expect } = require('@playwright/test');
 const { loginAsOwner } = require('./helpers');
+// Ensure network mocks are intercepted rather than served by the PWA worker.
+test.use({ serviceWorkers: 'block' });
 
 test.setTimeout(90000);
 
