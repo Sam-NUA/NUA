@@ -1,6 +1,6 @@
 """Smart Table Service: owner controls and staff-facing actionable alerts."""
 from __future__ import annotations
-from typing import Dict, Literal
+from typing import Dict, Literal, Optional
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from database import db
@@ -37,6 +37,10 @@ class SettingsInput(BaseModel):
 
 class SnoozeInput(BaseModel):
     minutes: Literal[1, 3, 5, 10, 15] = 3
+
+
+class AssignServerInput(BaseModel):
+    serverId: Optional[str] = None
 
 
 class EventInput(BaseModel):
@@ -122,3 +126,44 @@ async def mark_event(table_id: str, body: EventInput, user: dict = Depends(get_u
     if result.matched_count != 1:
         raise HTTPException(409, "Seat the table on the floor plan first")
     return {"tableId": table_id, "event": body.event, "at": now}
+
+
+@router.get("/servers")
+async def available_floor_servers(user: dict = Depends(get_user)):
+    if user.get("role") not in {"owner", "manager"}:
+        raise HTTPException(403, "Manager permission required")
+    biz = _business(user)
+    return await db.auth_users.find(
+        {"businessId": biz, "role": {"$in": ["owner", "manager", "cashier", "server"]},
+         "isActive": {"$ne": False}},
+        {"_id": 0, "id": 1, "email": 1, "name": 1, "role": 1},
+    ).to_list(200)
+
+
+@router.put("/tables/{table_id}/server")
+async def assign_floor_server(table_id: str, body: AssignServerInput, user: dict = Depends(get_user)):
+    if user.get("role") not in {"owner", "manager"}:
+        raise HTTPException(403, "Manager permission required")
+    biz = _business(user)
+    if not await floor_tables.get_table_by_id(table_id, business_id=biz):
+        raise HTTPException(404, "Table not found at this venue")
+    if body.serverId:
+        if not isinstance(body.serverId, str) or len(body.serverId) > 128:
+            raise HTTPException(422, "Invalid staff identifier")
+        server = await db.auth_users.find_one({
+            "id": body.serverId, "businessId": biz, "_ownershipQuarantined": {"$ne": True},
+            "isActive": {"$ne": False}, "role": {"$in": ["owner", "manager", "cashier", "server"]},
+        }, {"_id": 0, "id": 1})
+        if not server:
+            raise HTTPException(422, "Staff member must belong to this business")
+    scope = tenant_scope_filter(biz)
+    current = await db.table_states.find_one({"tableId": table_id, **scope}, {"_id": 0, "id": 1})
+    if not current:
+        raise HTTPException(409, "Seat the table before assigning floor staff")
+    await db.table_states.update_one(
+        {"tableId": table_id, **scope}, {"$set": {"serverId": body.serverId}})
+    await db.table_service_alerts.update_many(
+        {"tableId": table_id, "sessionId": current.get("id"), **scope,
+         "status": {"$ne": "resolved"}},
+        {"$set": {"serverId": body.serverId}})
+    return {"tableId": table_id, "serverId": body.serverId}

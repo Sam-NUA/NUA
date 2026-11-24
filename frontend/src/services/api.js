@@ -1281,6 +1281,8 @@ export default api;
 // Tenant-isolated, owner-configurable restaurant service reminders.
 export const tableServiceAPI = {
   getSettings: () => api.get('/table-service/settings'),
+  listServers: () => api.get('/table-service/servers'),
+  assignServer: (tableId, serverId) => api.put('/table-service/tables/' + encodeURIComponent(tableId) + '/server', { serverId }),
   updateSettings: body => api.put('/table-service/settings', body),
   getAlerts: (params = {}) => api.get('/table-service/alerts', { params }),
   acknowledge: id => api.post('/table-service/alerts/' + encodeURIComponent(id) + '/acknowledge'),

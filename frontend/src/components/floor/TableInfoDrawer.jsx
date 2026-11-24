@@ -5,6 +5,7 @@ import { Input } from '../ui/input';
 import { Badge } from '../ui/badge';
 import { X, Send, Clock, Users, Utensils, ChevronRight, Settings2, BellRing, Crown, Loader2 } from 'lucide-react';
 import { tableCoursesAPI, reservationsAPI, tableServiceAPI } from '../../services/api';
+import { useAuth } from '../../contexts/AuthContext';
 import { useTheme } from '../../contexts/ThemeContext';
 import { toast } from 'sonner';
 import { DialogService } from '../../platform';
@@ -21,10 +22,22 @@ const VIP_COLOR = '#db2777'; // NUA_POS_DESIGN_TOKENS.md §6 — VIP is pink, Re
  */
 export const TableInfoDrawer = ({ open, onClose, table, states, courses, overdueColour, onRefresh, onOpenCourseSettings }) => {
   const { darkMode } = useTheme();
+  const { user } = useAuth();
+  const canAssign = ['owner', 'manager'].includes(user?.role);
+  const [staffServers, setStaffServers] = useState([]);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState('');
   const [priority, setPriority] = useState('normal');
   const [tick, setTick] = useState(0);
+
+  useEffect(() => {
+    if (!open || !canAssign) return undefined;
+    let active = true;
+    tableServiceAPI.listServers()
+      .then(res => { if (active) setStaffServers(res.data || []); })
+      .catch(() => { if (active) setStaffServers([]); });
+    return () => { active = false; };
+  }, [open, canAssign]);
 
   // Optional guest attach when seating — lets a table pick up the VIP
   // purple ring automatically (via the guest's own isVip flag) instead of
@@ -129,6 +142,17 @@ export const TableInfoDrawer = ({ open, onClose, table, states, courses, overdue
       setMsg('');
     } catch {
       toast.error('Failed to send');
+    } finally { setBusy(false); }
+  };
+
+  const assignServer = async serverId => {
+    setBusy(true);
+    try {
+      await tableServiceAPI.assignServer(table.id, serverId || null);
+      toast.success(serverId ? 'Floor server assigned' : 'Table returned to the team queue');
+      onRefresh && onRefresh();
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || 'Unable to assign floor server');
     } finally { setBusy(false); }
   };
 
@@ -275,6 +299,19 @@ export const TableInfoDrawer = ({ open, onClose, table, states, courses, overdue
             </CardContent>
           </Card>
         )}
+
+        {state && canAssign && <Card data-testid="table-server-assignment">
+          <CardContent className="p-3 space-y-2">
+            <label className="text-xs font-semibold" htmlFor="table-floor-server">Assigned floor server</label>
+            <select id="table-floor-server" className="border rounded p-2 text-sm w-full"
+              disabled={busy} value={state.serverId || ''} onChange={e => assignServer(e.target.value)}>
+              <option value="">Unassigned — visible to floor team</option>
+              {staffServers.map(s => <option key={s.id} value={s.id}>
+                {s.name || s.email} ({s.role})
+              </option>)}
+            </select>
+          </CardContent>
+        </Card>}
 
         {state && <Card data-testid="service-milestones-card">
           <CardContent className="p-3 space-y-2">
