@@ -173,7 +173,7 @@ def _candidate(rule, table, anchor, minutes, server, message, now, config, extra
     }
 
 
-def _candidates(state, orders, config, now, number):
+def _candidates(state, orders, config, now, number, *, main_course="2", starter_course="1"):
     """Only use events we actually have. Never infer that food was served from
     a floor-plan colour or that a guest wants their mains automatically fired.
     """
@@ -227,8 +227,8 @@ def _candidates(state, orders, config, now, number):
 
     for order in recent:
         courses = order.get("courses") or {}
-        main = courses.get("2") or {}
-        entree = courses.get("1") or {}
+        main = courses.get(str(main_course)) or {}
+        entree = courses.get(str(starter_course)) or {}
         # Held mains deserve a check even for tables that skip entrée.
         # The action remains manual: never auto-fire from a service alert.
         if main.get("status") in ("held", "queued"):
@@ -236,7 +236,7 @@ def _candidates(state, orders, config, now, number):
                 events.get("drinks_served") or main.get("heldAt") or order.get("createdAt"))
             emit("mains_not_fired", anchor,
                  "Mains are still on hold. Check the table before firing.",
-                 {"orderId": order.get("id"), "course": 2})
+                 {"orderId": order.get("id"), "course": int(main_course)})
         for key, course in courses.items():
             if course.get("status") == "fired":
                 emit("kitchen_delayed", course.get("firedAt"),
@@ -270,6 +270,17 @@ async def floor_staff(user: dict = Depends(get_user)):
              "email": x.get("email"), "role": x.get("role")} for x in rows if x.get("email")]
 
 
+def _kitchen_course_key(definitions, names, default):
+    for course in definitions or []:
+        label = str(course.get("label") or "").casefold()
+        if any(token in label for token in names):
+            try:
+                return str(int(course["key"]))
+            except (ValueError, TypeError, KeyError):
+                continue
+    return str(default)
+
+
 @router.get("/alerts")
 async def list_alerts(user: dict = Depends(get_user)):
     biz = _business(user)
@@ -291,12 +302,19 @@ async def list_alerts(user: dict = Depends(get_user)):
             grouped.setdefault(key, []).append(order)
 
     await db.table_service_alerts.create_index("id", unique=True)
+    from services import coursing as kitchen_coursing
+    coursing_config = await kitchen_coursing.get_config(business_id=biz)
+    kitchen_courses = coursing_config.get("courses") or []
+    main_course = _kitchen_course_key(kitchen_courses, ("main",), 2)
+    starter_course = _kitchen_course_key(kitchen_courses, ("starter", "entrée", "entree"), 1)
+
     keep = set()
     for state in states:
         tid = state.get("tableId")
         if tid not in by_id:
             continue
-        for alert in _candidates(state, grouped.get(tid, []), config, now, by_id[tid]):
+        for alert in _candidates(state, grouped.get(tid, []), config, now, by_id[tid],
+                                 main_course=main_course, starter_course=starter_course):
             keep.add(alert["id"])
             # Escalate an acknowledged normal reminder only once, when it crosses
             # the higher owner-configured threshold.
