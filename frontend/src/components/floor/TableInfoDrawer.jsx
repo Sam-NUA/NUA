@@ -4,7 +4,7 @@ import { Button } from '../ui/button';
 import { Input } from '../ui/input';
 import { Badge } from '../ui/badge';
 import { X, Send, Clock, Users, Utensils, ChevronRight, Settings2, BellRing, Crown, Loader2 } from 'lucide-react';
-import { tableCoursesAPI, reservationsAPI } from '../../services/api';
+import { tableCoursesAPI, tableServiceAPI, reservationsAPI } from '../../services/api';
 import { useTheme } from '../../contexts/ThemeContext';
 import { toast } from 'sonner';
 import { DialogService } from '../../platform';
@@ -129,6 +129,17 @@ export const TableInfoDrawer = ({ open, onClose, table, states, courses, overdue
       setMsg('');
     } catch {
       toast.error('Failed to send');
+    } finally { setBusy(false); }
+  };
+
+  const serviceEvent = async (event) => {
+    setBusy(true);
+    try {
+      await tableServiceAPI.event(table.id, event);
+      toast.success('Service event recorded');
+      if (onRefresh) await onRefresh();
+    } catch (e) {
+      toast.error(e.response?.data?.detail || 'Could not record service event');
     } finally { setBusy(false); }
   };
 
