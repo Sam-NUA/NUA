@@ -225,3 +225,40 @@ def test_table_pacing_requires_tenant_for_kitchen_bridge(client, owner_headers):
         assert theirs["course"] == "main"
     finally:
         cleanup(a, b)
+
+
+def test_server_assignment_updates_active_alert_and_blocks_foreign_staff(client, owner_headers):
+    owner_rules(client, owner_headers, enabled=True)
+    s = seed(number="907", age=9)
+    staff_id = "SERVICE_STAFF_" + uuid4().hex[:8]
+    foreign_id = "SERVICE_FOREIGN_" + uuid4().hex[:8]
+    run(db.auth_users.insert_one({
+        "id": staff_id, "email": staff_id.lower() + "@example.com",
+        "name": "Floor Waiter", "role": "cashier", "businessId": "default",
+        "isActive": True,
+    }))
+    run(db.auth_users.insert_one({
+        "id": foreign_id, "email": foreign_id.lower() + "@example.com",
+        "name": "Foreign Waiter", "role": "cashier", "businessId": "another-venue",
+        "isActive": True,
+    }))
+    try:
+        mine = next(a for a in list_alerts(client, owner_headers) if a["tableId"] == s["tableId"])
+        r = api(client, owner_headers, "GET", "/servers")
+        assert r.status_code == 200, r.text
+        ids = {person["id"] for person in r.json()}
+        assert staff_id in ids and foreign_id not in ids
+        blocked = api(client, owner_headers, "PUT", f"/tables/{s['tableId']}/server",
+                      json={"serverId": foreign_id})
+        assert blocked.status_code == 422, blocked.text
+        assigned = api(client, owner_headers, "PUT", f"/tables/{s['tableId']}/server",
+                       json={"serverId": staff_id})
+        assert assigned.status_code == 200, assigned.text
+        changed = run(db.table_service_alerts.find_one({"id": mine["id"]}))
+        assert changed["serverId"] == staff_id
+        state = run(db.table_states.find_one({"id": s["stateId"]}))
+        assert state["serverId"] == staff_id
+    finally:
+        cleanup(s)
+        run(db.auth_users.delete_many({"id": {"$in": [staff_id, foreign_id]}}))
+        owner_rules(client, owner_headers, enabled=False)
