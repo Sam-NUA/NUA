@@ -84,13 +84,22 @@ export default function TableServiceAlerts() {
   useEffect(() => { if (sessionKey) refresh(); }, [location.pathname, location.search, staffKey, refresh, sessionKey]);
 
   useEffect(() => {
-    if (!sessionKey || !location.pathname.startsWith('/pos')) return undefined;
+    if (!sessionKey) return undefined;
     let lastActivityRefresh = 0;
     const onTerminalActivity = (event) => {
-      if (event.type === 'keydown' && !['Enter', 'Tab', 'Escape'].includes(event.key)) return;
+      const inPOS = location.pathname.startsWith('/pos');
+      if (event.type === 'keydown' && (!inPOS || !['Enter', 'Tab', 'Escape'].includes(event.key))) return;
+      if (!inPOS) {
+        // Bills, order recall and table checks can be opened from screens
+        // outside /pos too. Only observe relevant buttons in those screens.
+        if (event.type !== 'pointerdown') return;
+        const control = event.target?.closest?.('button, [role="button"], [data-testid]');
+        const label = [control?.getAttribute('data-testid'), control?.getAttribute('aria-label'),
+          (control?.textContent || '').slice(0, 100)].filter(Boolean).join(' ');
+        if (!/\b(bill|print|receipt|table|order)\b/i.test(label)) return;
+      }
       const now = Date.now();
-      // Covers taking another order, selecting/checking a table, printing
-      // or taking payment. Throttle to avoid flooding Mongo on busy tills.
+      // Refresh without blocking the staff's original tap or checkout action.
       if (now - lastActivityRefresh < 8000) return;
       lastActivityRefresh = now;
       refresh();
