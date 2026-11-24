@@ -256,6 +256,20 @@ def _candidates(state, orders, config, now, number):
     return found
 
 
+@router.get("/staff")
+async def floor_staff(user: dict = Depends(get_user)):
+    """Minimal role-filtered directory for assigning tables; never expose PINs."""
+    if user.get("role") not in MANAGERS:
+        raise HTTPException(403, "Manager or owner only")
+    biz = _business(user)
+    rows = await db.auth_users.find(
+        {"businessId": biz, "role": {"$in": ["owner", "manager", "cashier", "server", "waiter"]}},
+        {"_id": 0, "id": 1, "name": 1, "email": 1, "role": 1},
+    ).to_list(200)
+    return [{"id": x.get("id"), "name": x.get("name") or x.get("email"),
+             "email": x.get("email"), "role": x.get("role")} for x in rows if x.get("email")]
+
+
 @router.get("/alerts")
 async def list_alerts(user: dict = Depends(get_user)):
     biz = _business(user)
