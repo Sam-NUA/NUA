@@ -85,7 +85,7 @@ export default function TableServiceAlerts() {
   };
 
   const gotoTable = (alert) => {
-    dismissed.current.add(alert.id);
+    dismissed.current.add(dismissKey(alert));
     setPanelOpen(false);
     navigate(alert.category === 'kitchen' && user?.role === 'kitchen' ? '/kitchen' : '/floor-plan?tableId=' + encodeURIComponent(alert.tableId));
   };
@@ -95,7 +95,7 @@ export default function TableServiceAlerts() {
     <>
       {(enabled || isManager) && (
         <button type="button" onClick={() => setPanelOpen(true)}
-          className="fixed bottom-36 right-5 z-40 flex items-center gap-2 rounded-full border bg-white px-4 py-3 shadow-xl text-slate-800"
+          className="fixed top-20 right-5 z-40 flex items-center gap-2 rounded-full border bg-white px-4 py-3 shadow-xl text-slate-800"
           aria-label="Table service attention queue" data-testid="table-service-attention-button">
           <BellRing size={18} />
           <span className="text-xs font-semibold">Table attention</span>
@@ -107,7 +107,7 @@ export default function TableServiceAlerts() {
 
       {incoming && !panelOpen && !settingsOpen && (
         <section role="alertdialog" aria-labelledby="service-alert-title" aria-describedby="service-alert-message"
-          className="fixed bottom-5 left-5 right-5 sm:left-auto sm:right-5 sm:w-96 z-[90] rounded-2xl border-2 border-orange-500 bg-white p-4 shadow-2xl text-slate-900"
+          className="fixed top-36 left-5 right-5 sm:left-auto sm:right-5 sm:w-96 z-[90] rounded-2xl border-2 border-orange-500 bg-white p-4 shadow-2xl text-slate-900"
           data-testid="smart-table-popup">
           <div className="flex items-start justify-between gap-2">
             <div className="flex items-center gap-2">
