@@ -95,3 +95,69 @@ def test_rules_validate_escalation_after_first_warning(client, owner_headers):
     result = req(client, "PUT", "/api/table-service/settings",
                  headers=owner_headers, json=settings)
     assert result.status_code == 422
+
+
+def _fixtures(minutes=30):
+    from routes.table_service import utcnow, stamp
+    now = utcnow()
+    seated = stamp(now - timedelta(minutes=minutes))
+    return now, {"businessId": "default", "tableId": "T-SMART-UNIT",
+                 "seatedAt": seated, "course": "entree",
+                 "serviceEvents": {}}
+
+
+def test_held_mains_and_kitchen_ready_alert_rules():
+    from routes.table_service import _candidates, DEFAULT, stamp
+    now, state = _fixtures()
+    earlier = stamp(now - timedelta(minutes=25))
+    order = {
+        "id": "TEST-KO-SMART", "createdAt": earlier,
+        "items": [{"course": 1}, {"course": 2}],
+        "courses": {"1": {"status": "served", "servedAt": earlier},
+                    "2": {"status": "held", "heldAt": earlier}},
+    }
+    found = _candidates(state, [order], DEFAULT, now, "52")
+    assert any(a["rule"] == "mains_not_fired" and a["course"] == 2 for a in found)
+    assert not any(a["rule"] == "kitchen_delayed" for a in found)
+
+    order["courses"]["2"] = {"status": "fired", "firedAt": earlier}
+    found = _candidates(state, [order], DEFAULT, now, "52")
+    assert any(a["rule"] == "kitchen_delayed" for a in found)
+    assert not any(a["rule"] == "mains_not_fired" for a in found)
+
+    order["courses"]["2"] = {"status": "ready", "readyAt": earlier}
+    found = _candidates(state, [order], DEFAULT, now, "52")
+    assert any(a["rule"] == "food_waiting" for a in found)
+    assert not any(a["rule"] == "kitchen_delayed" for a in found)
+
+
+def test_drinks_without_food_and_unfulfilled_bill_alert():
+    from routes.table_service import _candidates, DEFAULT, stamp
+    now, state = _fixtures()
+    state["serviceEvents"] = {
+        "drinks_served": stamp(now - timedelta(minutes=17)),
+        "bill_requested": stamp(now - timedelta(minutes=11)),
+    }
+    # Drinks-only tickets can legitimately have course 1; that must not be
+    # misinterpreted as a food order.
+    order = {"id": "DRINKS", "createdAt": stamp(now - timedelta(minutes=20)),
+             "items": [{"course": 1, "category": "Beverages"}], "courses": {}}
+    found = _candidates(state, [order], DEFAULT, now, "53")
+    assert {a["rule"] for a in found} >= {"drinks_no_food", "bill_waiting"}
+    state["serviceEvents"]["bill_completed"] = stamp(now - timedelta(minutes=2))
+    found = _candidates(state, [order], DEFAULT, now, "53")
+    assert not any(a["rule"] == "bill_waiting" for a in found)
+
+
+def test_paused_service_excludes_paused_minutes_from_alert_clock():
+    from routes.table_service import _candidates, DEFAULT, stamp
+    now, state = _fixtures(minutes=13)
+    state["serviceEvents"] = {"service_paused": stamp(now - timedelta(minutes=12)),
+                              "service_resumed": stamp(now - timedelta(minutes=3))}
+    state["servicePauseIntervals"] = [{
+        "start": stamp(now - timedelta(minutes=12)),
+        "end": stamp(now - timedelta(minutes=3)),
+    }]
+    assert not _candidates(state, [], DEFAULT, now, "54"), (
+        "13 minutes seated with 9 paused = only 4 active minutes, below the 5-minute warning"
+    )
