@@ -127,12 +127,20 @@ export default function FloorPlan() {
   useEffect(() => {
     const tableId = new URLSearchParams(location.search).get('tableId');
     if (!tableId || tableId === openedAlertRef.current) return;
-    const table = tables.find(t => String(t.id) === String(tableId));
-    if (!table) return;
+    let table = tables.find(t => String(t.id) === String(tableId));
+    if (!table) {
+      const plan = plans.find(p => (p.tables || []).some(t => String(t.id) === String(tableId)));
+      if (!plan) return;
+      table = (plan.tables || []).find(t => String(t.id) === String(tableId));
+      setActivePlanId(plan.id);
+      setTables(plan.tables || []);
+      setSections(plan.sections || []);
+      setPlanName(plan.name);
+    }
     openedAlertRef.current = tableId;
     setDrawerTable(table);
     setSelectedTable(tableId);
-  }, [location.search, tables]);
+  }, [location.search, tables, plans]);
 
   const fetchCourses = useCallback(async () => {
     try {
