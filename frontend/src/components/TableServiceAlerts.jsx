@@ -1,7 +1,8 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { BellRing, Clock, Settings2, X, Check, PauseCircle, RefreshCw } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
-import { useNavigate } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
+import { usePOS } from '../contexts/POSContext';
 import { tableServiceAPI } from '../services/api';
 import { toast } from 'sonner';
 
@@ -21,7 +22,15 @@ const initial = { enabled: false, rules: {} };
 export default function TableServiceAlerts() {
   const { user } = useAuth();
   const navigate = useNavigate();
+  const location = useLocation();
+  const { currentUser } = usePOS();
+  const sessionKey = user ? [user.businessId, user.id || user.email, user.role].join(':') : '';
+  const currentSessionRef = useRef(sessionKey);
+  currentSessionRef.current = sessionKey;
+  const responseSequence = useRef(0);
+  const staffKey = currentUser?.id || currentUser?.email || currentUser?.name || '';
   const [alerts, setAlerts] = useState([]);
+  const [nextCheckAt, setNextCheckAt] = useState(null);
   const [enabled, setEnabled] = useState(false);
   const [panelOpen, setPanelOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -34,20 +43,76 @@ export default function TableServiceAlerts() {
   const isManager = ['owner', 'manager'].includes(user?.role);
 
   const refresh = useCallback(async () => {
+    if (!sessionKey) return;
+    const sequence = ++responseSequence.current;
     try {
       const response = await tableServiceAPI.listAlerts();
+      // Ignore a previous staff member's response after a terminal login
+      // switch, or an older response arriving after a newer one.
+      if (currentSessionRef.current !== sessionKey || sequence !== responseSequence.current) return;
       setAlerts(response.data?.alerts || []);
       setEnabled(!!response.data?.enabled);
+      setNextCheckAt(response.data?.nextCheckAt || null);
     } catch {
-      // A disconnected terminal should not interrupt order-taking.
+      // Never interrupt checkout or kitchen firing if the terminal is offline.
     }
-  }, []);
+  }, [sessionKey]);
 
   useEffect(() => {
-    refresh();
-    const interval = setInterval(refresh, 15000);
-    return () => clearInterval(interval);
-  }, [refresh]);
+    dismissed.current.clear();
+    setAlerts([]);
+    setEnabled(false);
+    setNextCheckAt(null);
+    if (!sessionKey) return undefined;
+    refresh(); // Checks immediately after login, including a shared POS terminal.
+    const interval = setInterval(refresh, 15000); // Safety poll if a push/event is missed.
+    const onFocus = () => refresh();
+    const onVisible = () => { if (document.visibilityState === 'visible') refresh(); };
+    window.addEventListener('focus', onFocus);
+    window.addEventListener('pageshow', onFocus);
+    document.addEventListener('visibilitychange', onVisible);
+    return () => {
+      clearInterval(interval);
+      window.removeEventListener('focus', onFocus);
+      window.removeEventListener('pageshow', onFocus);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
+  }, [refresh, sessionKey]);
+
+  // Entering POS, opening another order, or switching the active floor-staff
+  // identity must prompt a fresh evaluation without waiting for the poll.
+  useEffect(() => { if (sessionKey) refresh(); }, [location.pathname, location.search, staffKey, refresh, sessionKey]);
+
+  useEffect(() => {
+    if (!sessionKey || !location.pathname.startsWith('/pos')) return undefined;
+    let lastActivityRefresh = 0;
+    const onTerminalActivity = (event) => {
+      if (event.type === 'keydown' && !['Enter', 'Tab', 'Escape'].includes(event.key)) return;
+      const now = Date.now();
+      // Covers taking another order, selecting/checking a table, printing
+      // or taking payment. Throttle to avoid flooding Mongo on busy tills.
+      if (now - lastActivityRefresh < 8000) return;
+      lastActivityRefresh = now;
+      refresh();
+    };
+    document.addEventListener('pointerdown', onTerminalActivity, true);
+    document.addEventListener('keydown', onTerminalActivity, true);
+    return () => {
+      document.removeEventListener('pointerdown', onTerminalActivity, true);
+      document.removeEventListener('keydown', onTerminalActivity, true);
+    };
+  }, [sessionKey, location.pathname, refresh]);
+
+  useEffect(() => {
+    if (!sessionKey || !nextCheckAt) return undefined;
+    const due = Date.parse(nextCheckAt);
+    if (!Number.isFinite(due)) return undefined;
+    // Server-computed first-warning and escalation deadlines. A bounded
+    // safety poll remains active if the terminal clock or network drifts.
+    const delay = Math.max(300, Math.min(15_000, due - Date.now() + 300));
+    const timeout = setTimeout(refresh, delay);
+    return () => clearTimeout(timeout);
+  }, [sessionKey, nextCheckAt, refresh]);
 
   const active = useMemo(() => alerts.filter(a => a.status === 'open'), [alerts]);
   const incoming = active.find(a => !dismissed.current.has(dismissKey(a)));
@@ -144,7 +209,7 @@ export default function TableServiceAlerts() {
             onClick={(e) => e.stopPropagation()}>
             <header className="sticky top-0 flex items-center justify-between gap-2 border-b bg-white p-4">
               <div><h2 className="font-bold text-lg">Table attention queue</h2>
-                <p className="text-xs text-slate-500">{active.length} active · Updates every 15 seconds</p></div>
+                <p className="text-xs text-slate-500">{active.length} active · Checks at alert deadlines and on terminal activity</p></div>
               <div className="flex items-center gap-1">
                 <button type="button" className="p-2" onClick={refresh} aria-label="Refresh alerts"><RefreshCw size={19}/></button>
                 {isManager && <button type="button" className="p-2" onClick={openSettings} aria-label="Configure alert timings"><Settings2 size={19}/></button>}
