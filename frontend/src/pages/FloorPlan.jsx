@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { useLocation } from 'react-router-dom';
 import {
   Plus, Save, Trash2, RotateCcw, Maximize2, Circle, Square, RectangleHorizontal,
   Users, ChevronDown, Eye, Settings, Pencil, Crown, BrushCleaning, Layers
@@ -43,6 +44,8 @@ const SECTIONS_COLORS = ['#3B82F6', '#10B981', '#F59E0B', '#EF4444', '#8B5CF6', 
 
 export default function FloorPlan() {
   const { theme, darkMode } = useTheme();
+  const location = useLocation();
+  const openedAlertRef = useRef(null);
   const canvasRef = useRef(null);
   const [plans, setPlans] = useState([]);
   const [activePlanId, setActivePlanId] = useState(null);
@@ -119,6 +122,17 @@ export default function FloorPlan() {
       toast.success('Combination deleted');
     } catch { toast.error('Failed to delete'); }
   };
+
+  // Open the exact table when staff tap an actionable service alert.
+  useEffect(() => {
+    const tableId = new URLSearchParams(location.search).get('tableId');
+    if (!tableId || tableId === openedAlertRef.current) return;
+    const table = tables.find(t => String(t.id) === String(tableId));
+    if (!table) return;
+    openedAlertRef.current = tableId;
+    setDrawerTable(table);
+    setSelectedTable(tableId);
+  }, [location.search, tables]);
 
   const fetchCourses = useCallback(async () => {
     try {
