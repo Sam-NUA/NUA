@@ -157,23 +157,35 @@ async def record_event(body: EventIn, user: dict = Depends(get_user)):
     return {"recorded": body.event, "tableId": body.tableId}
 
 
-def _candidate(rule, table, anchor, minutes, server, message, now, config, extra=None):
+def _candidate(rule, table, anchor, minutes, server, message, now, config, extra=None,
+               include_pending=False):
     cfg = config["rules"].get(rule, {})
-    if not cfg.get("enabled", True) or minute_age(anchor, now) < cfg.get("minutes", 9999):
+    age = minute_age(anchor, now)
+    if not cfg.get("enabled", True) or age < 0:
         return None
+    pending = age < cfg.get("minutes", 9999)
+    if pending and not include_pending:
+        return None
+    # Tell the terminal when the next rule boundary occurs. The terminal can
+    # refresh at that exact time instead of only waiting for its safety poll.
+    next_minutes = (cfg["minutes"] if pending else
+                    cfg["escalateMinutes"] if age < cfg["escalateMinutes"] else None)
+    next_check = (stamp(parse_time(anchor) + timedelta(minutes=next_minutes))
+                  if next_minutes is not None else None)
     return {
         "id": sha256(("%s|%s|%s|%s" % (table["businessId"], table["tableId"], rule, anchor)).encode()).hexdigest()[:36],
         "businessId": table["businessId"], "tableId": table["tableId"],
         "tableNumber": table["tableNumber"], "serverId": server,
         "rule": rule, "title": RULES[rule][0], "category": RULES[rule][3],
         "message": message, "startedAt": anchor,
-        "elapsedMinutes": int(minute_age(anchor, now)),
-        "priority": "urgent" if minute_age(anchor, now) >= cfg["escalateMinutes"] else "normal",
+        "elapsedMinutes": int(age), "pending": pending, "nextCheckAt": next_check,
+        "priority": "urgent" if age >= cfg["escalateMinutes"] else "normal",
         **(extra or {}),
     }
 
 
-def _candidates(state, orders, config, now, number, *, main_course="2", starter_course="1"):
+def _candidates(state, orders, config, now, number, *, main_course="2", starter_course="1",
+                include_pending=False):
     """Only use events we actually have. Never infer that food was served from
     a floor-plan colour or that a guest wants their mains automatically fired.
     """
@@ -203,7 +215,8 @@ def _candidates(state, orders, config, now, number, *, main_course="2", starter_
         return stamp(parsed + timedelta(seconds=paused_seconds))
 
     def emit(rule, anchor, msg, extra=None):
-        candidate = _candidate(rule, table, effective_anchor(anchor), None, server, msg, now, config, extra)
+        candidate = _candidate(rule, table, effective_anchor(anchor), None, server, msg, now,
+                               config, extra, include_pending=include_pending)
         if candidate:
             found.append(candidate)
 
@@ -308,12 +321,19 @@ async def list_alerts(user: dict = Depends(get_user)):
     starter_course = _kitchen_course_key(kitchen_courses, ("starter", "entrée", "entree"), 1)
 
     keep = set()
+    next_check_at = None
     for state in states:
         tid = state.get("tableId")
         if tid not in by_id:
             continue
         for alert in _candidates(state, grouped.get(tid, []), config, now, by_id[tid],
-                                 main_course=main_course, starter_course=starter_course):
+                                 main_course=main_course, starter_course=starter_course,
+                                 include_pending=True):
+            due = parse_time(alert.get("nextCheckAt"))
+            if due and due > now and (next_check_at is None or due < next_check_at):
+                next_check_at = due
+            if alert.get("pending"):
+                continue
             keep.add(alert["id"])
             # Escalate an acknowledged normal reminder only once, when it crosses
             # the higher owner-configured threshold.
@@ -323,7 +343,8 @@ async def list_alerts(user: dict = Depends(get_user)):
                      "priority": "normal"},
                     {"$set": {"status": "open", "escalatedAt": stamp(now)}})
             stable = {k: v for k, v in alert.items() if k not in
-                      ("priority", "elapsedMinutes", "message", "tableNumber", "serverId")}
+                      ("priority", "elapsedMinutes", "message", "tableNumber", "serverId",
+                        "pending", "nextCheckAt")}
             await db.table_service_alerts.update_one(
                 {"id": alert["id"], "businessId": biz},
                 {"$setOnInsert": {**stable, "createdAt": stamp(now), "status": "open"},
@@ -351,7 +372,9 @@ async def list_alerts(user: dict = Depends(get_user)):
             alert["status"] = "open"
         visible.append(alert)
     visible.sort(key=lambda a: (a["priority"] != "urgent", -a["elapsedMinutes"]))
-    return {"enabled": True, "alerts": visible, "openCount": sum(a["status"] == "open" for a in visible)}
+    return {"enabled": True, "alerts": visible,
+            "openCount": sum(a["status"] == "open" for a in visible),
+            "nextCheckAt": stamp(next_check_at) if next_check_at else None}
 
 
 @router.post("/alerts/{alert_id}/action")
