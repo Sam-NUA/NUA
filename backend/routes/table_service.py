@@ -93,8 +93,13 @@ def _business(user):
 
 
 def _allowed(user, doc):
-    if user.get("role") in MANAGERS:
+    role = user.get("role")
+    if role in MANAGERS:
         return True
+    if role == "kitchen":
+        return doc.get("category") == "kitchen"
+    if doc.get("category") == "kitchen":
+        return False
     server = doc.get("serverId")
     if server and str(server) not in {str(user.get("id")), str(user.get("email"))}:
         return False
@@ -168,10 +173,10 @@ def _candidates(state, orders, config, now, number):
     """
     biz = state["businessId"]
     table = {"businessId": biz, "tableId": state["tableId"], "tableNumber": number}
-    server = state.get("serverId") or state.get("createdBy")
+    server = state.get("serverId")
     events = state.get("serviceEvents") or {}
     seated = state.get("seatedAt")
-    if not seated:
+    if not seated or not parse_time(seated):
         return []
     if events.get("service_paused") and (
         not events.get("service_resumed") or
@@ -194,8 +199,11 @@ def _candidates(state, orders, config, now, number):
     # This only activates once staff explicitly record drinks as served.
     drinks_at = events.get("drinks_served")
     if drinks_at and not events.get("food_order_taken"):
-        food_order = any(any(str(i.get("course", "")).isdigit() and int(i["course"]) >= 1
-                             for i in (o.get("items") or [])) for o in recent)
+        food_order = any(any(
+            (str(i.get("course", "")).isdigit() and int(i["course"]) >= 2) or
+            any(word in str(i.get("category") or i.get("courseLabel") or "").lower()
+                for word in ("entree", "entrée", "starter", "main", "food", "pizza", "pasta"))
+            for i in (o.get("items") or [])) for o in recent)
         if not food_order:
             emit("drinks_no_food", drinks_at, "Drinks served; ask whether guests are ready for food.")
 
@@ -247,6 +255,7 @@ async def list_alerts(user: dict = Depends(get_user)):
         if key:
             grouped.setdefault(key, []).append(order)
 
+    await db.table_service_alerts.create_index("id", unique=True)
     keep = set()
     for state in states:
         tid = state.get("tableId")
@@ -254,13 +263,21 @@ async def list_alerts(user: dict = Depends(get_user)):
             continue
         for alert in _candidates(state, grouped.get(tid, []), config, now, by_id[tid]):
             keep.add(alert["id"])
-            # Unique index makes concurrent device polls safe.
-            await db.table_service_alerts.create_index("id", unique=True)
+            # Escalate an acknowledged normal reminder only once, when it crosses
+            # the higher owner-configured threshold.
+            if alert["priority"] == "urgent":
+                await db.table_service_alerts.update_one(
+                    {"id": alert["id"], "businessId": biz, "status": "acknowledged",
+                     "priority": "normal"},
+                    {"$set": {"status": "open", "escalatedAt": stamp(now)}})
+            stable = {k: v for k, v in alert.items() if k not in
+                      ("priority", "elapsedMinutes", "message", "tableNumber", "serverId")}
             await db.table_service_alerts.update_one(
                 {"id": alert["id"], "businessId": biz},
-                {"$setOnInsert": {**alert, "createdAt": stamp(now), "status": "open"},
+                {"$setOnInsert": {**stable, "createdAt": stamp(now), "status": "open"},
                  "$set": {"priority": alert["priority"], "elapsedMinutes": alert["elapsedMinutes"],
-                          "message": alert["message"]}},
+                          "message": alert["message"], "tableNumber": alert["tableNumber"],
+                          "serverId": alert["serverId"]}},
                 upsert=True)
     active = await db.table_service_alerts.find(
         {"businessId": biz, "status": {"$in": ["open", "acknowledged", "snoozed"]}},
