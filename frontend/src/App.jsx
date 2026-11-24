@@ -86,6 +86,7 @@ const MultiBusiness = lazy(() => import('./pages/MultiBusiness'));
 const IdentitySettings = lazy(() => import('./pages/IdentitySettings'));
 import AshChat from './components/AshChat';
 import NotificationBell from './components/NotificationBell';
+import TableServiceAlerts from './components/TableServiceAlerts';
 const Temperature = lazy(() => import('./pages/Temperature'));
 const EndOfDay = lazy(() => import('./pages/EndOfDay'));
 const TipManagement = lazy(() => import('./pages/TipManagement'));
@@ -190,6 +191,7 @@ function StaffLayout({ children }) {
       <BottomDock />
       <AshChat />
       <NotificationBell />
+      <TableServiceAlerts />
       <CommandBar />
       <VoiceCommandButton />
     </div>
@@ -247,6 +249,7 @@ function ProtectedRoutes() {
         <Routes>
           <Route path="*" element={<StaffApp />} />
         </Routes>
+        <TableServiceAlerts />
       </LicenseProvider>
     );
   }
