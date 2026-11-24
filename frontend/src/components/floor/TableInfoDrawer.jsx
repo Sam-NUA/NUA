@@ -6,6 +6,7 @@ import { Badge } from '../ui/badge';
 import { X, Send, Clock, Users, Utensils, ChevronRight, Settings2, BellRing, Crown, Loader2 } from 'lucide-react';
 import { tableCoursesAPI, tableServiceAPI, reservationsAPI } from '../../services/api';
 import { useTheme } from '../../contexts/ThemeContext';
+import { useAuth } from '../../contexts/AuthContext';
 import { toast } from 'sonner';
 import { DialogService } from '../../platform';
 
@@ -21,6 +22,9 @@ const VIP_COLOR = '#db2777'; // NUA_POS_DESIGN_TOKENS.md §6 — VIP is pink, Re
  */
 export const TableInfoDrawer = ({ open, onClose, table, states, courses, overdueColour, onRefresh, onOpenCourseSettings }) => {
   const { darkMode } = useTheme();
+  const { user } = useAuth();
+  const [floorStaff, setFloorStaff] = useState([]);
+  const isManager = ['owner', 'manager'].includes(user?.role);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState('');
   const [priority, setPriority] = useState('normal');
@@ -48,6 +52,15 @@ export const TableInfoDrawer = ({ open, onClose, table, states, courses, overdue
     if (!open) return;
     setGuestQuery(''); setGuestMatches([]); setGuestSearchOpen(false); setPickedGuest(null);
   }, [open, table?.id]);
+
+  useEffect(() => {
+    if (!open || !isManager) return;
+    let active = true;
+    tableServiceAPI.listStaff().then(r => {
+      if (active) setFloorStaff(r.data || []);
+    }).catch(() => { if (active) setFloorStaff([]); });
+    return () => { active = false; };
+  }, [open, isManager]);
 
   if (!open || !table) return null;
 
@@ -129,6 +142,17 @@ export const TableInfoDrawer = ({ open, onClose, table, states, courses, overdue
       setMsg('');
     } catch {
       toast.error('Failed to send');
+    } finally { setBusy(false); }
+  };
+
+  const assignServer = async (serverId) => {
+    setBusy(true);
+    try {
+      await tableCoursesAPI.upsertState({ tableId: table.id, serverId });
+      toast.success(serverId ? 'Waiter assigned' : 'Table assignment cleared');
+      if (onRefresh) await onRefresh();
+    } catch (e) {
+      toast.error(e.response?.data?.detail || 'Could not assign table');
     } finally { setBusy(false); }
   };
 
