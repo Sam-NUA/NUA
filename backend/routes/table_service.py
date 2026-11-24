@@ -301,7 +301,6 @@ async def list_alerts(user: dict = Depends(get_user)):
         if key:
             grouped.setdefault(key, []).append(order)
 
-    await db.table_service_alerts.create_index("id", unique=True)
     from services import coursing as kitchen_coursing
     coursing_config = await kitchen_coursing.get_config(business_id=biz)
     kitchen_courses = coursing_config.get("courses") or []
