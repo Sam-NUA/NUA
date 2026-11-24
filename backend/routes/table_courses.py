@@ -179,6 +179,9 @@ async def upsert_state(body: TableStateIn, user: dict = Depends(get_user)):
     """Seat a table, advance its course, or clear it (`clearState=true`)."""
     biz = user.get("businessId")
     scope = tenant_scope_filter(biz)
+    if body.serverId is not None and user.get("role") not in ("owner", "manager"):
+        if body.serverId not in (user.get("id"), user.get("email")):
+            raise HTTPException(403, "Staff may assign only themselves to a table")
     if body.clearState:
         r = await db.table_states.delete_one({"tableId": body.tableId, **scope})
         return {"cleared": r.deleted_count > 0}
