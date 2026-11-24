@@ -143,12 +143,12 @@ def _rule_sources(state, orders, main_keys, starter_keys):
     if not orders and not (events.get("order_taken") or events.get("food_order_taken")):
         candidates["no_order"] = state.get("seatedAt")
 
-    if (stage == "drinks" or events.get("drinks_served")) and not _food_present(orders, events):
-        candidates["after_drinks"] = events.get("drinks_served") or state.get("courseStartedAt")
+    # Moving the table to the Drinks stage is NOT proof the drinks reached
+    # guests. Start this deadline only when a server records actual delivery.
+    if events.get("drinks_served") and not _food_present(orders, events):
+        candidates["after_drinks"] = events["drinks_served"]
 
     main_served = None
-    has_main = False
-    has_ready_or_order = False
     for order in orders:
         courses = order.get("courses") or {}
         previous_served = events.get("entree_served")
@@ -159,7 +159,6 @@ def _rule_sources(state, orders, main_keys, starter_keys):
             status = main.get("status")
             if not status:
                 continue
-            has_main = True
             if status in ("held", "queued") and previous_served:
                 candidates["mains_held"] = min_time(candidates.get("mains_held"), previous_served)
             if status == "fired" and main.get("firedAt"):
@@ -169,7 +168,6 @@ def _rule_sources(state, orders, main_keys, starter_keys):
         for course in courses.values():
             if (course or {}).get("status") == "ready" and (course or {}).get("readyAt"):
                 candidates["ready_waiting"] = min_time(candidates.get("ready_waiting"), course["readyAt"])
-                has_ready_or_order = True
     if main_served and not events.get("follow_up_done") and stage not in {"dessert", "coffee", "check"}:
         candidates["post_mains"] = main_served
     if events.get("bill_requested") and not events.get("bill_delivered"):
