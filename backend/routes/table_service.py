@@ -145,9 +145,15 @@ async def record_event(body: EventIn, user: dict = Depends(get_user)):
     state = await db.table_states.find_one({"businessId": biz, "tableId": body.tableId})
     if not state:
         raise HTTPException(409, "Seat the table before recording service events")
-    await db.table_states.update_one({"businessId": biz, "tableId": body.tableId},
-                                     {"$set": {"serviceEvents." + body.event: stamp(),
-                                               "updatedAt": stamp()}})
+    changes = {"serviceEvents." + body.event: stamp(), "updatedAt": stamp()}
+    update = {"$set": changes}
+    if body.event == "service_resumed":
+        events = state.get("serviceEvents") or {}
+        paused = parse_time(events.get("service_paused"))
+        last_resume = parse_time(events.get("service_resumed"))
+        if paused and (not last_resume or paused > last_resume):
+            update["$push"] = {"servicePauseIntervals": {"start": stamp(paused), "end": stamp()}}
+    await db.table_states.update_one({"businessId": biz, "tableId": body.tableId}, update)
     return {"recorded": body.event, "tableId": body.tableId}
 
 
@@ -184,8 +190,20 @@ def _candidates(state, orders, config, now, number):
     ):
         return []
 
+    def effective_anchor(anchor):
+        parsed = parse_time(anchor)
+        if not parsed:
+            return anchor
+        paused_seconds = 0
+        for interval in state.get("servicePauseIntervals") or []:
+            start = parse_time(interval.get("start"))
+            end = parse_time(interval.get("end"))
+            if start and end and end > start:
+                paused_seconds += max(0, (end - max(start, parsed)).total_seconds())
+        return stamp(parsed + timedelta(seconds=paused_seconds))
+
     def emit(rule, anchor, msg, extra=None):
-        candidate = _candidate(rule, table, anchor, None, server, msg, now, config, extra)
+        candidate = _candidate(rule, table, effective_anchor(anchor), None, server, msg, now, config, extra)
         if candidate:
             found.append(candidate)
 
@@ -211,10 +229,13 @@ def _candidates(state, orders, config, now, number):
         courses = order.get("courses") or {}
         main = courses.get("2") or {}
         entree = courses.get("1") or {}
-        # Held mains only become an alert after the preceding entrée is actually served.
-        if main.get("status") in ("held", "queued") and entree.get("status") == "served":
-            emit("mains_not_fired", entree.get("servedAt"),
-                 "Entrée served but mains remain on hold. Check with the table; do not auto-fire.",
+        # Held mains deserve a check even for tables that skip entrée.
+        # The action remains manual: never auto-fire from a service alert.
+        if main.get("status") in ("held", "queued"):
+            anchor = entree.get("servedAt") if entree.get("status") == "served" else (
+                events.get("drinks_served") or main.get("heldAt") or order.get("createdAt"))
+            emit("mains_not_fired", anchor,
+                 "Mains are still on hold. Check the table before firing.",
                  {"orderId": order.get("id"), "course": 2})
         for key, course in courses.items():
             if course.get("status") == "fired":
