@@ -187,3 +187,25 @@ def test_custom_kitchen_course_keys_drive_mains_alerts():
     alerts = _candidates(state, [ticket], DEFAULT, now, "22",
                           main_course=main_key, starter_course=starter_key)
     assert any(a["rule"] == "mains_not_fired" and a["course"] == 30 for a in alerts)
+
+def test_pending_service_warning_exposes_exact_upcoming_threshold():
+    """The POS refreshes at the owner's first-warning deadline, not just on a poll."""
+    from routes.table_service import _candidates, DEFAULT
+    now, state = _fixtures(minutes=3)
+    pending = _candidates(state, [], DEFAULT, now, "55", include_pending=True)
+    arrival = next(a for a in pending if a["rule"] == "seated_no_order")
+    assert arrival["pending"] is True
+    due = datetime.fromisoformat(arrival["nextCheckAt"])
+    assert 100 < (due - now).total_seconds() < 140
+    assert not _candidates(state, [], DEFAULT, now, "55")
+
+
+def test_escalation_deadline_is_reported_after_first_warning():
+    from routes.table_service import _candidates, DEFAULT
+    now, state = _fixtures(minutes=6)
+    reminders = _candidates(state, [], DEFAULT, now, "56", include_pending=True)
+    arrival = next(a for a in reminders if a["rule"] == "seated_no_order")
+    assert arrival["pending"] is False
+    assert arrival["priority"] == "normal"
+    escalation = datetime.fromisoformat(arrival["nextCheckAt"])
+    assert 100 < (escalation - now).total_seconds() < 140
