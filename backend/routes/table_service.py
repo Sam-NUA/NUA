@@ -18,6 +18,7 @@ from services import floor_tables
 router = APIRouter(prefix="/table-service", tags=["table-service"])
 log = logging.getLogger(__name__)
 MANAGERS = {"owner", "manager"}
+FLOOR_ROLES = MANAGERS | {"cashier", "server", "waiter"}
 ALLOWED_EVENTS = {
     "drinks_served", "bill_requested", "bill_completed",
     "service_paused", "service_resumed", "food_order_taken",
@@ -98,6 +99,8 @@ def _allowed(user, doc):
         return True
     if role == "kitchen":
         return doc.get("category") == "kitchen"
+    if role not in FLOOR_ROLES:
+        return False
     if doc.get("category") == "kitchen":
         return False
     server = doc.get("serverId")
@@ -138,6 +141,8 @@ async def save_settings(body: ServiceConfig, user: dict = Depends(get_user)):
 
 @router.post("/events")
 async def record_event(body: EventIn, user: dict = Depends(get_user)):
+    if user.get("role") not in FLOOR_ROLES:
+        raise HTTPException(403, "Floor service staff only")
     biz = _business(user)
     found = await floor_tables.get_table_by_id(body.tableId, business_id=biz)
     if not found:
