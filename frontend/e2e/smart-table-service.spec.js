@@ -86,6 +86,12 @@ test('POS terminal shows a reminder at its exact service deadline and refreshes 
   await loginAsOwner(page);
   await page.goto('/pos');
   await expect(page.getByTestId('pos-cart-panel')).toBeVisible();
+  // Checkout controls are mounted only with a non-empty cart. Test a real
+  // order rather than expecting a payment button on an empty terminal.
+  const firstProduct = page.locator('[data-testid^="product-"]').first();
+  await expect(firstProduct).toBeVisible({ timeout: 15000 });
+  await firstProduct.click();
+  await expect(page.getByTestId('pos-proceed-payment')).toBeVisible();
   const beforeInteraction = checks;
   await page.getByTestId('cart-tab-cart').click();
   await expect.poll(() => checks, { timeout: 6000 }).toBeGreaterThan(beforeInteraction);
