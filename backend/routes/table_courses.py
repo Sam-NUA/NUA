@@ -179,6 +179,9 @@ async def upsert_state(body: TableStateIn, user: dict = Depends(get_user)):
     """Seat a table, advance its course, or clear it (`clearState=true`)."""
     biz = user.get("businessId")
     scope = tenant_scope_filter(biz)
+    if body.serverId is not None and user.get("role") not in ("owner", "manager"):
+        if body.serverId not in (user.get("id"), user.get("email")):
+            raise HTTPException(403, "Staff may assign only themselves to a table")
     if body.clearState:
         r = await db.table_states.delete_one({"tableId": body.tableId, **scope})
         return {"cleared": r.deleted_count > 0}
@@ -194,7 +197,7 @@ async def upsert_state(body: TableStateIn, user: dict = Depends(get_user)):
             v = getattr(body, f)
             if v is not None:
                 update[f] = v
-        await db.table_states.update_one({"id": existing["id"]}, {"$set": update})
+        await db.table_states.update_one({"id": existing["id"], "businessId": biz}, {"$set": update})
         return await db.table_states.find_one({"id": existing["id"]}, {"_id": 0})
 
     doc = {
@@ -260,13 +263,13 @@ async def send_nudge(body: SendNudgeIn, user: dict = Depends(get_user)):
         from services import notification_service
         target_email = None
         if server_id:
-            staffer = await db.auth_users.find_one({"id": server_id}, {"_id": 0, "email": 1})
+            staffer = await db.auth_users.find_one({"id": server_id, "businessId": biz}, {"_id": 0, "email": 1})
             target_email = (staffer or {}).get("email")
         await notification_service.send(
             kind="kitchen", title=f"Table {body.tableId} needs you", body=body.message,
             email=target_email, role=None if target_email else "cashier",
             severity="high" if notif["priority"] == "urgent" else "info",
-            link="/floor-plan",
+            link="/floor-plan", business_id=biz,
         )
     except Exception as e:
         from utils.errors import log_and_continue

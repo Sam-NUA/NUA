@@ -76,6 +76,26 @@ if (!APP_PATH) throw new Error('APP_PATH env var is required');
 function log(msg) { console.log(`[ios-milestone] ${msg}`); }
 function wait(ms) { return new Promise((resolve) => setTimeout(resolve, ms)); }
 
+async function restartNativeApp(driver, label) {
+  // XCUITest can report an XCTDaemon launch timeout on a busy hosted
+  // simulator after a successful terminate. Retry that infrastructure error
+  // once; every authentication/offline assertion below still must pass.
+  await driver.execute('mobile: terminateApp', { bundleId: BUNDLE_ID });
+  await wait(2000);
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    try {
+      await driver.execute('mobile: launchApp', { bundleId: BUNDLE_ID });
+      return;
+    } catch (error) {
+      if (attempt === 2 || !/XCTDaemonErrorDomain|Timed out attempting to launch app/i.test(String(error?.message))) {
+        throw error;
+      }
+      log(`${label}: simulator cold launch timed out, retrying once`);
+      await wait(4000);
+    }
+  }
+}
+
 function simctl(args) {
   return execFileSync('xcrun', ['simctl', ...args], { encoding: 'utf8' });
 }
@@ -640,9 +660,7 @@ async function main() {
       key: 'nua_token', value: ${JSON.stringify(expiredAccess)}
     })`);
     log('restarting with an expired access token and the real existing refresh cookie');
-    await driver.execute('mobile: terminateApp', { bundleId: BUNDLE_ID });
-    await wait(2000);
-    await driver.execute('mobile: launchApp', { bundleId: BUNDLE_ID });
+    await restartNativeApp(driver, 'expired-access restart');
     await connectWebviewContext(driver);
     page = makePageDriver(driver);
     await waitForOutcomeAfterSubmit(page);
@@ -694,9 +712,7 @@ async function main() {
     log(`captured the queued sale's real idempotency key before restart: clientOpId=${queuedPayload.clientOpId}`);
 
     log('restarting the app process — a real terminate+relaunch, not a reload');
-    await driver.execute('mobile: terminateApp', { bundleId: BUNDLE_ID });
-    await wait(2000);
-    await driver.execute('mobile: launchApp', { bundleId: BUNDLE_ID });
+    await restartNativeApp(driver, 'offline-queue restart');
     await connectWebviewContext(driver);
     page = makePageDriver(driver);
 

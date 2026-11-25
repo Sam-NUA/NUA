@@ -4,8 +4,9 @@ import { Button } from '../ui/button';
 import { Input } from '../ui/input';
 import { Badge } from '../ui/badge';
 import { X, Send, Clock, Users, Utensils, ChevronRight, Settings2, BellRing, Crown, Loader2 } from 'lucide-react';
-import { tableCoursesAPI, reservationsAPI } from '../../services/api';
+import { tableCoursesAPI, tableServiceAPI, reservationsAPI } from '../../services/api';
 import { useTheme } from '../../contexts/ThemeContext';
+import { useAuth } from '../../contexts/AuthContext';
 import { toast } from 'sonner';
 import { DialogService } from '../../platform';
 
@@ -21,6 +22,9 @@ const VIP_COLOR = '#db2777'; // NUA_POS_DESIGN_TOKENS.md §6 — VIP is pink, Re
  */
 export const TableInfoDrawer = ({ open, onClose, table, states, courses, overdueColour, onRefresh, onOpenCourseSettings }) => {
   const { darkMode } = useTheme();
+  const { user } = useAuth();
+  const [floorStaff, setFloorStaff] = useState([]);
+  const isManager = ['owner', 'manager'].includes(user?.role);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState('');
   const [priority, setPriority] = useState('normal');
@@ -48,6 +52,15 @@ export const TableInfoDrawer = ({ open, onClose, table, states, courses, overdue
     if (!open) return;
     setGuestQuery(''); setGuestMatches([]); setGuestSearchOpen(false); setPickedGuest(null);
   }, [open, table?.id]);
+
+  useEffect(() => {
+    if (!open || !isManager) return;
+    let active = true;
+    tableServiceAPI.listStaff().then(r => {
+      if (active) setFloorStaff(r.data || []);
+    }).catch(() => { if (active) setFloorStaff([]); });
+    return () => { active = false; };
+  }, [open, isManager]);
 
   if (!open || !table) return null;
 
@@ -129,6 +142,28 @@ export const TableInfoDrawer = ({ open, onClose, table, states, courses, overdue
       setMsg('');
     } catch {
       toast.error('Failed to send');
+    } finally { setBusy(false); }
+  };
+
+  const assignServer = async (serverId) => {
+    setBusy(true);
+    try {
+      await tableCoursesAPI.upsertState({ tableId: table.id, serverId });
+      toast.success(serverId ? 'Waiter assigned' : 'Table assignment cleared');
+      if (onRefresh) await onRefresh();
+    } catch (e) {
+      toast.error(e.response?.data?.detail || 'Could not assign table');
+    } finally { setBusy(false); }
+  };
+
+  const serviceEvent = async (event) => {
+    setBusy(true);
+    try {
+      await tableServiceAPI.event(table.id, event);
+      toast.success('Service event recorded');
+      if (onRefresh) await onRefresh();
+    } catch (e) {
+      toast.error(e.response?.data?.detail || 'Could not record service event');
     } finally { setBusy(false); }
   };
 
@@ -260,6 +295,62 @@ export const TableInfoDrawer = ({ open, onClose, table, states, courses, overdue
               <Button onClick={seatTable} disabled={busy} size="sm" className="w-full" data-testid="seat-table">
                 <Utensils size={12} className="mr-1" /> Seat this table
               </Button>
+            </CardContent>
+          </Card>
+        )}
+
+        {state && (
+          <Card data-testid="table-server-assignment">
+            <CardContent className="p-3 space-y-2">
+              <div className="text-xs font-semibold">Responsible floor staff</div>
+              <div className="flex flex-wrap items-center gap-2">
+                <Button type="button" size="sm" variant="outline"
+                  disabled={busy || state.serverId === user?.email}
+                  onClick={() => assignServer(user?.email || '')} data-testid="assign-table-to-me">
+                  Assign to me
+                </Button>
+                {isManager && (
+                  <select aria-label="Assign waiter" data-testid="assign-table-server"
+                    className="rounded-md border px-2 py-2 text-xs min-w-0 flex-1"
+                    disabled={busy} value={state.serverId || ''}
+                    onChange={e => assignServer(e.target.value)}>
+                    <option value="">Unassigned — all floor staff</option>
+                    {floorStaff.map(staff => (
+                      <option key={staff.id || staff.email} value={staff.email}>
+                        {staff.name} ({staff.role})
+                      </option>
+                    ))}
+                  </select>
+                )}
+              </div>
+              <p className="text-[10px] text-gray-500">
+                {state.serverId ? 'Alerts go to this staff member and managers.' :
+                  'Unassigned tables appear in the shared floor attention queue.'}
+              </p>
+            </CardContent>
+          </Card>
+        )}
+
+        {state && (
+          <Card data-testid="table-service-events">
+            <CardContent className="p-3 space-y-2">
+              <div className="text-xs font-semibold">Service milestones</div>
+              <p className="text-[10px] text-gray-500">Record these milestones to enable accurate reminders.</p>
+              <div className="grid grid-cols-2 gap-2">
+                {[
+                  ['drinks_served', 'Drinks served'],
+                  ['food_order_taken', 'Food ordered'],
+                  ['bill_requested', 'Bill requested'],
+                  ['bill_completed', 'Bill completed'],
+                  ['service_paused', 'Pause service'],
+                  ['service_resumed', 'Resume service'],
+                ].map(([key, label]) => (
+                  <Button key={key} type="button" size="sm" variant="outline"
+                    disabled={busy} onClick={() => serviceEvent(key)}
+                    data-testid={'service-event-' + key}
+                    className="text-[11px] whitespace-normal h-auto min-h-9">{label}</Button>
+                ))}
+              </div>
             </CardContent>
           </Card>
         )}
