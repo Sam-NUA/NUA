@@ -535,7 +535,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
 
         override = self.PATH_OVERRIDES.get(path)
         prefix_override = next((o for o in self.PREFIX_OVERRIDES if path.startswith(o[0])), None)
-        is_guest_surface = path.startswith("/api/public") or path.startswith("/api/table")
+        is_guest_surface = path.startswith(("/api/public/", "/api/table/")) or path in ("/api/public", "/api/table")
 
         if override:
             limit, window = override

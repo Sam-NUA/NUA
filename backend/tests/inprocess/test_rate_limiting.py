@@ -104,3 +104,21 @@ def test_pin_guesses_share_bucket_across_values_endpoints_and_spoofed_headers(an
     assert int(blocked.headers["Retry-After"]) > 0
     monkeypatch.setattr(server, "time", lambda: 1800000061.0)
     assert anon.post("/api/auth/pin-login", json={"pin": "8124"}).status_code != 429
+
+
+def test_staff_table_service_uses_authenticated_rate_limit_bucket(client, owner_headers, monkeypatch):
+    """Staff alerts must not share the public QR guest IP bucket."""
+    from services.shared_runtime import SharedRuntime
+    calls = []
+
+    async def capture(self, key, limit, window, now):
+        calls.append((key, limit, window))
+        return True, 0
+
+    monkeypatch.setattr(SharedRuntime, "allow", capture)
+    result = client.get("/api/table-service/alerts", headers=owner_headers)
+    assert result.status_code == 200, result.text
+    assert len(calls) == 1
+    key, limit, window = calls[0]
+    assert key.startswith("user:"), key
+    assert (limit, window) == (120, 60)

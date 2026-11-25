@@ -90,16 +90,17 @@ test('POS terminal shows a reminder at its exact service deadline and refreshes 
   // order rather than expecting a payment button on an empty terminal.
   const firstProduct = page.locator('[data-testid^="product-"]').first();
   await expect(firstProduct).toBeVisible({ timeout: 15000 });
-  await firstProduct.click();
-  await expect(page.getByTestId('pos-proceed-payment')).toBeVisible();
+  // The first product tap is the activity under test. A second immediate tap
+  // is intentionally rate-limited for eight seconds by the terminal listener.
   const beforeInteraction = checks;
-  await page.getByTestId('cart-tab-cart').click();
-  await expect.poll(() => checks, { timeout: 6000 }).toBeGreaterThan(beforeInteraction);
+  await firstProduct.click();
+  await expect.poll(() => checks, { timeout: 3000 }).toBeGreaterThan(beforeInteraction);
+  await expect(page.getByTestId('pos-proceed-payment')).toBeVisible();
   // Simulate a warning due in the next two seconds while staff continue working.
   dueTime = Date.now() + 2000;
   await page.evaluate(() => window.dispatchEvent(new Event('focus')));
   const popup = page.getByTestId('smart-table-popup');
-  await expect(popup).toBeVisible({ timeout: 15000 });
+  await expect(popup).toBeVisible({ timeout: 6000 });
   await expect(popup).toContainText('Table 16');
   await expect(page.getByTestId('pos-proceed-payment')).toBeVisible();
 });
