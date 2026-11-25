@@ -12,6 +12,8 @@ permissions:
 
 # This is an explicitly approved live API target for internal packages.
 # Build only: never launch these packages or run financial tests in CI.
+# November 26 refresh: hardware engineering packages, not production clearance.
+# Fleet job delivery requires the matching server; do not use for live sales.
 # Foundation and critical-acceptance workflows keep their isolated origins.
 env:
   REACT_APP_BACKEND_URL: https://app.nuapos.com.au
