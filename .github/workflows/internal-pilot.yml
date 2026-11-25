@@ -12,6 +12,8 @@ permissions:
 
 # This is an explicitly approved live API target for internal packages.
 # Build only: never launch these packages or run financial tests in CI.
+# November 26 refresh: hardware engineering packages, not production clearance.
+# Fleet job delivery requires the matching server; do not use for live sales.
 # Foundation and critical-acceptance workflows keep their isolated origins.
 env:
   REACT_APP_BACKEND_URL: https://app.nuapos.com.au
@@ -40,6 +42,7 @@ jobs:
           java-version: '21'
       - run: npm ci
         working-directory: frontend
+      - run: python scripts/generate_app_icons.py
       - run: npm run build
         working-directory: frontend
       - run: npx cap sync android
@@ -95,6 +98,7 @@ jobs:
         working-directory: apps/windows
       - run: npm test
         working-directory: apps/windows
+      - run: python scripts/generate_app_icons.py
       - run: npm run build
         working-directory: frontend
       - run: npm run prepare:renderer
@@ -131,6 +135,7 @@ jobs:
           python-version: '3.12'
       - run: npm ci
         working-directory: frontend
+      - run: python scripts/generate_app_icons.py
       - run: npm run build
         working-directory: frontend
       - run: npx cap sync ios

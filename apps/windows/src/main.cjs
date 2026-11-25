@@ -9,6 +9,7 @@ const { EncryptedStore } = require('./encrypted-store.cjs');
 const { OfflineStore } = require('./offline-store.cjs');
 const { windowsCrypto } = require('./windows-crypto.cjs');
 const { waitForWindowsKey } = require('./crypto-readiness.cjs');
+const { parseJob, rawNetworkSend } = require('./printer-fleet.cjs');
 protocol.registerSchemesAsPrivileged([{ scheme: 'nua', privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true } }]);
 let mainWindow;
 let printing = false;
@@ -24,7 +25,13 @@ function restrict(contents) {
   contents.on('will-redirect', (event, target) => { if (!isAppUrl(target)) event.preventDefault(); });
   contents.on('will-attach-webview', event => event.preventDefault());
 }
-async function printDocument(html) {
+async function printDocument(html, printerName = '') {
+  // A renderer-selected printer must be one of the OS spooler devices.
+  // This remains a user-reviewed print dialog, not unattended silent printing.
+  if (typeof printerName !== 'string' || printerName.length > 255) throw new Error('Invalid printer name');
+  if (printerName && !(await mainWindow.webContents.getPrintersAsync()).some(p => p.name === printerName)) {
+    throw new Error('Selected printer is not installed on this Windows device');
+  }
   if (printing) throw new Error('A print job is already awaiting an outcome');
   printing = true;
   // javascript: false means a malformed or hostile document can distort the
@@ -36,14 +43,14 @@ async function printDocument(html) {
   try {
     await win.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html));
     // Never claim a physical print or retry after an unknown spool outcome.
-    return await new Promise(resolve => win.webContents.print({ silent: false, printBackground: false }, success => resolve({ status: success ? 'submitted' : 'cancelled-or-failed' })));
+    return await new Promise(resolve => win.webContents.print({ silent: false, printBackground: false, ...(printerName ? { deviceName: printerName } : {}) }, success => resolve({ status: success ? 'submitted' : 'cancelled-or-failed' })));
   } finally { win.destroy(); printing = false; }
 }
-async function printReceipt(receipt) {
-  return printDocument(renderReceipt(receipt)); // validation before opening any OS dialog
+async function printReceipt(receipt, printerName) {
+  return printDocument(renderReceipt(receipt), printerName); // validation before opening any OS dialog
 }
-async function printHtml(html) {
-  return printDocument(safeHtmlDocument(html));
+async function printHtml(html, printerName) {
+  return printDocument(safeHtmlDocument(html), printerName);
 }
 async function saveFile(filename, data) {
   safeFilename(filename);
@@ -99,16 +106,62 @@ async function start() {
     try { allowed ||= [origin, origin.replace('https:', 'wss:')].includes(new URL(details.url).origin); } catch {}
     callback({ cancel: !allowed });
   });
-  mainWindow = new BrowserWindow({ width: 1400, height: 950, minWidth: 1024, minHeight: 768, title: 'NUA POS Foundation', autoHideMenuBar: true, webPreferences: { preload: path.join(__dirname, 'preload.cjs'), session: hostSession, sandbox: true, contextIsolation: true, nodeIntegration: false, webSecurity: true, devTools: !app.isPackaged } });
+  mainWindow = new BrowserWindow({ width: 1400, height: 950, minWidth: 1024, minHeight: 768, title: 'NUA POS', icon: path.join(__dirname, '../renderer/favicon.ico'), autoHideMenuBar: true, webPreferences: { preload: path.join(__dirname, 'preload.cjs'), session: hostSession, sandbox: true, contextIsolation: true, nodeIntegration: false, webSecurity: true, devTools: !app.isPackaged } });
   restrict(mainWindow.webContents);
   Menu.setApplicationMenu(null);
   guarded('nua:info', () => ({ version: app.getVersion(), bridgeVersion: 1, platform: 'windows', inputMode, releaseChannel: 'foundation', updates: 'manual-review-only', secureAuthIntegrated: true, offlineSyncIntegrated: true, hostname: os.hostname() }));
+  const windowState = () => ({ fullscreen: mainWindow.isFullScreen(), maximized: mainWindow.isMaximized(), minimized: mainWindow.isMinimized() });
+  const notifyWindowState = () => {
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('nua:window-state-changed', windowState());
+  };
+  for (const change of ['enter-full-screen', 'leave-full-screen', 'maximize', 'unmaximize', 'restore', 'minimize']) {
+    mainWindow.on(change, notifyWindowState);
+  }
+  guarded('nua:window-state', windowState);
   guarded('nua:fullscreen', value => {
     if (typeof value !== 'boolean') throw new Error('Invalid fullscreen value');
+    if (!value && mainWindow.isMinimized()) mainWindow.restore();
     mainWindow.setFullScreen(value);
-    return mainWindow.isFullScreen();
+    if (!value && mainWindow.isMaximized()) mainWindow.unmaximize();
+    notifyWindowState();
+    return windowState();
+  });
+  // A visible and keyboard-accessible escape route even if React fails to mount.
+  mainWindow.webContents.on('before-input-event', (event, input) => {
+    if (input.type !== 'keyDown' || input.isAutoRepeat) return;
+    if (input.key === 'F11') {
+      event.preventDefault();
+      mainWindow.setFullScreen(!mainWindow.isFullScreen());
+      notifyWindowState();
+    } else if (input.key === 'Escape' && mainWindow.isFullScreen()) {
+      event.preventDefault();
+      mainWindow.setFullScreen(false);
+      notifyWindowState();
+    }
   });
   guarded('nua:printers', async () => (await mainWindow.webContents.getPrintersAsync()).map(p => ({ name: p.name, displayName: p.displayName, isDefault: p.isDefault })));
+  guarded('nua:fleet-send', async request => {
+    const job = parseJob(request);
+    if (job.transport === 'wifi') return rawNetworkSend(job);
+    const installed = await mainWindow.webContents.getPrintersAsync();
+    if (!installed.some(p => p.name === job.printerName))
+      throw new Error('Printer is not installed in the Windows spooler');
+    const html = safeHtmlDocument(job.html);
+    // USB and Bluetooth Windows drivers are served by the OS spooler. A
+    // disposable javascript-disabled window, explicitly selected device and
+    // silent mode permit independent printers to run concurrently.
+    const win = new BrowserWindow({ show: false, parent: mainWindow,
+      webPreferences: { nodeIntegration: false, sandbox: true, contextIsolation: true, javascript: false } });
+    restrict(win.webContents);
+    try {
+      await win.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html));
+      return await new Promise(resolve => win.webContents.print({
+        silent: true, deviceName: job.printerName, printBackground: false
+      }, (success, failureReason) => resolve({
+        status: success ? 'submitted' : 'uncertain', reason: failureReason || ''
+      })));
+    } finally { if (!win.isDestroyed()) win.destroy(); }
+  });
   guarded('nua:print-receipt', printReceipt);
   guarded('nua:print-html', printHtml);
   guarded('nua:save-file', saveFile);
@@ -135,6 +188,20 @@ async function start() {
     if (!map || Array.isArray(map) || typeof map !== 'object' || Object.keys(map).length > 30
         || Object.entries(map).some(([business, id]) => !business || typeof id !== 'string' || !id || id.length > 200)) throw new Error('Invalid terminal identities');
     return secureStore.write('device-map', value);
+  });
+  guarded('nua:fleet-config-get', business => {
+    if (typeof business !== 'string' || !/^[a-zA-Z0-9_-]{1,100}$/.test(business))
+      throw new Error('Invalid business scope');
+    return secureStore.read('printer-fleet-' + business);
+  });
+  guarded('nua:fleet-config-set', (business, value) => {
+    if (typeof business !== 'string' || !/^[a-zA-Z0-9_-]{1,100}$/.test(business) ||
+        typeof value !== 'string' || value.length > 32000) throw new Error('Invalid printer configuration');
+    const config = JSON.parse(value);
+    if (!config || !Array.isArray(config.devices) || config.devices.length > 32 ||
+        typeof config.gatewayId !== 'string' || config.gatewayId.length > 100)
+      throw new Error('Malformed printer configuration');
+    return secureStore.write('printer-fleet-' + business, value);
   });
   guarded('nua:device-id-get', () => secureStore.read('device-id'));
   guarded('nua:device-id-set', value => {

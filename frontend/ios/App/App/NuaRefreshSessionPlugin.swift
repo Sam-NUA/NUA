@@ -186,5 +186,6 @@ public class NuaRefreshSessionPlugin: CAPPlugin, CAPBridgedPlugin, URLSessionTas
 class NuaBridgeViewController: CAPBridgeViewController {
     override func capacitorDidLoad() {
         bridge?.registerPluginInstance(NuaRefreshSessionPlugin())
+        bridge?.registerPluginInstance(NuaPrinterFleetPlugin())
     }
 }

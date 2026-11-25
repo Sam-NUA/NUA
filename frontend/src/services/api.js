@@ -479,6 +479,9 @@ export const coursingAPI = {
   voidItems: (id, data, config) => api.post(`/coursing/orders/${id}/void`, data, config),
   // SSE endpoint — consumed via EventSource, not axios.
   setPrintTarget: (printer, data) => api.put(`/print-targets/${encodeURIComponent(printer)}`, data),
+  getPrintTargets: () => api.get('/print-targets'),
+  setPrintTarget: (printer, config) => api.put(`/print-targets/${encodeURIComponent(printer)}`, config),
+  printProfiles: () => api.get('/print-profiles'),
   printHealth: () => api.get('/print-targets/health'),
   printSelfTest: (printer) => api.post(`/print-targets/${encodeURIComponent(printer)}/test`),
   analytics: (days = 7) => api.get('/coursing/analytics', { params: { days } }),
@@ -1276,3 +1279,14 @@ export const repoSyncAPI = {
 };
 
 export default api;
+
+/** Native terminal gateways for simultaneous station printers. */
+export const printerFleetAPI = {
+  devices: () => api.get('/printer-fleet/devices'),
+  saveDevice: (id, body) => api.put(`/printer-fleet/devices/${encodeURIComponent(id)}`, body),
+  disableDevice: id => api.post(`/printer-fleet/devices/${encodeURIComponent(id)}/disable`),
+  claim: body => api.post('/printer-fleet/claim', body),
+  complete: body => api.post('/printer-fleet/complete', body),
+  status: () => api.get('/printer-fleet/status'),
+  retry: id => api.post(`/printer-fleet/retry/${encodeURIComponent(id)}`),
+};

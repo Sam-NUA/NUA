@@ -39,7 +39,9 @@
 	     reached over the local Wi-Fi network — iOS 14+ requires this
 	     declaration before any local-network connection attempt, or the
 	     request silently fails with no OS permission prompt at all. -->
-	<key>NSLocalNetworkUsageDescription</key>
+	<key>NSBluetoothAlwaysUsageDescription</key>
+    <string>NUA POS connects to compatible BLE thermal printers that you configure for receipts and kitchen dockets.</string>
+    <key>NSLocalNetworkUsageDescription</key>
 	<string>NUA POS connects to receipt and kitchen printers on your local network.</string>
 	<!-- services/printer.js's printToNetwork() fetches printers over plain
 	     http://<lan-ip>:<port> (ESC/POS has no TLS story and venue

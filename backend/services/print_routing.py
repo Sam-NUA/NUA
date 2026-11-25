@@ -201,6 +201,11 @@ async def _auto_print(record: dict) -> None:
     can't double-send the same ticket.
     """
     from services import escpos
+    from routes.printer_fleet import enqueue_for_station
+    # A station with connected local USB/Bluetooth/Wi-Fi devices fans out via
+    # per-target deliveries. Do not also send a duplicate from the backend.
+    if await enqueue_for_station(record):
+        return
     scope = tenant_scope_filter(record.get("businessId"))
     target = await escpos.printer_target(record["printer"], record.get("businessId"))
     if not target or not target.get("enabled", True):
