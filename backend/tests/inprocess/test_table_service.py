@@ -209,3 +209,16 @@ def test_escalation_deadline_is_reported_after_first_warning():
     assert arrival["priority"] == "normal"
     escalation = datetime.fromisoformat(arrival["nextCheckAt"])
     assert 100 < (escalation - now).total_seconds() < 140
+
+
+def test_service_alert_permissions_reject_non_service_roles():
+    from routes.table_service import _allowed
+    floor = {"category": "floor", "serverId": None}
+    kitchen = {"category": "kitchen", "serverId": None}
+    assert not _allowed({"role": "marketing", "id": "X"}, floor)
+    assert not _allowed({"role": "marketing", "id": "X"}, kitchen)
+    assert not _allowed({"role": "kitchen", "id": "K"}, floor)
+    assert _allowed({"role": "kitchen", "id": "K"}, kitchen)
+    assert _allowed({"role": "cashier", "id": "C"}, floor)
+    assert not _allowed({"role": "cashier", "id": "C"}, kitchen)
+    assert _allowed({"role": "owner", "id": "O"}, kitchen)
